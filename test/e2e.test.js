@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
 import { listText } from '../public/decklist.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -41,6 +42,7 @@ function client() {
     get: url => call('GET', url),
     post: (url, body = {}) => call('POST', url, body),
     put: (url, body) => call('PUT', url, body),
+    del: url => call('DELETE', url, {}),
     get cookie() { return cookie; },
   };
 }
@@ -347,7 +349,8 @@ test('pools track each player\'s opened cards at all times', async () => {
   }
   assert.equal(pool('Nick').precon, 'Animated Army', 'the precon is shown but not listed as cards');
   assert.equal(pool('Eve').packs.length, 0, 'Eve has not played yet');
-  assert.equal(pool('Eve').pods, 0);
+  assert.equal(pool('Eve').pods.length, 0);
+  assert.deepEqual(pool('Nick').pods.map(x => x.id), [S.pod.id], 'pools know which pod each player played');
 });
 
 test('copy-to-clipboard text is Moxfield/Archidekt format', async () => {
@@ -373,6 +376,33 @@ test('finishing saves the pod to history (and its pool stays)', async () => {
   assert.ok(player(pods[0], 'Mike').packs.some(k => k.source === 'sacrifice' && k.cards?.length), 'sacrificed packs and pulls are kept');
   const { pools } = await ok(nick.get('/api/pools'));
   assert.ok(pools.find(p => p.username === 'Mike').packs.length >= 1, 'finished pods stay in the pools');
+});
+
+test('pods, players, packs and pool cards are stored as tables', async () => {
+  const db = new DatabaseSync(path.join(DATA_DIR, 'app.db'), { readOnly: true });
+  try {
+    const pod = db.prepare('SELECT * FROM pods WHERE id = ?').get(S.pod.id);
+    assert.equal(pod.status, 'done');
+    assert.equal(pod.winner_id, S.u.Nick.id);
+    assert.equal(pod.spin_set_code, S.spin.setCode);
+    assert.equal(db.prepare('SELECT count(*) n FROM pod_players WHERE pod_id = ?').get(S.pod.id).n, 4);
+    const opened = S.pod.players.flatMap(p => p.packs).filter(k => k.status === 'opened');
+    assert.equal(db.prepare(`SELECT count(*) n FROM pod_packs WHERE pod_id = ? AND status = 'opened'`).get(S.pod.id).n, opened.length);
+    const cards = db.prepare('SELECT * FROM pool_cards WHERE pod_id = ?').all(S.pod.id);
+    assert.equal(cards.length, opened.flatMap(k => k.cards).length, 'every opened card is a pool_cards row');
+    assert.ok(cards.every(c => c.pack_id && c.user_id && c.name && c.set_code && c.number && c.rarity), 'cards keep pod, pack and player ids');
+    const mikes = db.prepare('SELECT count(*) n FROM pool_cards WHERE pod_id = ? AND user_id = ?').get(S.pod.id, S.u.Mike.id).n;
+    assert.equal(mikes, 14, "Mike's BLB Play Booster is in his pool for this pod");
+  } finally { db.close(); }
+});
+
+test('pools can be narrowed to one pod', async () => {
+  const all = (await ok(eve.get('/api/pools'))).pools.find(p => p.username === 'Mike');
+  const one = (await ok(eve.get(`/api/pools?pod=${S.pod.id}`))).pools.find(p => p.username === 'Mike');
+  assert.ok(one.packs.length >= 1);
+  assert.ok(one.packs.every(k => k.podId === S.pod.id && k.podName === 'Pod 1'));
+  assert.equal(one.packs.flatMap(k => k.cards).length, all.packs.filter(k => k.podId === S.pod.id).flatMap(k => k.cards).length);
+  assert.equal((await ok(eve.get('/api/pools?pod=nope'))).pools.every(p => !p.packs.length), true);
 });
 
 test('wheel odds follow per-set weights and exclusions (admin)', async () => {
@@ -409,6 +439,34 @@ test('discarded pods are not in history or pools', async () => {
   assert.equal(pods.length, 1);
   const { pools } = await ok(eve.get('/api/pools'));
   assert.equal(pools.find(p => p.username === 'Eve').packs.length, 0);
+});
+
+test('only the admin can delete pods; history and pools follow', async () => {
+  // A running pod with an opened pack, plus the finished Pod 1.
+  const { pod } = await ok(eve.post('/api/pods', { players: [{ userId: S.u.Eve.id }, { userId: S.u.Joe.id }] }));
+  await ok(eve.post(`/api/pods/${pod.id}/winner`, { playerId: S.u.Eve.id }));
+  const spun = (await ok(eve.post(`/api/pods/${pod.id}/spin`))).pod;
+  await ok(eve.post(`/api/pods/${pod.id}/packs/${spun.players[0].packs[0].id}/open`));
+  assert.ok((await ok(eve.get('/api/pools'))).pools.find(p => p.username === 'Eve').packs.length === 1);
+
+  assert.equal((await eve.del(`/api/pods/${pod.id}`)).status, 403, 'players cannot delete');
+  assert.equal((await admin.del('/api/pods/nope')).status, 404);
+
+  await ok(admin.del(`/api/pods/${pod.id}`));
+  assert.equal((await ok(eve.get('/api/state'))).pods.length, 0, 'running pod is gone');
+  assert.equal((await ok(eve.get('/api/pools'))).pools.find(p => p.username === 'Eve').packs.length, 0, 'its cards left the pool');
+
+  await ok(admin.del(`/api/pods/${S.pod.id}`));
+  assert.equal((await ok(eve.get('/api/history'))).pods.length, 0, 'finished pod left History');
+  assert.ok((await ok(eve.get('/api/pools'))).pools.every(p => !p.packs.length && !p.pods.length), 'and every pool');
+
+  const db = new DatabaseSync(path.join(DATA_DIR, 'app.db'), { readOnly: true });
+  try {
+    for (const t of ['pod_players', 'pod_packs', 'pool_cards']) {
+      const n = db.prepare(`SELECT count(*) n FROM ${t} WHERE pod_id IN (?, ?)`).get(pod.id, S.pod.id).n;
+      assert.equal(n, 0, `${t} rows were deleted with their pod`);
+    }
+  } finally { db.close(); }
 });
 
 test('logging out ends the session', async () => {

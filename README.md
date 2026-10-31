@@ -26,6 +26,9 @@ Local: http://127.0.0.1:8101
 **Pools tab**: each player's cards from every running or finished pod (discarded pods don't
 count), grouped with counts, searchable, and copyable as one deck list.
 
+**Admin delete**: the admin can permanently delete any pod (running, finished or discarded)
+from the Pods tab or from History. Its packs, pulls and pool cards are deleted with it.
+
 **All Sets tab**: every booster set and its chance on the wheel. Only the admin can turn
 sets on or off, change their weights (2 = twice as likely) or change the year/type filters.
 
@@ -47,6 +50,22 @@ sets on or off, change their weights (2 = twice as likely) or change the year/ty
   (pre-Shards of Alara: 11 commons, no land slot), with a ~1-in-6 foil from Urza's Legacy on.
 - Set list and card pools come from Scryfall and are cached in `data/app.db`
   (set list refreshes daily, card pools every two weeks).
+
+## Data
+
+Everything is saved in SQLite at `data/app.db`. League data lives in tables:
+
+| Table | One row per |
+| --- | --- |
+| `pods` | pod: status, winner, the pod's one spin |
+| `pod_players` | player in a pod: precon, packs awarded, packs sacrificed |
+| `pod_packs` | pack: spun or chosen set, sacrificed / chosen / opened |
+| `pool_cards` | opened card, tied to its pod, pack and player (pools are built from this) |
+| `booster_sets` | set referenced by a pack (name, symbol, release date) |
+| `users`, `sessions`, `reset_tokens` | accounts and logins |
+
+Deleting a pod cascades to its players, packs and pool cards. Databases from before the
+tables existed are migrated on startup, and the old JSON rows are kept in `pods_legacy_json`.
 
 ## Running
 

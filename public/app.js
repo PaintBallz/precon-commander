@@ -33,6 +33,7 @@ async function api(path, opts = {}) {
   return json;
 }
 const post = (path, body = {}) => api(path, { method: 'POST', body });
+const del = path => api(path, { method: 'DELETE', body: {} });
 
 async function loadState() {
   const st = await api('/state');
@@ -389,11 +390,21 @@ function wirePods(view) {
     if (!await confirmBox(`Finish ${esc(pod.name)}?`, msg, 'Finish & save')) return;
     try { await post(`/pods/${pod.id}/finish`); S.history = null; S.pools = null; await loadState(); go('#history'); } catch (err) { fail(err); }
   });
+  $$('[data-delete]', view).forEach(b => b.onclick = () => deletePodFlow(podById(b.dataset.delete)));
   $$('[data-discard]', view).forEach(b => b.onclick = async () => {
     const pod = podById(b.dataset.discard);
     if (!await confirmBox(`Discard ${esc(pod.name)}?`, 'It will not be saved to History, and any opened cards leave the players\' pools.', 'Discard', true)) return;
     try { await post(`/pods/${pod.id}/discard`); S.pools = null; await loadState(); render(); } catch (err) { fail(err); }
   });
+}
+
+// Admin: permanently delete a pod and everything in it (packs, pulls, pool cards).
+async function deletePodFlow(pod) {
+  const cards = pod.players.reduce((s, p) => s + p.packs.reduce((t, k) => t + (k.cards?.length || 0), 0), 0);
+  if (!await confirmBox(`Delete ${esc(pod.name)} for good?`,
+    `This permanently removes ${esc(pod.name)}${pod.status === 'done' ? ' from History' : ''}, its spin and every pack in it${cards ? `, and takes its <b>${cards} opened cards</b> out of the players' pools` : ''}. It can't be undone.`,
+    '🗑 Delete pod', true)) return;
+  try { await del(`/pods/${pod.id}`); S.history = null; S.pools = null; await loadState(); render(); toast(`${esc(pod.name)} deleted.`, 'good'); } catch (err) { fail(err); }
 }
 
 function podPanel(pod) {
@@ -411,6 +422,7 @@ function podPanel(pod) {
         ${pod.spin ? `<a class="btn gold" href="#packs?pod=${pod.id}">Open packs →</a>` : ''}
         ${member && pod.status === 'awarded' ? `<button class="btn" data-finish="${pod.id}">Finish pod</button>` : ''}
         ${member ? `<button class="btn danger sm" data-discard="${pod.id}">Discard</button>` : ''}
+        ${isAdmin() ? `<button class="btn danger sm" data-delete="${pod.id}" title="Admin: delete this pod permanently">🗑 Delete</button>` : ''}
       </div>
     </div>
     <div class="players">${pod.players.map(p => playerCard(p, pod, member)).join('')}</div>
@@ -906,7 +918,7 @@ function cardModal(c) {
 // =============== POOLS TAB ===============
 // Each player's legal cards beyond their precon: everything they've opened in
 // a running or finished pod.
-let poolFilter = { q: '', rarity: '', sort: 'rarity' };
+let poolFilter = { q: '', rarity: '', sort: 'rarity', pod: '' };
 async function renderPools(view) {
   if (!S.pools) {
     view.innerHTML = '<div class="spinner"></div>';
@@ -916,7 +928,10 @@ async function renderPools(view) {
   const pools = S.pools;
   if (!pools.length) { view.innerHTML = `<div class="empty"><h2>No players yet</h2></div>`; return; }
   const pool = pools.find(p => p.userId === S.params.player) || pools.find(p => p.userId === S.me.id) || pools[0];
-  const cards = pool.packs.flatMap(k => k.cards);
+  if (poolFilter.pod && !pool.pods.some(x => x.id === poolFilter.pod)) poolFilter.pod = '';
+  const packs = pool.packs.filter(k => !poolFilter.pod || k.podId === poolFilter.pod);
+  const cards = packs.flatMap(k => k.cards);
+  const podName = poolFilter.pod && pool.pods.find(x => x.id === poolFilter.pod)?.name;
   // Group identical printings (foil kept apart) with a count.
   const groups = new Map();
   for (const c of cards) {
@@ -931,11 +946,14 @@ async function renderPools(view) {
     <div class="player-tabs">${pools.map(p => `<a href="#pools?player=${p.userId}" class="${p.userId === pool.userId ? 'sel' : ''}">${esc(p.username)} <span class="dim">${p.packs.reduce((s, k) => s + k.cards.length, 0)}</span></a>`).join('')}</div>
     <div class="panel pool-head">
       <div>
-        <h2 style="margin:0">${esc(pool.username)}'s pool</h2>
-        <div class="small muted">${pool.precon ? `Precon: <b>${esc(pool.precon)}</b> · ` : ''}${plural(pool.pods, 'pod')} · ${plural(pool.packs.length, 'pack')} · ${plural(cards.length, 'card')}</div>
+        <h2 style="margin:0">${esc(pool.username)}'s pool${podName ? ` <span class="muted" style="font-size:.9rem">from ${esc(podName)}</span>` : ''}</h2>
+        <div class="small muted">${pool.precon ? `Precon: <b>${esc(pool.precon)}</b> · ` : ''}${plural(pool.pods.length, 'pod')} · ${plural(packs.length, 'pack')} · ${plural(cards.length, 'card')}</div>
         <div class="row" style="margin-top:8px"><span class="chip gold">★ ${count('mythic')} mythic</span><span class="chip">◆ ${count('rare')} rare</span><span class="chip">${count('uncommon')} uncommon</span><span class="chip">${count('common')} common</span></div>
       </div>
-      ${cards.length ? `<button class="btn gold" id="copyPool">📋 Copy whole pool</button>` : ''}
+      <div class="row">
+        ${pool.pods.length ? `<select class="input" id="pp" title="Show cards from one pod"><option value="">All pods</option>${pool.pods.map(x => `<option value="${x.id}" ${poolFilter.pod === x.id ? 'selected' : ''}>${esc(x.name)}${x.status === 'done' ? '' : ' (running)'}</option>`).join('')}</select>` : ''}
+        ${cards.length ? `<button class="btn gold" id="copyPool">📋 Copy ${podName ? 'these cards' : 'whole pool'}</button>` : ''}
+      </div>
     </div>
     ${cards.length ? `
     <div class="set-tools">
@@ -948,10 +966,11 @@ async function renderPools(view) {
       </select>
     </div>
     <div class="cards" id="poolCards"></div>
-    <details class="panel" style="margin-top:18px"><summary class="muted" style="cursor:pointer">Packs in this pool (${pool.packs.length})</summary>
-      <div class="row" style="margin-top:10px">${pool.packs.map(k => `<span class="chip">${icon(k.set)}${esc(k.set.name)}${k.source === 'sacrifice' ? ' 🔥' : ''} <span class="dim">· ${esc(k.podName)}</span></span>`).join('')}</div>
+    <details class="panel" style="margin-top:18px"><summary class="muted" style="cursor:pointer">Packs in this pool (${packs.length})</summary>
+      <div class="row" style="margin-top:10px">${packs.map(k => `<span class="chip">${icon(k.set)}${esc(k.set.name)}${k.source === 'sacrifice' ? ' 🔥' : ''} <span class="dim">· ${esc(k.podName)}</span></span>`).join('')}</div>
     </details>` : `<div class="empty"><p>${pool.userId === S.me.id ? 'Your' : `${esc(pool.username)}'s`} pool is empty. Cards show up here as soon as packs are opened.</p></div>`}`;
-  $('#copyPool', view)?.addEventListener('click', () => copyText(listText(cards), `${pool.username}'s pool (${cards.length} cards)`));
+  $('#copyPool', view)?.addEventListener('click', () => copyText(listText(cards), `${pool.username}'s pool${podName ? ` from ${podName}` : ''} (${cards.length} cards)`));
+  $('#pp', view)?.addEventListener('change', e => { poolFilter.pod = e.target.value; renderPools(view); });
   if (!cards.length) return;
   const paint = () => {
     const q = poolFilter.q.trim().toLowerCase();
@@ -1100,7 +1119,7 @@ async function renderHistory(view) {
       return `<details class="hgame"><summary>
         <div><b style="font-family:Cinzel">${esc(g.name)} · ${fmtDate(g.finishedAt || g.createdAt)}</b> <span class="muted">· 👑 ${esc(w?.name || '—')}${w?.precon ? ` with ${esc(w.precon)}` : ''}${g.spin ? ` · spun ${esc(g.spin.set.name)}` : ''}</span></div>
         <div class="row">${g.spin ? icon(g.spin.set) : ''}${g.players.flatMap(p => p.packs).filter(k => k.source === 'sacrifice' && k.status !== 'choosing').slice(0, 8).map(k => icon(k.set)).join('')}</div>
-      </summary><div class="body">${g.players.map(p => {
+      </summary><div class="body">${isAdmin() ? `<div class="spread small muted" style="margin-bottom:8px"><span>Admin: deleting removes this pod from History and its cards from the pools.</span><button class="btn danger sm" data-hdel="${g.id}">🗑 Delete pod</button></div>` : ''}${g.players.map(p => {
         const pulls = p.packs.filter(k => k.status === 'opened').flatMap(k => k.cards);
         const hits = sortForReveal(pulls).reverse().filter(c => c.rarity === 'mythic' || c.rarity === 'rare');
         return `<div class="hplayer">
@@ -1112,6 +1131,7 @@ async function renderHistory(view) {
       }).join('')}</div></details>`;
     }).join('')}</div>`;
   const lookup = key => { const [gid, pid] = key.split(':'); const g = pods.find(x => x.id === gid); return g?.players.find(p => p.id === pid); };
+  $$('[data-hdel]', view).forEach(b => b.onclick = () => deletePodFlow(pods.find(x => x.id === b.dataset.hdel)));
   $$('[data-copy]', view).forEach(b => b.onclick = () => {
     const p = lookup(b.dataset.copy);
     const pulls = p.packs.filter(k => k.status === 'opened').flatMap(k => k.cards);

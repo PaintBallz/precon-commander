@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { savePod, loadPod, activePods, finishedPods, kvGet, kvSet } from './db.js';
+import { savePod, loadPod, activePods, finishedPods, deletePod, poolCards, poolPods, setInfoFor, kvGet, kvSet } from './db.js';
 import { getBoosterSets, BOOSTER_SET_TYPES } from './scryfall.js';
 import { openPack, hasRealPack, realPackKind, localPackSets } from './packs.js';
 import { requireAuth, requireAdmin, authRoutes, seedAdmin, listUsers, getUser } from './auth.js';
@@ -307,6 +307,17 @@ app.post('/api/pods/:id/discard', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// Admin: permanently delete a pod (running, finished or discarded). Its
+// players, packs and pool cards go with it.
+app.delete('/api/pods/:id', wrap(async (req, res) => {
+  requireAdmin(req);
+  const pod = loadPod(req.params.id);
+  if (!pod) throw new HttpError(404, 'Pod not found');
+  deletePod(pod.id);
+  broadcast('state', { podId: pod.id, deleted: true });
+  res.json({ ok: true, deleted: { id: pod.id, name: pod.name } });
+}));
+
 app.get('/api/history', (req, res) => res.json({ pods: finishedPods() }));
 app.get('/api/pods/:id', (req, res) => {
   const pod = loadPod(req.params.id);
@@ -315,19 +326,27 @@ app.get('/api/pods/:id', (req, res) => {
 });
 
 // ---------- pools ----------
-// A player's pool = every card they've opened in a running or finished pod
-// (discarded pods don't count). Their precon is separate and not listed.
+// A player's pool = their pool_cards in running or finished pods (discarded
+// or deleted pods don't count), grouped by the pod and pack each came from.
+// Their precon is separate and not listed. ?pod=<id> narrows to one pod.
 app.get('/api/pools', (req, res) => {
-  const pools = new Map(listUsers().map(u => [u.id, { userId: u.id, username: u.username, precon: u.precon || '', packs: [], pods: 0 }]));
-  for (const pod of [...activePods(), ...finishedPods()]) {
-    for (const p of pod.players) {
-      const pool = pools.get(p.id) || { userId: p.id, username: p.name, precon: p.precon, packs: [], pods: 0 };
-      pool.pods++;
-      for (const k of p.packs) if (k.status === 'opened') {
-        pool.packs.push({ podId: pod.id, podName: pod.name, at: k.openedAt, set: k.set, source: k.source, cards: k.cards });
-      }
-      pools.set(p.id, pool);
+  const only = req.query.pod ? String(req.query.pod) : null;
+  const pools = new Map(listUsers().map(u => [u.id, { userId: u.id, username: u.username, precon: u.precon || '', pods: [], packs: [] }]));
+  const ensure = (userId, name) => pools.get(userId) || pools.set(userId, { userId, username: name || 'former player', precon: '', pods: [], packs: [] }).get(userId);
+  for (const r of poolPods()) {
+    if (only && r.id !== only) continue;
+    ensure(r.user_id).pods.push({ id: r.id, name: r.name, status: r.status, createdAt: r.created_at });
+  }
+  const packs = new Map();
+  for (const r of poolCards()) {
+    if (only && r.pod_id !== only) continue;
+    let k = packs.get(r.pack_id);
+    if (!k) {
+      k = { packId: r.pack_id, podId: r.pod_id, podName: r.pod_name, at: r.opened_at, set: setInfoFor(r.pack_set), source: r.source, cards: [] };
+      packs.set(r.pack_id, k);
+      ensure(r.user_id).packs.push(k);
     }
+    k.cards.push(r.card);
   }
   res.json({ pools: [...pools.values()].sort((a, b) => a.username.localeCompare(b.username)) });
 });
