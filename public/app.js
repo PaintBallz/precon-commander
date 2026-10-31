@@ -1,4 +1,6 @@
 // Pre-Con Commander — client. Plain ES modules, no build step.
+// League = everyone with an account. Pod = one game of 2–4 players; its winner
+// spins the wheel once and every player's packs come from that set.
 import { cardLine, listText } from './decklist.js';
 const $ = (sel, el = document) => el.querySelector(sel);
 const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
@@ -9,10 +11,11 @@ const store = {
 };
 
 const S = {
-  game: null, lastPlayers: [], sets: [], setsByCode: new Map(), wheel: [], settings: null, types: [],
-  history: null, route: 'game', params: {},
-  me: store.get('me', ''), sound: store.get('sound', true),
-  wheelPlayer: null, packsPlayer: null, revealPackId: null,
+  me: null, passwordRules: '', emailEnabled: false,
+  pods: [], members: [], sets: [], setsByCode: new Map(), wheel: [], settings: null, types: [],
+  history: null, pools: null, route: 'pods', params: {},
+  sound: store.get('sound', true),
+  podId: null, packsPlayer: null,
   seenSpins: new Set(), animatePacks: new Set(), spinning: false, rot: 0,
 };
 
@@ -24,6 +27,8 @@ async function api(path, opts = {}) {
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   const json = await res.json().catch(() => ({}));
+  if (res.status === 401 && json.loggedOut && !path.startsWith('/auth/')) { showAuth(); throw new Error('Please log in.'); }
+  if (res.status === 403 && json.mustChange) { S.me = { ...S.me, mustChange: true }; showAuth(); throw new Error(json.error); }
   if (!res.ok) throw new Error(json.error || `Request failed (${res.status})`);
   return json;
 }
@@ -31,9 +36,8 @@ const post = (path, body = {}) => api(path, { method: 'POST', body });
 
 async function loadState() {
   const st = await api('/state');
-  S.game = st.game;
-  S.lastPlayers = st.lastPlayers;
-  fillMe();
+  S.me = st.me; S.pods = st.pods; S.members = st.members;
+  paintMe();
 }
 async function loadSets() {
   const d = await api('/sets');
@@ -50,29 +54,28 @@ function toast(msg, kind = '') {
   setTimeout(() => el.remove(), 4200);
 }
 const fail = err => toast(esc(err.message || err), 'err');
-const players = () => S.game?.players || [];
-const playerById = id => players().find(p => p.id === id);
-const allPacks = () => players().flatMap(p => p.packs.map(k => ({ ...k, player: p })));
-const findPack = id => allPacks().find(k => k.id === id);
+const isAdmin = () => !!S.me?.isAdmin;
+const podById = id => S.pods.find(p => p.id === id);
+const myPod = () => S.pods.find(p => p.players.some(x => x.id === S.me?.id));
+function currentPod() {
+  const pod = podById(S.params.pod) || podById(S.podId) || myPod() || S.pods[0] || null;
+  S.podId = pod?.id || null;
+  return pod;
+}
+const canAct = player => isAdmin() || player.id === S.me?.id;
+const spunPacks = p => p.packs.filter(k => k.status === 'ready' && k.source === 'wheel');
+const findPack = (pod, id) => { for (const p of pod?.players || []) { const k = p.packs.find(k => k.id === id); if (k) return { ...k, player: p }; } return null; };
 const icon = (set, cls = '') => set?.icon ? `<img class="set-icon ${cls}" src="${esc(set.icon)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : '';
 const pct = n => n >= 0.1 ? (n * 100).toFixed(1) + '%' : n > 0 ? (n * 100).toFixed(2) + '%' : '—';
 const typeLabel = t => ({ expansion: 'Expansion', core: 'Core', masters: 'Masters', draft_innovation: 'Draft Innovation' }[t] || t);
 const fmtDate = iso => new Date(iso).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 const RARITY_ORDER = { common: 0, uncommon: 1, rare: 2, mythic: 3, special: 3, bonus: 3 };
+const kindLabel = code => { const m = S.setsByCode.get(code); return m?.realPack ? `${{ play: 'Play', draft: 'Draft', set: 'Set' }[m.packKind]} Booster` : 'Booster'; };
 
-function defaultPlayer() {
-  const ps = players();
-  const me = ps.find(p => p.name === S.me);
-  return me || ps.find(p => p.remaining > 0) || ps[0] || null;
+function paintMe() {
+  $('#meBtn').innerHTML = S.me ? `${isAdmin() ? '<span class="chip gold">admin</span>' : ''}<span>${esc(S.me.username)}</span>` : '';
 }
-
-function fillMe() {
-  const sel = $('#meSelect');
-  const names = players().map(p => p.name);
-  if (S.me && !names.includes(S.me)) names.push(S.me);
-  sel.innerHTML = `<option value="">—</option>` + names.map(n => `<option ${n === S.me ? 'selected' : ''}>${esc(n)}</option>`).join('');
-}
-$('#meSelect').addEventListener('change', e => { S.me = e.target.value; store.set('me', S.me); S.wheelPlayer = S.packsPlayer = null; render(); });
 const soundBtn = $('#soundBtn');
 const paintSound = () => { soundBtn.textContent = S.sound ? '🔊' : '🔇'; };
 paintSound();
@@ -92,123 +95,26 @@ async function copyText(text, what = 'List') {
 }
 
 // ---------------- routing ----------------
+const ROUTES = ['pods', 'wheel', 'packs', 'pools', 'sets', 'history', 'account'];
 function parseRoute() {
   const [r, q] = location.hash.replace(/^#/, '').split('?');
-  S.route = ['game', 'wheel', 'packs', 'sets', 'history'].includes(r) ? r : 'game';
+  S.route = ROUTES.includes(r) ? r : 'pods';
   S.params = Object.fromEntries(new URLSearchParams(q || ''));
 }
 const go = hash => { if (location.hash === hash) { parseRoute(); render(); } else location.hash = hash; };
-window.addEventListener('hashchange', () => { parseRoute(); render(); window.scrollTo(0, 0); });
+window.addEventListener('hashchange', () => {
+  if (location.hash.startsWith('#reset')) { showAuth(); return; }
+  if (!S.me || S.me.mustChange) return;
+  parseRoute(); render(); window.scrollTo(0, 0);
+});
 
 function render() {
+  if (!S.me || S.me.mustChange) { showAuth(); return; }
+  $('#top').hidden = false;
   $$('#tabs a').forEach(a => a.classList.toggle('active', a.dataset.tab === S.route));
   const view = $('#view');
   if (S.route !== 'wheel') stopWheelLoop();
-  ({ game: renderGame, wheel: renderWheel, packs: renderPacks, sets: renderSets, history: renderHistory })[S.route](view);
-}
-
-// =============== GAME TAB ===============
-function renderGame(view) {
-  const g = S.game;
-  if (!g) {
-    const seed = S.lastPlayers.length ? S.lastPlayers : [{}, {}, {}, {}];
-    view.innerHTML = `
-      <div class="hero"><div>
-        <h1>New Game Night</h1>
-        <p>Everyone starts with one precon. When the game ends, the winner gets <b>3 packs</b> and everyone else gets <b>2</b>, each spun from the wheel.</p>
-      </div></div>
-      <form class="panel player-form" id="newGame">
-        <div class="pf-rows"></div>
-        <div class="spread" style="margin-top:6px">
-          <button type="button" class="btn ghost sm" id="addP">+ Add player</button>
-          <button class="btn gold big">Start game</button>
-        </div>
-      </form>`;
-    const rows = $('.pf-rows', view);
-    const addRow = (p = {}) => {
-      const n = rows.children.length + 1;
-      const d = document.createElement('div');
-      d.className = 'pf-row';
-      d.innerHTML = `<span class="num">${n}</span>
-        <input type="text" name="name" placeholder="Player ${n}" value="${esc(p.name || '')}" maxlength="40" required>
-        <input type="text" class="precon" name="precon" placeholder="Precon / commander (optional)" value="${esc(p.precon || '')}" maxlength="80">
-        <button type="button" class="btn ghost sm rm" title="Remove">✕</button>`;
-      $('.rm', d).onclick = () => { if (rows.children.length > 2) { d.remove(); $$('.num', rows).forEach((e, i) => e.textContent = i + 1); } };
-      rows.append(d);
-    };
-    seed.forEach(addRow);
-    $('#addP', view).onclick = () => rows.children.length < 8 && addRow();
-    $('#newGame', view).onsubmit = async e => {
-      e.preventDefault();
-      const ps = $$('.pf-row', rows).map(r => ({ name: $('[name=name]', r).value, precon: $('[name=precon]', r).value }));
-      try { await post('/game', { players: ps }); await loadState(); render(); toast('Game on — good luck! 🎲', 'good'); } catch (err) { fail(err); }
-    };
-    return;
-  }
-
-  const awarded = g.status === 'awarded';
-  const totalLeft = g.players.reduce((s, p) => s + p.remaining + p.packs.filter(k => k.status !== 'opened').length, 0);
-  view.innerHTML = `
-    <div class="hero">
-      <div>
-        <h1>${awarded ? 'Claim Your Packs' : 'Game in Progress'}</h1>
-        <p>${awarded
-          ? `Winner gets 3 packs, everyone else gets 2. Spin the wheel for each one, or <b>Sacrifice a Pack</b> to pick any set you want.`
-          : `Started ${fmtDate(g.createdAt)}. When the game ends, crown the winner to hand out packs.`}</p>
-      </div>
-      <div class="row">
-        ${awarded ? `<a class="btn gold" href="#wheel">Spin the wheel →</a>` : ''}
-        ${awarded ? `<button class="btn" id="finish">Finish game night</button>` : ''}
-        <button class="btn danger sm" id="discard">Discard game</button>
-      </div>
-    </div>
-    <div class="players">${g.players.map(p => playerCard(p, g)).join('')}</div>`;
-
-  $$('[data-win]', view).forEach(b => b.onclick = async () => {
-    const p = playerById(b.dataset.win);
-    if (!await confirmBox(`Crown <b>${esc(p.name)}</b> the winner?`, `${esc(p.name)} gets 3 packs, everyone else gets 2.`, 'Crown winner 👑')) return;
-    try { await post('/game/winner', { playerId: p.id }); await loadState(); render(); } catch (err) { fail(err); }
-  });
-  $$('[data-award]', view).forEach(b => b.onclick = async () => {
-    try { await post('/game/award', { playerId: b.dataset.award, delta: Number(b.dataset.delta) }); await loadState(); render(); } catch (err) { fail(err); }
-  });
-  $('#finish', view)?.addEventListener('click', async () => {
-    const msg = totalLeft ? `There are still <b>${totalLeft}</b> unopened/unspun packs. They'll be saved in history as-is.` : 'All packs are opened. This saves the game to History.';
-    if (!await confirmBox('Finish this game night?', msg, 'Finish & save')) return;
-    try { await post('/game/finish'); S.history = null; await loadState(); go('#history'); } catch (err) { fail(err); }
-  });
-  $('#discard', view).onclick = async () => {
-    if (!await confirmBox('Discard this game?', 'It will not be saved to History. Packs already opened are lost.', 'Discard', true)) return;
-    try { await post('/game/discard'); await loadState(); render(); } catch (err) { fail(err); }
-  };
-}
-
-function playerCard(p, g) {
-  const won = g.winnerId === p.id;
-  const pips = [
-    ...p.packs.map(k => `<span class="pip ${k.status === 'opened' ? 'opened' : 'ready'}" title="${esc(k.set?.name || 'Choosing a set…')}">${k.set ? `<img src="${esc(k.set.icon || '')}" alt="">` : '?'}</span>`),
-    ...Array.from({ length: p.sacrificed }, () => `<span class="pip sac" title="Sacrificed"></span>`),
-    ...Array.from({ length: Math.max(0, p.remaining) }, () => `<span class="pip unspun" title="Not spun yet"></span>`),
-  ].join('');
-  const opened = p.packs.filter(k => k.status === 'opened').length;
-  return `<div class="pcard ${won ? 'winner' : ''}">
-    ${won ? '<span class="crown">👑</span>' : ''}
-    <div>
-      <div class="pname">${esc(p.name)}</div>
-      ${p.precon ? `<div class="precon">${esc(p.precon)}</div>` : ''}
-    </div>
-    ${g.status === 'playing'
-      ? `<button class="btn gold" data-win="${p.id}">👑 Won the game</button>`
-      : `<div class="pips">${pips || '<span class="dim small">No packs</span>'}</div>
-         <div class="stat-line"><span><b>${p.awarded}</b> awarded</span><span><b>${p.remaining}</b> to spin</span><span><b>${opened}</b> opened</span>${p.sacrificed ? `<span><b>${p.sacrificed}</b> sacrificed</span>` : ''}</div>
-         <div class="row">
-           <a class="btn sm ${p.remaining ? 'gold' : ''}" href="#wheel?player=${p.id}">${p.remaining ? 'Spin' : 'Wheel'}</a>
-           <a class="btn sm" href="#packs?player=${p.id}">Packs</a>
-           <span style="flex:1"></span>
-           <button class="btn ghost sm" data-award="${p.id}" data-delta="-1" title="Remove a pack">−</button>
-           <button class="btn ghost sm" data-award="${p.id}" data-delta="1" title="Add a pack">+</button>
-         </div>`}
-  </div>`;
+  ({ pods: renderPods, wheel: renderWheel, packs: renderPacks, pools: renderPools, sets: renderSets, history: renderHistory, account: renderAccount })[S.route](view);
 }
 
 function confirmBox(title, body, okLabel = 'OK', danger = false) {
@@ -225,6 +131,316 @@ function confirmBox(title, body, okLabel = 'OK', danger = false) {
     $$('[data-r]', m).forEach(b => b.onclick = () => done(b.dataset.r === '1'));
     m.onclick = e => { if (e.target === m) done(false); };
   });
+}
+
+// =============== LOGIN / SIGN UP / RESET ===============
+let authMode = 'login';
+function showAuth() {
+  $('#top').hidden = true;
+  stopWheelLoop();
+  const view = $('#view');
+  const resetToken = location.hash.startsWith('#reset') ? new URLSearchParams(location.hash.split('?')[1] || '').get('token') : null;
+  if (resetToken) return renderReset(view, resetToken);
+  if (S.me?.mustChange) return renderMustChange(view);
+  const tabs = `<div class="auth-tabs">
+      <button data-m="login" class="${authMode === 'login' ? 'sel' : ''}">Log in</button>
+      <button data-m="signup" class="${authMode === 'signup' ? 'sel' : ''}">Sign up</button>
+    </div>`;
+  const forms = {
+    login: `<form id="authForm" class="grid">
+        <label>Username or email<input name="username" autocomplete="username" required maxlength="254"></label>
+        <label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="128"></label>
+        <button class="btn gold big">Log in</button>
+        <button type="button" class="link-btn" data-m="forgot">Forgot your password?</button>
+      </form>`,
+    signup: `<form id="authForm" class="grid">
+        <label>Username<input name="username" autocomplete="username" required minlength="3" maxlength="20" pattern="[A-Za-z0-9_\\-]{3,20}" title="3–20 letters, numbers, _ or -"></label>
+        <label>Email <span class="dim small">(to recover your account)</span><input name="email" type="email" autocomplete="email" required maxlength="254"></label>
+        <label>Password<input name="password" type="password" autocomplete="new-password" required minlength="8" maxlength="128"></label>
+        <p class="small muted" style="margin:-4px 0 0">${esc(S.passwordRules)}</p>
+        <button class="btn gold big">Create account</button>
+      </form>`,
+    forgot: `<form id="authForm" class="grid">
+        <p class="muted" style="margin:0">Enter the email on your account and we'll send you a link to set a new password.</p>
+        <label>Email<input name="email" type="email" autocomplete="email" required maxlength="254"></label>
+        <button class="btn gold big">Send reset link</button>
+        <button type="button" class="link-btn" data-m="login">Back to log in</button>
+      </form>`,
+  };
+  view.innerHTML = `<div class="auth-wrap"><div class="panel auth-box">
+      <div class="auth-brand"><img src="/favicon.svg" alt="" width="44" height="44"><div><h1>Pre-Con <b>Commander</b></h1><p class="muted small">League pods, one wheel spin, every pull tracked.</p></div></div>
+      ${authMode === 'forgot' ? '<h2>Reset password</h2>' : tabs}
+      ${forms[authMode]}
+    </div></div>`;
+  $$('[data-m]', view).forEach(b => b.onclick = () => { authMode = b.dataset.m; showAuth(); });
+  $('#authForm', view).onsubmit = async e => {
+    e.preventDefault();
+    const f = Object.fromEntries(new FormData(e.target));
+    const btn = $('button.gold', e.target); btn.disabled = true;
+    try {
+      if (authMode === 'forgot') {
+        const r = await post('/auth/forgot', f);
+        view.querySelector('.auth-box form').outerHTML = r.emailEnabled
+          ? `<p>If an account uses <b>${esc(f.email)}</b>, a reset link is on its way. It works for one hour.</p><button class="btn" data-m="login">Back to log in</button>`
+          : `<p>Email sending isn't set up yet. Ask the league admin for a password reset link.</p><button class="btn" data-m="login">Back to log in</button>`;
+        $$('[data-m]', view).forEach(b => b.onclick = () => { authMode = b.dataset.m; showAuth(); });
+        return;
+      }
+      const r = await post(authMode === 'signup' ? '/auth/signup' : '/auth/login', f);
+      await enterApp(r.user);
+    } catch (err) { fail(err); btn.disabled = false; }
+  };
+  $('input', view)?.focus();
+}
+
+function passwordFields(withCurrent) {
+  return `${withCurrent ? '<label>Current password<input name="current" type="password" autocomplete="current-password" required maxlength="128"></label>' : ''}
+    <label>New password<input name="password" type="password" autocomplete="new-password" required minlength="8" maxlength="128"></label>
+    <label>Confirm new password<input name="confirm" type="password" autocomplete="new-password" required minlength="8" maxlength="128"></label>
+    <p class="small muted" style="margin:-4px 0 0">${esc(S.passwordRules)}</p>`;
+}
+const mismatch = f => { if (f.password !== f.confirm) { toast('The two new passwords don\'t match.', 'err'); return true; } return false; };
+
+function renderMustChange(view) {
+  view.innerHTML = `<div class="auth-wrap"><div class="panel auth-box">
+      <h2>Choose a new password</h2>
+      <p class="muted">${esc(S.me.username)} is still on the default password. Set your own before going in.</p>
+      <form id="pwForm" class="grid">${passwordFields(true)}<button class="btn gold big">Save password</button></form>
+      <button class="link-btn" id="lo">Log out</button>
+    </div></div>`;
+  $('#pwForm', view).onsubmit = async e => {
+    e.preventDefault();
+    const f = Object.fromEntries(new FormData(e.target));
+    if (mismatch(f)) return;
+    try { const r = await post('/auth/password', f); toast('Password saved.', 'good'); await enterApp(r.user); } catch (err) { fail(err); }
+  };
+  $('#lo', view).onclick = logout;
+}
+
+function renderReset(view, token) {
+  view.innerHTML = `<div class="auth-wrap"><div class="panel auth-box">
+      <h2>Set a new password</h2>
+      <form id="pwForm" class="grid">${passwordFields(false)}<button class="btn gold big">Save and log in</button></form>
+    </div></div>`;
+  $('#pwForm', view).onsubmit = async e => {
+    e.preventDefault();
+    const f = Object.fromEntries(new FormData(e.target));
+    if (mismatch(f)) return;
+    try {
+      const r = await post('/auth/reset', { token, password: f.password });
+      history.replaceState(null, '', '#pods');
+      toast('Password updated. You\'re logged in.', 'good');
+      await enterApp(r.user);
+    } catch (err) { fail(err); }
+  };
+}
+
+async function enterApp(user) {
+  S.me = user;
+  if (user.mustChange) { showAuth(); return; }
+  $('#view').innerHTML = '<div class="spinner"></div>';
+  await Promise.all([loadState(), loadSets()]);
+  for (const pod of S.pods) if (pod.spin) S.seenSpins.add(pod.spin.id);
+  if (!location.hash || location.hash.startsWith('#reset')) history.replaceState(null, '', myPod()?.spin ? '#wheel' : '#pods');
+  parseRoute();
+  render();
+  connect();
+}
+
+async function logout() {
+  try { await post('/auth/logout'); } catch { /* already gone */ }
+  S.me = null; authMode = 'login';
+  es?.close(); es = null;
+  history.replaceState(null, '', '#');
+  showAuth();
+}
+
+// =============== ACCOUNT TAB ===============
+async function renderAccount(view) {
+  const me = S.me;
+  view.innerHTML = `
+    <div class="hero"><div><h1>${esc(me.username)}</h1><p>${isAdmin() ? 'League admin. ' : ''}Member since ${fmtDate(me.createdAt)}.</p></div>
+      <div class="row"><button class="btn danger" id="lo">Log out</button></div></div>
+    <div class="account-grid">
+      <form class="panel grid" id="profForm">
+        <h2>Profile</h2>
+        <label>Email <span class="dim small">(for password recovery)</span><input name="email" type="email" value="${esc(me.email)}" maxlength="254" ${me.email ? '' : 'placeholder="Add an email"'}></label>
+        <label>Your precon / commander<input name="precon" value="${esc(me.precon)}" maxlength="80" placeholder="e.g. Animated Army"></label>
+        <p class="small muted" style="margin:0">Your precon fills in automatically when you join a pod. Its cards aren't listed in your pool.</p>
+        <button class="btn gold">Save profile</button>
+      </form>
+      <form class="panel grid" id="pwForm">
+        <h2>Change password</h2>
+        ${passwordFields(true)}
+        <button class="btn gold">Change password</button>
+      </form>
+    </div>
+    <div id="adminBox"></div>`;
+  $('#lo', view).onclick = logout;
+  $('#profForm', view).onsubmit = async e => {
+    e.preventDefault();
+    const f = Object.fromEntries(new FormData(e.target));
+    if (!f.email) delete f.email;
+    try { const r = await api('/auth/profile', { method: 'PUT', body: f }); S.me = r.user; paintMe(); toast('Profile saved.', 'good'); } catch (err) { fail(err); }
+  };
+  $('#pwForm', view).onsubmit = async e => {
+    e.preventDefault();
+    const f = Object.fromEntries(new FormData(e.target));
+    if (mismatch(f)) return;
+    try { await post('/auth/password', f); e.target.reset(); toast('Password changed. Other devices were logged out.', 'good'); } catch (err) { fail(err); }
+  };
+  if (!isAdmin()) return;
+  let d;
+  try { d = await api('/admin/users'); } catch (err) { fail(err); return; }
+  if (S.route !== 'account') return;
+  $('#adminBox', view).innerHTML = `<div class="panel" style="margin-top:18px;overflow-x:auto">
+      <h2>League members</h2>
+      <p class="small muted">${d.emailEnabled ? 'Password-reset emails are on.' : 'Password-reset emails are <b>off</b> (no SMTP server configured). Use <b>Reset link</b> and send the link to the player yourself.'}</p>
+      <table class="standings"><thead><tr><th>Username</th><th>Email</th><th>Precon</th><th>Joined</th><th></th></tr></thead>
+      <tbody>${d.users.map(u => `<tr><td><b>${esc(u.username)}</b>${u.isAdmin ? ' <span class="chip gold">admin</span>' : ''}</td><td class="small">${esc(u.email) || '<span class="dim">—</span>'}</td><td class="small muted">${esc(u.precon) || '—'}</td><td class="small muted">${new Date(u.createdAt).toLocaleDateString()}</td>
+        <td style="text-align:right">${u.id === me.id ? '' : `<button class="btn sm" data-reset="${u.id}" data-name="${esc(u.username)}">Reset link</button>`}</td></tr>`).join('')}</tbody></table>
+    </div>`;
+  $$('[data-reset]', view).forEach(b => b.onclick = async () => {
+    try {
+      const r = await post(`/admin/users/${b.dataset.reset}/reset-link`);
+      const m = $('#modal');
+      m.innerHTML = `<div class="box"><div class="dialog"><h2>Reset link for ${esc(b.dataset.name)}</h2>
+        <p class="muted">Send this to ${esc(b.dataset.name)}. It works once, for ${r.minutes} minutes.</p>
+        <pre class="list" style="white-space:pre-wrap;word-break:break-all">${esc(r.link)}</pre>
+        <div class="row" style="justify-content:flex-end"><button class="btn gold" id="cpy">📋 Copy link</button><button class="btn ghost" id="cls">Close</button></div></div></div>`;
+      m.hidden = false;
+      $('#cpy', m).onclick = () => copyText(r.link, 'Reset link');
+      $('#cls', m).onclick = () => { m.hidden = true; };
+    } catch (err) { fail(err); }
+  });
+}
+
+// =============== PODS TAB ===============
+function renderPods(view) {
+  const mine = myPod();
+  view.innerHTML = `
+    <div class="hero"><div>
+      <h1>League Pods</h1>
+      <p>A pod is one game of up to 4 players, each on their precon. When it ends, the winner gets <b>3 packs</b> and everyone else gets <b>2</b>. The winner spins the wheel <b>once</b>, and every pack in the pod is that set, unless you <b>Sacrifice a Pack</b> to pick any set.</p>
+    </div></div>
+    ${S.pods.length ? `<div class="grid" style="gap:18px;margin-bottom:24px">${S.pods.map(podPanel).join('')}</div>` : ''}
+    ${mine ? '' : newPodForm()}`;
+  wirePods(view);
+}
+
+function newPodForm() {
+  const busy = new Map(S.pods.flatMap(pod => pod.players.map(p => [p.id, pod.name])));
+  const free = S.members.filter(m => !busy.has(m.id));
+  if (free.length < 2) return `<div class="panel"><h2>Start a pod</h2><p class="muted">${S.members.length < 2 ? 'At least 2 league members need accounts. Have your friends sign up, then start a pod here.' : 'Everyone else is already in a pod.'}</p></div>`;
+  return `<form class="panel player-form" id="newPod">
+      <h2>Start a pod</h2>
+      <div class="pf-rows"></div>
+      <div class="spread" style="margin-top:6px">
+        <button type="button" class="btn ghost sm" id="addP">+ Add player</button>
+        <button class="btn gold big">Start pod</button>
+      </div>
+    </form>`;
+}
+
+function memberOptions(selected) {
+  const busy = new Map(S.pods.flatMap(pod => pod.players.map(p => [p.id, pod.name])));
+  return `<option value="">Pick a player…</option>` + S.members.map(m =>
+    `<option value="${m.id}" ${m.id === selected ? 'selected' : ''} ${busy.has(m.id) ? 'disabled' : ''}>${esc(m.username)}${busy.has(m.id) ? ` (in ${esc(busy.get(m.id))})` : ''}</option>`).join('');
+}
+
+function wirePods(view) {
+  const form = $('#newPod', view);
+  if (form) {
+    const rows = $('.pf-rows', form);
+    const addRow = (userId = '') => {
+      const n = rows.children.length + 1;
+      const d = document.createElement('div');
+      d.className = 'pf-row';
+      const m = S.members.find(x => x.id === userId);
+      d.innerHTML = `<span class="num">${n}</span>
+        <select class="input" name="userId" ${isAdmin() || n > 1 ? '' : 'disabled'}>${memberOptions(userId)}</select>
+        <input type="text" class="precon" name="precon" placeholder="Precon / commander" value="${esc(m?.precon || '')}" maxlength="80">
+        <button type="button" class="btn ghost sm rm" title="Remove" ${n === 1 && !isAdmin() ? 'disabled' : ''}>✕</button>`;
+      $('select', d).onchange = e => { const mm = S.members.find(x => x.id === e.target.value); $('.precon', d).value = mm?.precon || ''; };
+      $('.rm', d).onclick = () => { if (rows.children.length > 2) { d.remove(); $$('.num', rows).forEach((e, i) => e.textContent = i + 1); } };
+      rows.append(d);
+    };
+    addRow(S.me.id); addRow();
+    $('#addP', form).onclick = () => rows.children.length < 4 ? addRow() : toast('A pod has at most 4 players.', 'err');
+    form.onsubmit = async e => {
+      e.preventDefault();
+      const players = $$('.pf-row', rows).map(r => ({ userId: $('select', r).value, precon: $('.precon', r).value }));
+      if (players.some(p => !p.userId)) return toast('Pick a league member for every row (or remove the empty row).', 'err');
+      try { const r = await post('/pods', { players }); S.podId = r.pod.id; await loadState(); render(); toast(`${esc(r.pod.name)} is on. Good luck! 🎲`, 'good'); } catch (err) { fail(err); }
+    };
+  }
+  $$('[data-win]', view).forEach(b => b.onclick = async () => {
+    const pod = podById(b.dataset.pod), p = pod.players.find(x => x.id === b.dataset.win);
+    if (!await confirmBox(`Crown <b>${esc(p.name)}</b> the winner?`, `${esc(p.name)} gets 3 packs, everyone else gets 2, and ${esc(p.name)} spins the wheel for the whole pod.`, 'Crown winner 👑')) return;
+    try { await post(`/pods/${pod.id}/winner`, { playerId: p.id }); await loadState(); render(); } catch (err) { fail(err); }
+  });
+  $$('[data-award]', view).forEach(b => b.onclick = async () => {
+    try { await post(`/pods/${b.dataset.pod}/award`, { playerId: b.dataset.award, delta: Number(b.dataset.delta) }); await loadState(); render(); } catch (err) { fail(err); }
+  });
+  $$('[data-finish]', view).forEach(b => b.onclick = async () => {
+    const pod = podById(b.dataset.finish);
+    const left = pod.players.reduce((s, p) => s + p.packs.filter(k => k.status !== 'opened').length, 0) + (pod.spin ? 0 : pod.players.reduce((s, p) => s + p.awarded, 0));
+    const msg = left ? `There are still <b>${left}</b> unopened packs. They'll be saved in History as-is and won't be in anyone's pool.` : 'All packs are opened. This saves the pod to History.';
+    if (!await confirmBox(`Finish ${esc(pod.name)}?`, msg, 'Finish & save')) return;
+    try { await post(`/pods/${pod.id}/finish`); S.history = null; S.pools = null; await loadState(); go('#history'); } catch (err) { fail(err); }
+  });
+  $$('[data-discard]', view).forEach(b => b.onclick = async () => {
+    const pod = podById(b.dataset.discard);
+    if (!await confirmBox(`Discard ${esc(pod.name)}?`, 'It will not be saved to History, and any opened cards leave the players\' pools.', 'Discard', true)) return;
+    try { await post(`/pods/${pod.id}/discard`); S.pools = null; await loadState(); render(); } catch (err) { fail(err); }
+  });
+}
+
+function podPanel(pod) {
+  const member = pod.players.some(p => p.id === S.me.id) || isAdmin();
+  const winner = pod.players.find(p => p.id === pod.winnerId);
+  let head;
+  if (pod.status === 'playing') head = `Playing since ${new Date(pod.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}. When the game ends, crown the winner.`;
+  else if (!pod.spin) head = `👑 ${esc(winner.name)} won and spins the wheel for the whole pod.`;
+  else head = `${icon(pod.spin.set)} Spun <b>${esc(pod.spin.set.name)}</b>. Everyone opens that set, or sacrifices a pack to pick any set.`;
+  return `<div class="panel pod">
+    <div class="spread pod-head">
+      <div><h2 style="margin:0">${esc(pod.name)}</h2><div class="small muted">${head}</div></div>
+      <div class="row">
+        ${pod.status === 'awarded' && !pod.spin ? `<a class="btn gold" href="#wheel?pod=${pod.id}">${S.me.id === pod.winnerId ? 'Spin the wheel →' : 'Watch the spin →'}</a>` : ''}
+        ${pod.spin ? `<a class="btn gold" href="#packs?pod=${pod.id}">Open packs →</a>` : ''}
+        ${member && pod.status === 'awarded' ? `<button class="btn" data-finish="${pod.id}">Finish pod</button>` : ''}
+        ${member ? `<button class="btn danger sm" data-discard="${pod.id}">Discard</button>` : ''}
+      </div>
+    </div>
+    <div class="players">${pod.players.map(p => playerCard(p, pod, member)).join('')}</div>
+  </div>`;
+}
+
+function playerCard(p, pod, member) {
+  const won = pod.winnerId === p.id;
+  const pips = pod.spin ? [
+    ...p.packs.map(k => `<span class="pip ${k.status === 'opened' ? 'opened' : 'ready'}" title="${esc(k.set?.name || 'Choosing a set…')}">${k.status === 'choosing' ? '?' : `<img src="${esc(k.set.icon || '')}" alt="">`}</span>`),
+    ...Array.from({ length: p.sacrificed }, () => `<span class="pip sac" title="Sacrificed"></span>`),
+  ].join('') : Array.from({ length: p.awarded }, () => `<span class="pip unspun" title="Waiting for the spin"></span>`).join('');
+  const opened = p.packs.filter(k => k.status === 'opened').length;
+  return `<div class="pcard ${won ? 'winner' : ''} ${p.id === S.me.id ? 'me' : ''}">
+    ${won ? '<span class="crown">👑</span>' : ''}
+    <div>
+      <div class="pname">${esc(p.name)}${p.id === S.me.id ? ' <span class="dim small">(you)</span>' : ''}</div>
+      ${p.precon ? `<div class="precon">${esc(p.precon)}</div>` : ''}
+    </div>
+    ${pod.status === 'playing'
+      ? (member ? `<button class="btn gold" data-pod="${pod.id}" data-win="${p.id}">👑 Won the game</button>` : '<span class="dim small">Playing…</span>')
+      : `<div class="pips">${pips || '<span class="dim small">No packs</span>'}</div>
+         <div class="stat-line"><span><b>${pod.spin ? p.packs.length : p.awarded}</b> pack${(pod.spin ? p.packs.length : p.awarded) === 1 ? '' : 's'}</span><span><b>${opened}</b> opened</span>${p.sacrificed ? `<span><b>${p.sacrificed}</b> sacrificed</span>` : ''}</div>
+         <div class="row">
+           ${pod.spin ? `<a class="btn sm ${canAct(p) && p.packs.some(k => k.status !== 'opened') ? 'gold' : ''}" href="#packs?pod=${pod.id}&player=${p.id}">Packs</a>` : ''}
+           <span style="flex:1"></span>
+           ${isAdmin() ? `<button class="btn ghost sm" data-pod="${pod.id}" data-award="${p.id}" data-delta="-1" title="Remove a pack (admin)">−</button>
+           <button class="btn ghost sm" data-pod="${pod.id}" data-award="${p.id}" data-delta="1" title="Add a pack (admin)">+</button>` : ''}
+         </div>`}
+  </div>`;
 }
 
 // =============== WHEEL TAB ===============
@@ -309,7 +525,7 @@ function paintTicker() {
   const t = $('#ticker');
   if (!t) return;
   const seg = segUnderPointer();
-  if (!seg) { t.innerHTML = '<span class="muted">Wheel is empty — loosen the filters</span>'; return; }
+  if (!seg) { t.innerHTML = '<span class="muted">Wheel is empty — the admin needs to loosen the filters</span>'; return; }
   if (seg.code !== lastTick || t.dataset.code !== seg.code) {
     lastTick = seg.code;
     t.dataset.code = seg.code;
@@ -366,15 +582,27 @@ function animateSpin(spin) {
   });
 }
 
+// Rest the wheel on the spun set (when arriving after the spin already happened).
+function restOn(spin) {
+  const seg = wheelGeom.find(s => s.code === spin.setCode);
+  if (seg) S.rot = norm(-Math.PI / 2 - (seg.a0 + (seg.a1 - seg.a0) * (0.15 + 0.7 * spin.offset)));
+}
+
+function podSwitcher(pod, route) {
+  if (S.pods.length < 2) return '';
+  return `<div class="player-tabs">${S.pods.map(x => `<a href="#${route}?pod=${x.id}" class="${x.id === pod.id ? 'sel' : ''}">${esc(x.name)}${x.players.some(p => p.id === S.me.id) ? ' ★' : ''}</a>`).join('')}</div>`;
+}
+
 function renderWheel(view) {
-  const g = S.game;
-  if (!g) { view.innerHTML = `<div class="empty"><h2>No game yet</h2><p>Start a game first, then spin for packs after someone wins.</p><a class="btn gold" href="#game">Start a game</a></div>`; return; }
-  if (S.params.player) { S.wheelPlayer = S.params.player; }
-  const p = playerById(S.wheelPlayer) || defaultPlayer();
-  S.wheelPlayer = p?.id;
+  const pod = currentPod();
+  if (!pod) { view.innerHTML = `<div class="empty"><h2>No pods running</h2><p>Start a pod first. When it ends, the winner spins the wheel here.</p><a class="btn gold" href="#pods">Start a pod</a></div>`; return; }
   buildGeom();
+  if (pod.spin && !S.spinning) restOn(pod.spin);
   const st = S.settings;
+  const winner = pod.players.find(p => p.id === pod.winnerId);
+  const mayspin = pod.status === 'awarded' && !pod.spin && (isAdmin() || S.me.id === pod.winnerId);
   view.innerHTML = `
+    ${podSwitcher(pod, 'wheel')}
     <div class="wheel-layout">
       <div class="wheel-wrap">
         <div class="ticker" id="ticker"></div>
@@ -383,16 +611,18 @@ function renderWheel(view) {
           <canvas id="wheelCanvas"></canvas>
           <button class="hub-btn" id="spinBtn">SPIN</button>
         </div>
-        <p class="muted small" style="margin-top:12px">${S.wheel.length} sets on the wheel · <a href="#sets">tune odds per set</a></p>
+        <p class="muted small" style="margin-top:12px">${S.wheel.length} sets on the wheel · <a href="#sets">see every set's odds</a></p>
       </div>
       <div class="side">
         <div class="panel">
-          <h3>Spinning for</h3>
-          <div class="who">${g.players.map(x => `<button data-p="${x.id}" class="${x.id === p?.id ? 'sel' : ''}"><span class="n">${g.winnerId === x.id ? '👑 ' : ''}${esc(x.name)}</span><span class="r">${x.remaining} pack${x.remaining === 1 ? '' : 's'} to spin</span></button>`).join('')}</div>
+          <h3>${esc(pod.name)}</h3>
+          <p class="small muted" style="margin:0">${pod.status === 'playing' ? 'Still playing. Crown the winner on the Pods tab first.'
+            : pod.spin ? `${esc(pod.players.find(p => p.id === pod.spin.by)?.name || winner.name)} spun the wheel. One spin per pod: every pack is this set unless sacrificed.`
+            : `👑 <b>${esc(winner.name)}</b> spins once for the whole pod.${mayspin ? '' : ' Waiting for them to spin…'}`}</p>
         </div>
         <div id="revealBox"></div>
-        <details class="panel settings-box" ${store.get('wheelSettingsOpen', false) ? 'open' : ''}>
-          <summary><span>⚙️ Wheel settings</span><span class="dim small">${S.wheel.length} of ${S.sets.length} sets</span></summary>
+        ${isAdmin() ? `<details class="panel settings-box" ${store.get('wheelSettingsOpen', false) ? 'open' : ''}>
+          <summary><span>⚙️ Wheel settings <span class="chip gold">admin</span></span><span class="dim small">${S.wheel.length} of ${S.sets.length} sets</span></summary>
           <div class="grid" style="gap:14px">
             <div>
               <div class="small muted" style="margin-bottom:6px">Release years</div>
@@ -408,52 +638,52 @@ function renderWheel(view) {
               <div class="row"><a class="btn sm" href="#sets">Per-set odds</a><button class="btn sm danger" id="resetWheel">Reset wheel</button></div>
             </div>
           </div>
-        </details>
+        </details>` : ''}
       </div>
     </div>`;
 
   requestAnimationFrame(drawWheel);
-  $$('.who button', view).forEach(b => b.onclick = () => { S.wheelPlayer = b.dataset.p; history.replaceState(null, '', '#wheel'); S.params = {}; renderWheel(view); });
   const spinBtn = $('#spinBtn', view);
-  const canSpin = g.status === 'awarded' && p && p.remaining > 0 && !S.spinning && S.wheel.length;
-  spinBtn.disabled = !canSpin;
-  spinBtn.title = g.status !== 'awarded' ? 'Crown a winner first' : !p?.remaining ? `${p?.name || 'This player'} has no packs left to spin` : 'Spin!';
+  spinBtn.disabled = !mayspin || S.spinning || !S.wheel.length;
+  spinBtn.title = pod.spin ? 'This pod already spun' : pod.status !== 'awarded' ? 'Crown a winner first' : !mayspin ? `Only ${winner.name} can spin` : 'Spin!';
   spinBtn.onclick = async () => {
     spinBtn.disabled = true;
     try {
       audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
-      const { spin } = await post('/game/spin', { playerId: p.id });
+      const { spin } = await post(`/pods/${pod.id}/spin`);
       S.seenSpins.add(spin.id);
       await loadState();
-      await runSpin(spin);
+      await runSpin(pod.id, spin);
     } catch (err) { fail(err); renderWheel(view); }
   };
-  const det = $('.settings-box', view);
-  det.addEventListener('toggle', () => store.set('wheelSettingsOpen', det.open));
-  const saveFilters = async extra => {
-    const body = {
-      minYear: Number($('#minYear', view).value), maxYear: Number($('#maxYear', view).value),
-      types: $$('.types input:checked', view).map(i => i.value), ...extra,
+  if (isAdmin()) {
+    const det = $('.settings-box', view);
+    det.addEventListener('toggle', () => store.set('wheelSettingsOpen', det.open));
+    const saveFilters = async extra => {
+      const body = {
+        minYear: Number($('#minYear', view).value), maxYear: Number($('#maxYear', view).value),
+        types: $$('.types input:checked', view).map(i => i.value), ...extra,
+      };
+      try { await api('/settings', { method: 'PUT', body }); await loadSets(); renderWheel(view); } catch (err) { fail(err); }
     };
-    try { await api('/settings', { method: 'PUT', body }); await loadSets(); renderWheel(view); } catch (err) { fail(err); }
-  };
-  $('#minYear', view).onchange = () => saveFilters();
-  $('#maxYear', view).onchange = () => saveFilters();
-  $$('.types input', view).forEach(i => i.onchange = () => saveFilters());
-  $$('[data-era]', view).forEach(b => b.onclick = () => { $('#minYear', view).value = b.dataset.era; $('#maxYear', view).value = new Date().getFullYear(); saveFilters(); });
-  $('#resetWheel', view).onclick = async () => {
-    if (await confirmBox('Reset the wheel?', 'Clears year/type filters, excluded sets and every custom per-set odd.', 'Reset', true)) saveFilters({ reset: true });
-  };
-  renderReveal();
+    $('#minYear', view).onchange = () => saveFilters();
+    $('#maxYear', view).onchange = () => saveFilters();
+    $$('.types input', view).forEach(i => i.onchange = () => saveFilters());
+    $$('[data-era]', view).forEach(b => b.onclick = () => { $('#minYear', view).value = b.dataset.era; $('#maxYear', view).value = new Date().getFullYear(); saveFilters(); });
+    $('#resetWheel', view).onclick = async () => {
+      if (await confirmBox('Reset the wheel?', 'Clears year/type filters, excluded sets and every custom per-set odd.', 'Reset', true)) saveFilters({ reset: true });
+    };
+  }
+  renderReveal(pod);
 }
 
-async function runSpin(spin) {
-  if (S.route !== 'wheel') return;
+async function runSpin(podId, spin) {
+  if (S.route !== 'wheel' || S.podId !== podId) return;
   const box = $('#revealBox');
-  if (box) box.innerHTML = `<div class="reveal"><div class="inner"><span class="label">Spinning for ${esc(playerById(spin.playerId)?.name)}</span><div class="setname">…</div></div></div>`;
+  if (box) box.innerHTML = `<div class="reveal"><div class="inner"><span class="label">Spinning for the whole pod</span><div class="setname">…</div></div></div>`;
   const sb = $('#spinBtn'); if (sb) sb.disabled = true;
+  // Draw from where the wheel was before the spin landed.
   await animateSpin(spin);
-  S.revealPackId = spin.packId;
   fanfare();
   if (S.route === 'wheel') { renderWheel($('#view')); $('.reveal')?.classList.add('pop'); }
 }
@@ -469,88 +699,91 @@ async function setArt(code) {
   return p;
 }
 
-function renderReveal() {
+function renderReveal(pod) {
   const box = $('#revealBox');
   if (!box) return;
-  const g = S.game;
-  const lastSpin = g.spins.at(-1);
-  const pack = findPack(S.revealPackId) || (lastSpin && findPack(lastSpin.packId));
-  if (!pack) {
-    box.innerHTML = `<div class="reveal"><div class="inner"><span class="label">The wheel awaits</span><div class="setname">${g.status === 'awarded' ? 'Spin to reveal a set' : 'Crown a winner first'}</div><p class="muted">${g.status === 'awarded' ? 'Each spin is one booster. The set it lands on shows up here.' : 'Packs are handed out on the Game tab once the game ends.'}</p></div></div>`;
+  if (!pod.spin) {
+    box.innerHTML = `<div class="reveal"><div class="inner"><span class="label">The wheel awaits</span><div class="setname">${pod.status === 'awarded' ? 'One spin decides the set' : 'Crown a winner first'}</div><p class="muted">${pod.status === 'awarded' ? 'Whatever it lands on, every pack in the pod is that set.' : 'Packs are handed out on the Pods tab once the game ends.'}</p></div></div>`;
     return;
   }
-  const owner = pack.player;
-  const wheelSet = pack.wheelSet || pack.set;
-  const meta = S.setsByCode.get(wheelSet.code);
-  const year = (wheelSet.released || '').slice(0, 4);
-  const kind = meta?.realPack ? `${{ play: 'Play', draft: 'Draft', set: 'Set' }[meta.packKind]} Booster` : 'Booster';
-  let actions = '';
-  if (pack.status === 'ready' && pack.source === 'wheel') {
-    actions = `
-      <a class="btn gold big" href="#packs?player=${owner.id}&pack=${pack.id}">Open ${esc(wheelSet.name)} ${kind} →</a>
-      <button class="btn danger" id="sacBtn" ${owner.remaining < 1 ? 'disabled' : ''}>🔥 Sacrifice a Pack</button>
-      <div class="sac-note">${owner.remaining < 1
-        ? `${esc(owner.name)} has no other unspun pack to sacrifice.`
-        : `Gives up this spin <i>and</i> 1 of ${esc(owner.name)}'s ${owner.remaining} remaining pack${owner.remaining === 1 ? '' : 's'}, then lets you pick any set.`}</div>`;
-  } else if (pack.status === 'choosing') {
-    actions = `<a class="btn gold" href="#sets?choose=${pack.id}">Choose the replacement set →</a><div class="sac-note">A pack was sacrificed. Pick any set.</div>`;
-  } else if (pack.source === 'sacrifice') {
-    actions = `<div class="sac-note">🔥 Sacrificed and swapped for <b>${esc(pack.set.name)}</b>.</div><a class="btn" href="#packs?player=${owner.id}&pack=${pack.id}">${pack.status === 'opened' ? 'View pulls' : 'Open it'} →</a>`;
-  } else {
-    actions = `<a class="btn" href="#packs?player=${owner.id}&pack=${pack.id}">View pulls →</a>`;
-  }
+  const set = pod.spin.set;
+  const year = (set.released || '').slice(0, 4);
+  const rows = pod.players.map(p => {
+    const sp = spunPacks(p).length;
+    const status = p.packs.map(k => `<span class="chip">${k.status === 'choosing' ? '❔ choosing' : `${icon(k.set)}${k.source === 'sacrifice' ? '🔥 ' : ''}${k.status === 'opened' ? '✓' : ''}`}</span>`).join('');
+    const mine = canAct(p);
+    return `<div class="reveal-row">
+      <div><b>${pod.winnerId === p.id ? '👑 ' : ''}${esc(p.name)}</b><div class="row" style="gap:4px;margin-top:4px">${status}</div></div>
+      ${mine ? `<div class="row">
+        <a class="btn sm gold" href="#packs?pod=${pod.id}&player=${p.id}">Open</a>
+        ${sp >= 2 ? `<button class="btn sm danger" data-sac="${p.id}">🔥 Sacrifice</button>` : ''}
+        ${p.packs.find(k => k.status === 'choosing') ? `<a class="btn sm" href="#sets?pod=${pod.id}&choose=${p.packs.find(k => k.status === 'choosing').id}">Choose set</a>` : ''}
+      </div>` : ''}
+    </div>`;
+  }).join('');
   box.innerHTML = `
     <div class="reveal">
       <div class="art" id="revArt"></div>
       <div class="inner">
-        <span class="label">${esc(owner.name)} spun</span>
-        ${icon(wheelSet, 'xl')}
-        <div class="setname">${esc(wheelSet.name)}</div>
-        <div class="row"><span class="chip gold">${year}</span><span class="chip">${typeLabel(wheelSet.type)}</span><span class="chip">${kind}</span></div>
-        <div class="actions">${actions}</div>
+        <span class="label">The pod spun</span>
+        ${icon(set, 'xl')}
+        <div class="setname">${esc(set.name)}</div>
+        <div class="row"><span class="chip gold">${year}</span><span class="chip">${typeLabel(set.type)}</span><span class="chip">${kindLabel(set.code)}</span></div>
+        <p class="small muted" style="margin:10px 0 0">Open the ${esc(set.name)} packs, or <b>Sacrifice a Pack</b>: give up one to make another any set you want.</p>
       </div>
-    </div>`;
-  setArt(wheelSet.code).then(url => { const a = $('#revArt'); if (url && a) a.style.backgroundImage = `url("${url}")`; });
-  $('#sacBtn')?.addEventListener('click', async () => {
-    const ok = await confirmBox('Sacrifice a Pack?', `${esc(owner.name)} gives up this <b>${esc(wheelSet.name)}</b> spin and 1 more pack (${owner.remaining} → ${owner.remaining - 1} left to spin), and picks any set instead.`, '🔥 Sacrifice', true);
-    if (!ok) return;
-    try { await post(`/game/pack/${pack.id}/sacrifice`); await loadState(); go(`#sets?choose=${pack.id}`); } catch (err) { fail(err); }
-  });
+    </div>
+    <div class="panel reveal-list">${rows}</div>`;
+  setArt(set.code).then(url => { const a = $('#revArt'); if (url && a) a.style.backgroundImage = `url("${url}")`; });
+  $$('[data-sac]', box).forEach(b => b.onclick = () => sacrifice(pod, pod.players.find(p => p.id === b.dataset.sac)));
+}
+
+// Sacrifice: give up one spun-set pack so another becomes any set.
+async function sacrifice(pod, player, packId) {
+  const sp = spunPacks(player);
+  const pack = sp.find(k => k.id === packId) || sp[0];
+  if (!pack || sp.length < 2) return toast(`${esc(player.name)} needs 2 unopened ${esc(pod.spin.set.name)} packs to sacrifice one.`, 'err');
+  const n = player.packs.length;
+  const ok = await confirmBox('Sacrifice a Pack?',
+    `${esc(player.name)} gives up 1 of ${plural(sp.length, `${esc(pod.spin.set.name)} pack`)} to pick <b>any set</b> for another one. That leaves ${plural(n - 1, 'pack')}: ${plural(sp.length - 2, `${esc(pod.spin.set.name)} pack`)} and 1 of your choice.`,
+    '🔥 Sacrifice', true);
+  if (!ok) return;
+  try { await post(`/pods/${pod.id}/packs/${pack.id}/sacrifice`); await loadState(); go(`#sets?pod=${pod.id}&choose=${pack.id}`); } catch (err) { fail(err); }
 }
 
 // =============== PACKS TAB ===============
 function renderPacks(view) {
-  const g = S.game;
-  if (!g) { view.innerHTML = `<div class="empty"><h2>No game in progress</h2><p>Past pulls live in <a href="#history">History</a>.</p></div>`; return; }
+  const pod = currentPod();
+  if (!pod) { view.innerHTML = `<div class="empty"><h2>No pods running</h2><p>Opened cards live in <a href="#pools">Pools</a> and <a href="#history">History</a>.</p></div>`; return; }
+  if (!pod.spin) { view.innerHTML = `${podSwitcher(pod, 'packs')}<div class="empty"><h2>${esc(pod.name)} hasn't spun yet</h2><p>${pod.status === 'playing' ? 'Finish the game and crown the winner first.' : 'The winner spins the wheel once, then everyone opens their packs here.'}</p><a class="btn gold" href="#${pod.status === 'playing' ? 'pods' : `wheel?pod=${pod.id}`}">${pod.status === 'playing' ? 'Go to Pods' : 'Go to the wheel'}</a></div>`; return; }
   if (S.params.player) S.packsPlayer = S.params.player;
-  const p = playerById(S.packsPlayer) || defaultPlayer();
+  const p = pod.players.find(x => x.id === S.packsPlayer) || pod.players.find(x => x.id === S.me.id) || pod.players[0];
   S.packsPlayer = p.id;
   const sel = (S.params.pack && p.packs.find(k => k.id === S.params.pack)) || p.packs.find(k => k.status !== 'opened') || p.packs.at(-1);
   const pulls = p.packs.filter(k => k.status === 'opened').flatMap(k => k.cards);
   view.innerHTML = `
-    <div class="player-tabs">${g.players.map(x => `<button data-p="${x.id}" class="${x.id === p.id ? 'sel' : ''}">${g.winnerId === x.id ? '👑 ' : ''}${esc(x.name)}</button>`).join('')}</div>
+    ${podSwitcher(pod, 'packs')}
+    <div class="player-tabs">${pod.players.map(x => `<a href="#packs?pod=${pod.id}&player=${x.id}" class="${x.id === p.id ? 'sel' : ''}">${pod.winnerId === x.id ? '👑 ' : ''}${esc(x.name)}</a>`).join('')}</div>
     <div class="packs-layout">
       <aside class="grid" style="gap:12px">
         <div class="pack-list">
           ${p.packs.map(k => `<button class="pack-item ${k.id === sel?.id ? 'sel' : ''}" data-k="${k.id}">
-              ${k.set ? icon(k.set) : '<span class="set-icon">❔</span>'}
-              <span><div class="t">${esc(k.set?.name || 'Pick a set…')}</div>
+              ${k.status === 'choosing' ? '<span class="set-icon">❔</span>' : icon(k.set)}
+              <span><div class="t">${k.status === 'choosing' ? 'Pick a set…' : esc(k.set.name)}</div>
               <div class="s">${k.status === 'opened' ? `Opened · ${k.cards.length} cards` : k.status === 'choosing' ? '🔥 Sacrificed: choose a set' : 'Unopened'}${k.source === 'sacrifice' && k.status !== 'choosing' ? ' · 🔥 chosen' : ''}</div></span>
-            </button>`).join('') || `<div class="panel muted small">No packs yet.</div>`}
-          ${p.remaining > 0 ? `<a class="pack-item" href="#wheel?player=${p.id}" style="text-decoration:none;color:inherit;border-style:dashed"><span class="set-icon">🎡</span><span><div class="t">${p.remaining} pack${p.remaining === 1 ? '' : 's'} left to spin</div><div class="s">Go to the wheel</div></span></a>` : ''}
+            </button>`).join('') || `<div class="panel muted small">No packs.</div>`}
+          ${p.sacrificed ? `<div class="small dim" style="padding:4px 8px">🔥 ${plural(p.sacrificed, 'pack')} sacrificed</div>` : ''}
         </div>
         ${pulls.length ? `<div class="panel">
-          <h3>All of ${esc(p.name)}'s pulls</h3>
-          <p class="small muted" style="margin:0 0 10px">${pulls.length} cards from ${p.packs.filter(k => k.status === 'opened').length} pack(s), merged into one list.</p>
+          <h3>All of ${esc(p.name)}'s pulls this pod</h3>
+          <p class="small muted" style="margin:0 0 10px">${pulls.length} cards from ${plural(p.packs.filter(k => k.status === 'opened').length, 'pack')}, merged into one list. Everything is also in <a href="#pools?player=${p.id}">${esc(p.name)}'s pool</a>.</p>
           <button class="btn gold" id="copyAll" style="width:100%">📋 Copy all pulls</button>
         </div>` : ''}
       </aside>
       <section id="packView"></section>
     </div>`;
-  $$('.player-tabs button', view).forEach(b => b.onclick = () => go(`#packs?player=${b.dataset.p}`));
-  $$('[data-k]', view).forEach(b => b.onclick = () => go(`#packs?player=${p.id}&pack=${b.dataset.k}`));
+  $$('[data-k]', view).forEach(b => b.onclick = () => go(`#packs?pod=${pod.id}&player=${p.id}&pack=${b.dataset.k}`));
   $('#copyAll', view)?.addEventListener('click', () => copyText(listText(pulls), `${p.name}'s ${pulls.length} pulls`));
-  renderPackView($('#packView', view), sel, p);
+  renderPackView($('#packView', view), sel, p, pod);
 }
 
 function sortForReveal(cards) {
@@ -560,48 +793,56 @@ function sortForReveal(cards) {
   }).map(x => x.c);
 }
 
-function cardHtml(c, i, down) {
+function cardHtml(c, i, down, qty = 0) {
   return `<div class="mcard r-${esc(c.rarity)} ${c.foil ? 'foil' : ''} ${down ? 'down' : ''}" data-i="${i}">
     <div class="flip">
       <div class="face"><img src="${esc(c.image)}" alt="${esc(c.name)}" loading="lazy"></div>
       <div class="backface"></div>
     </div>
+    ${qty > 1 ? `<span class="qty">×${qty}</span>` : ''}
     <span class="rar">${esc(c.rarity)}${c.foil ? ' · foil' : ''}</span>
   </div>`;
 }
 
-function renderPackView(el, pack, owner) {
-  if (!pack) { el.innerHTML = `<div class="empty"><h2>No packs yet</h2><p>${owner.remaining ? `<a href="#wheel?player=${owner.id}">Spin the wheel</a> for ${esc(owner.name)}'s first pack.` : 'Crown a winner on the Game tab to hand out packs.'}</p></div>`; return; }
+function renderPackView(el, pack, owner, pod) {
+  if (!pack) { el.innerHTML = `<div class="empty"><h2>No packs</h2></div>`; return; }
+  const mine = canAct(owner);
   if (pack.status === 'choosing') {
-    el.innerHTML = `<div class="panel empty"><h2>🔥 Pack sacrificed</h2><p>Choose any set for ${esc(owner.name)}'s replacement pack.</p><a class="btn gold" href="#sets?choose=${pack.id}">Choose a set →</a></div>`;
+    el.innerHTML = `<div class="panel empty"><h2>🔥 Pack sacrificed</h2><p>${mine ? `Choose any set for ${esc(owner.name)}'s pack.` : `Waiting for ${esc(owner.name)} to choose a set.`}</p>${mine ? `<a class="btn gold" href="#sets?pod=${pod.id}&choose=${pack.id}">Choose a set →</a>` : ''}</div>`;
     return;
   }
   const meta = S.setsByCode.get(pack.set.code);
   if (pack.status === 'ready') {
-    const kind = meta?.realPack ? `${{ play: 'Play', draft: 'Draft', set: 'Set' }[meta.packKind]} Booster` : 'Booster';
+    const sp = spunPacks(owner);
+    const canSac = mine && pack.source === 'wheel' && sp.length >= 2;
     el.innerHTML = `
       <div class="booster" id="booster">
         ${icon(pack.set, 'lg')}
         <div class="bname">${esc(pack.set.name)}</div>
-        <div class="btype">${kind}</div>
+        <div class="btype">${kindLabel(pack.set.code)}</div>
       </div>
-      <div style="text-align:center"><button class="btn gold big" id="openBtn">Open ${esc(owner.name)}'s pack</button>
-      ${meta && !meta.realPack ? `<p class="small dim" style="margin-top:10px">Generated from this set's booster cards: commons, uncommons, a rare (sometimes mythic), and the odd foil.</p>` : ''}</div>`;
-    $('#openBtn', el).onclick = async () => {
+      <div style="text-align:center">
+        ${mine ? `<button class="btn gold big" id="openBtn">Open ${owner.id === S.me.id ? 'your' : `${esc(owner.name)}'s`} pack</button>` : `<p class="muted">Only ${esc(owner.name)} can open this pack.</p>`}
+        ${canSac ? `<div style="margin-top:12px"><button class="btn danger" id="sacBtn">🔥 Sacrifice a Pack</button><div class="sac-note">Give up another ${esc(pack.set.name)} pack and make this one any set.</div></div>` : ''}
+        ${meta && !meta.realPack ? `<p class="small dim" style="margin-top:10px">Generated from this set's booster cards: commons, uncommons, a rare (sometimes mythic), and the odd foil.</p>` : ''}
+      </div>`;
+    $('#sacBtn', el)?.addEventListener('click', () => sacrifice(pod, owner, pack.id));
+    $('#openBtn', el)?.addEventListener('click', async () => {
       const btn = $('#openBtn', el), bo = $('#booster', el);
       btn.disabled = true; btn.textContent = 'Opening…';
       S.opening = true;
       bo.classList.add('shake');
       try {
-        const res = await post(`/game/pack/${pack.id}/open`);
+        const res = await post(`/pods/${pod.id}/packs/${pack.id}/open`);
         S.animatePacks.add(pack.id);
+        S.pools = null;
         bo.classList.remove('shake'); bo.classList.add('rip');
         await new Promise(r => setTimeout(r, 450));
-        S.game = res.game;
+        S.pods = S.pods.map(x => x.id === res.pod.id ? res.pod : x);
         S.opening = false;
         renderPacks($('#view'));
       } catch (err) { S.opening = false; fail(err); btn.disabled = false; btn.textContent = 'Try again'; bo.classList.remove('shake'); }
-    };
+    });
     return;
   }
   // opened
@@ -662,18 +903,88 @@ function cardModal(c) {
   m.onclick = e => { if (e.target === m || e.target.classList.contains('box')) m.hidden = true; };
 }
 
+// =============== POOLS TAB ===============
+// Each player's legal cards beyond their precon: everything they've opened in
+// a running or finished pod.
+let poolFilter = { q: '', rarity: '', sort: 'rarity' };
+async function renderPools(view) {
+  if (!S.pools) {
+    view.innerHTML = '<div class="spinner"></div>';
+    try { S.pools = (await api('/pools')).pools; } catch (err) { fail(err); return; }
+    if (S.route !== 'pools') return;
+  }
+  const pools = S.pools;
+  if (!pools.length) { view.innerHTML = `<div class="empty"><h2>No players yet</h2></div>`; return; }
+  const pool = pools.find(p => p.userId === S.params.player) || pools.find(p => p.userId === S.me.id) || pools[0];
+  const cards = pool.packs.flatMap(k => k.cards);
+  // Group identical printings (foil kept apart) with a count.
+  const groups = new Map();
+  for (const c of cards) {
+    const key = `${c.set}/${c.number}/${c.foil ? 'f' : ''}`;
+    const g = groups.get(key) || { card: c, qty: 0 };
+    g.qty++;
+    groups.set(key, g);
+  }
+  const count = r => cards.filter(c => c.rarity === r).length;
+  view.innerHTML = `
+    <div class="hero"><div><h1>Pools</h1><p>Every card a player may use on top of the precon they started with: everything they've opened in a pod (discarded pods don't count).</p></div></div>
+    <div class="player-tabs">${pools.map(p => `<a href="#pools?player=${p.userId}" class="${p.userId === pool.userId ? 'sel' : ''}">${esc(p.username)} <span class="dim">${p.packs.reduce((s, k) => s + k.cards.length, 0)}</span></a>`).join('')}</div>
+    <div class="panel pool-head">
+      <div>
+        <h2 style="margin:0">${esc(pool.username)}'s pool</h2>
+        <div class="small muted">${pool.precon ? `Precon: <b>${esc(pool.precon)}</b> · ` : ''}${plural(pool.pods, 'pod')} · ${plural(pool.packs.length, 'pack')} · ${plural(cards.length, 'card')}</div>
+        <div class="row" style="margin-top:8px"><span class="chip gold">★ ${count('mythic')} mythic</span><span class="chip">◆ ${count('rare')} rare</span><span class="chip">${count('uncommon')} uncommon</span><span class="chip">${count('common')} common</span></div>
+      </div>
+      ${cards.length ? `<button class="btn gold" id="copyPool">📋 Copy whole pool</button>` : ''}
+    </div>
+    ${cards.length ? `
+    <div class="set-tools">
+      <input type="search" id="pq" placeholder="Search ${groups.size} cards…" value="${esc(poolFilter.q)}">
+      <select class="input" id="pr"><option value="">All rarities</option>${['mythic', 'rare', 'uncommon', 'common'].map(r => `<option value="${r}" ${poolFilter.rarity === r ? 'selected' : ''}>${r[0].toUpperCase() + r.slice(1)}</option>`).join('')}</select>
+      <select class="input" id="ps">
+        <option value="rarity" ${poolFilter.sort === 'rarity' ? 'selected' : ''}>Rarity</option>
+        <option value="name" ${poolFilter.sort === 'name' ? 'selected' : ''}>A–Z</option>
+        <option value="set" ${poolFilter.sort === 'set' ? 'selected' : ''}>Set</option>
+      </select>
+    </div>
+    <div class="cards" id="poolCards"></div>
+    <details class="panel" style="margin-top:18px"><summary class="muted" style="cursor:pointer">Packs in this pool (${pool.packs.length})</summary>
+      <div class="row" style="margin-top:10px">${pool.packs.map(k => `<span class="chip">${icon(k.set)}${esc(k.set.name)}${k.source === 'sacrifice' ? ' 🔥' : ''} <span class="dim">· ${esc(k.podName)}</span></span>`).join('')}</div>
+    </details>` : `<div class="empty"><p>${pool.userId === S.me.id ? 'Your' : `${esc(pool.username)}'s`} pool is empty. Cards show up here as soon as packs are opened.</p></div>`}`;
+  $('#copyPool', view)?.addEventListener('click', () => copyText(listText(cards), `${pool.username}'s pool (${cards.length} cards)`));
+  if (!cards.length) return;
+  const paint = () => {
+    const q = poolFilter.q.trim().toLowerCase();
+    let list = [...groups.values()].filter(g => (!q || g.card.name.toLowerCase().includes(q) || (g.card.type || '').toLowerCase().includes(q)) && (!poolFilter.rarity || g.card.rarity === poolFilter.rarity));
+    const sorters = {
+      rarity: (a, b) => (RARITY_ORDER[b.card.rarity] ?? 0) - (RARITY_ORDER[a.card.rarity] ?? 0) || a.card.name.localeCompare(b.card.name),
+      name: (a, b) => a.card.name.localeCompare(b.card.name),
+      set: (a, b) => a.card.set.localeCompare(b.card.set) || a.card.name.localeCompare(b.card.name),
+    };
+    list.sort(sorters[poolFilter.sort]);
+    $('#poolCards', view).innerHTML = list.map((g, i) => cardHtml(g.card, i, false, g.qty)).join('') || '<p class="muted">No cards match.</p>';
+    $$('#poolCards .mcard', view).forEach(m => m.onclick = () => cardModal(list[Number(m.dataset.i)].card));
+  };
+  paint();
+  $('#pq', view).oninput = e => { poolFilter.q = e.target.value; paint(); };
+  $('#pr', view).onchange = e => { poolFilter.rarity = e.target.value; paint(); };
+  $('#ps', view).onchange = e => { poolFilter.sort = e.target.value; paint(); };
+}
+
 // =============== SETS TAB ===============
 let setsFilter = { q: '', type: '', sort: 'new', only: '' };
 let saveTimer = null, lastSetsMode = null;
 function renderSets(view) {
-  const choosing = S.params.choose ? findPack(S.params.choose) : null;
-  const chooseMode = choosing && choosing.status === 'choosing';
+  const pod = podById(S.params.pod);
+  const choosing = S.params.choose ? findPack(pod, S.params.choose) : null;
+  const chooseMode = choosing && choosing.status === 'choosing' && canAct(choosing.player);
+  const edit = !chooseMode && isAdmin();
   const mode = chooseMode ? 'choose:' + choosing.id : 'browse';
   if (mode !== lastSetsMode) { setsFilter = { q: '', type: '', sort: setsFilter.sort === 'chance' && chooseMode ? 'new' : setsFilter.sort, only: '' }; lastSetsMode = mode; }
   view.innerHTML = `
-    ${chooseMode ? `<div class="choose-banner"><div>🔥 <b>${esc(choosing.player.name)}</b> sacrificed a pack. Tap any set for the replacement booster.</div><a class="btn sm ghost" href="#wheel">Back to wheel</a></div>` : `
-      <div class="hero"><div><h1>All Sets</h1><p>Every Magic set that came in boosters. Toggle sets on or off the wheel and change each set's odds: a weight of 2 makes it twice as likely as a weight-1 set.</p></div>
-      <div class="row"><span class="chip ok">${S.wheel.length} on the wheel</span></div></div>`}
+    ${chooseMode ? `<div class="choose-banner"><div>🔥 <b>${esc(choosing.player.name)}</b> sacrificed a pack. Tap any set for the replacement booster.</div><a class="btn sm ghost" href="#packs?pod=${pod.id}&player=${choosing.player.id}">Back to packs</a></div>` : `
+      <div class="hero"><div><h1>All Sets</h1><p>Every Magic set that came in boosters, and its chance of coming up on the wheel. ${edit ? 'As admin you can toggle sets on or off the wheel and change their odds: a weight of 2 makes a set twice as likely as a weight-1 set.' : 'Only the league admin can change which sets are on the wheel and their odds.'}</p></div>
+      <div class="row"><span class="chip ok">${S.wheel.length} on the wheel</span>${edit ? '<span class="chip gold">admin</span>' : ''}</div></div>`}
     <div class="set-tools">
       <input type="search" id="q" placeholder="Search ${S.sets.length} sets…" value="${esc(setsFilter.q)}">
       <select class="input" id="ft"><option value="">All types</option>${S.types.map(t => `<option value="${t}" ${setsFilter.type === t ? 'selected' : ''}>${typeLabel(t)}</option>`).join('')}</select>
@@ -706,8 +1017,9 @@ function renderSets(view) {
         <td class="hide-sm">${s.year}</td>
         <td class="hide-sm muted small">${typeLabel(s.type)}</td>
         ${chooseMode ? `<td style="text-align:right"><button class="btn sm gold" data-pick="${s.code}">Choose</button></td>` : `
-        <td><label class="switch" title="${s.onWheel ? 'On the wheel' : excluded ? 'Excluded' : 'Filtered out by year/type'}"><input type="checkbox" data-tog="${s.code}" ${!excluded ? 'checked' : ''}><span></span></label></td>
-        <td><input type="number" min="0" max="100" step="0.5" value="${s.weight}" data-w="${s.code}" ${excluded ? 'disabled' : ''}></td>
+        <td>${edit ? `<label class="switch" title="${s.onWheel ? 'On the wheel' : excluded ? 'Excluded' : 'Filtered out by year/type'}"><input type="checkbox" data-tog="${s.code}" ${!excluded ? 'checked' : ''}><span></span></label>`
+          : `<span class="small ${s.onWheel ? '' : 'dim'}">${s.onWheel ? 'On' : 'Off'}</span>`}</td>
+        <td>${edit ? `<input type="number" min="0" max="100" step="0.5" value="${s.weight}" data-w="${s.code}" ${excluded ? 'disabled' : ''}>` : `<span class="small">${s.weight}</span>`}</td>
         <td class="chance"><div class="small">${pct(s.chance)}</div><div class="bar"><i style="width:${(s.chance / maxChance) * 100}%"></i></div></td>`}
       </tr>`;
     }).join('') || `<tr><td colspan="6" class="empty">No sets match.</td></tr>`;
@@ -717,12 +1029,12 @@ function renderSets(view) {
         const s = S.setsByCode.get(tr.dataset.code);
         if (!await confirmBox(`Choose ${esc(s.name)}?`, `${esc(choosing.player.name)}'s sacrificed pack becomes a <b>${esc(s.name)}</b> booster.`, 'Choose set')) return;
         try {
-          await post(`/game/pack/${choosing.id}/choose`, { setCode: s.code });
+          await post(`/pods/${pod.id}/packs/${choosing.id}/choose`, { setCode: s.code });
           await loadState();
-          go(`#packs?player=${choosing.player.id}&pack=${choosing.id}`);
+          go(`#packs?pod=${pod.id}&player=${choosing.player.id}&pack=${choosing.id}`);
         } catch (err) { fail(err); }
       });
-    } else {
+    } else if (edit) {
       $$('[data-tog]', view).forEach(i => i.onchange = () => {
         const ex = new Set(S.settings.excluded);
         i.checked ? ex.delete(i.dataset.tog) : ex.add(i.dataset.tog);
@@ -741,7 +1053,7 @@ function renderSets(view) {
   $('#ft', view).onchange = e => { setsFilter.type = e.target.value; paintRows(); };
   $('#fs', view).onchange = e => { setsFilter.sort = e.target.value; paintRows(); };
   $('#fo', view)?.addEventListener('change', e => { setsFilter.only = e.target.value; paintRows(); });
-  if (S.params.choose && !chooseMode) toast('That pack already has a set.', 'err');
+  if (S.params.choose && !chooseMode) toast('That pack isn\'t waiting for you to choose a set.', 'err');
 }
 function queueSave(after) {
   clearTimeout(saveTimer);
@@ -758,47 +1070,48 @@ function queueSave(after) {
 async function renderHistory(view) {
   if (!S.history) {
     view.innerHTML = '<div class="spinner"></div>';
-    try { S.history = (await api('/history')).games; } catch (err) { fail(err); return; }
+    try { S.history = (await api('/history')).pods; } catch (err) { fail(err); return; }
     if (S.route !== 'history') return;
   }
-  const games = S.history;
-  if (!games.length) { view.innerHTML = `<div class="empty"><h2>No finished games yet</h2><p>Finish a game night on the Game tab and it shows up here, with every pack and pull.</p></div>`; return; }
+  const pods = S.history;
+  if (!pods.length) { view.innerHTML = `<div class="empty"><h2>No finished pods yet</h2><p>Finish a pod on the Pods tab and it shows up here, with every pack and pull.</p></div>`; return; }
   const stats = new Map();
-  for (const g of games) for (const p of g.players) {
-    const s = stats.get(p.name) || { name: p.name, games: 0, wins: 0, packs: 0, sac: 0, mythics: 0, rares: 0 };
+  for (const g of pods) for (const p of g.players) {
+    const s = stats.get(p.id) || { name: p.name, games: 0, wins: 0, packs: 0, sac: 0, mythics: 0, rares: 0 };
+    s.name = p.name;
     s.games++; if (g.winnerId === p.id) s.wins++;
     s.sac += p.sacrificed;
     for (const k of p.packs) if (k.status === 'opened') {
       s.packs++;
       for (const c of k.cards) { if (c.rarity === 'mythic') s.mythics++; if (c.rarity === 'rare') s.rares++; }
     }
-    stats.set(p.name, s);
+    stats.set(p.id, s);
   }
   const table = [...stats.values()].sort((a, b) => b.wins - a.wins || b.wins / b.games - a.wins / a.games);
   view.innerHTML = `
-    <div class="hero"><div><h1>History</h1><p>${games.length} game night${games.length === 1 ? '' : 's'} logged.</p></div></div>
+    <div class="hero"><div><h1>League History</h1><p>${plural(pods.length, 'pod')} played.</p></div></div>
     <div class="panel" style="margin-bottom:22px;overflow-x:auto">
       <h2>Standings</h2>
-      <table class="standings"><thead><tr><th>Player</th><th class="num">Games</th><th class="num">Wins</th><th class="num">Win %</th><th class="num">Packs</th><th class="num">Sacrificed</th><th class="num">Rares</th><th class="num">Mythics</th></tr></thead>
+      <table class="standings"><thead><tr><th>Player</th><th class="num">Pods</th><th class="num">Wins</th><th class="num">Win %</th><th class="num">Packs</th><th class="num">Sacrificed</th><th class="num">Rares</th><th class="num">Mythics</th></tr></thead>
       <tbody>${table.map((s, i) => `<tr><td>${i === 0 && s.wins ? '👑 ' : ''}<b>${esc(s.name)}</b></td><td class="num">${s.games}</td><td class="num">${s.wins}</td><td class="num">${Math.round(s.wins / s.games * 100)}%</td><td class="num">${s.packs}</td><td class="num">${s.sac}</td><td class="num">${s.rares}</td><td class="num">${s.mythics}</td></tr>`).join('')}</tbody></table>
     </div>
-    <div class="grid" style="gap:12px">${games.map(g => {
+    <div class="grid" style="gap:12px">${pods.map(g => {
       const w = g.players.find(p => p.id === g.winnerId);
       return `<details class="hgame"><summary>
-        <div><b style="font-family:Cinzel">${fmtDate(g.finishedAt || g.createdAt)}</b> <span class="muted">· 👑 ${esc(w?.name || '—')}${w?.precon ? ` with ${esc(w.precon)}` : ''}</span></div>
-        <div class="row">${g.players.flatMap(p => p.packs).filter(k => k.set).slice(0, 12).map(k => icon(k.set)).join('')}</div>
+        <div><b style="font-family:Cinzel">${esc(g.name)} · ${fmtDate(g.finishedAt || g.createdAt)}</b> <span class="muted">· 👑 ${esc(w?.name || '—')}${w?.precon ? ` with ${esc(w.precon)}` : ''}${g.spin ? ` · spun ${esc(g.spin.set.name)}` : ''}</span></div>
+        <div class="row">${g.spin ? icon(g.spin.set) : ''}${g.players.flatMap(p => p.packs).filter(k => k.source === 'sacrifice' && k.status !== 'choosing').slice(0, 8).map(k => icon(k.set)).join('')}</div>
       </summary><div class="body">${g.players.map(p => {
         const pulls = p.packs.filter(k => k.status === 'opened').flatMap(k => k.cards);
         const hits = sortForReveal(pulls).reverse().filter(c => c.rarity === 'mythic' || c.rarity === 'rare');
         return `<div class="hplayer">
           <div class="spread"><div><b>${g.winnerId === p.id ? '👑 ' : ''}${esc(p.name)}</b> ${p.precon ? `<span class="muted small">· ${esc(p.precon)}</span>` : ''}</div>
           ${pulls.length ? `<button class="btn sm" data-copy="${g.id}:${p.id}">📋 Copy ${pulls.length} pulls</button>` : ''}</div>
-          <div class="row small muted" style="margin-top:6px">${p.packs.map(k => `<span class="chip">${k.set ? icon(k.set) : ''}${esc(k.set?.name || 'unchosen')}${k.source === 'sacrifice' ? ' 🔥' : ''}${k.status !== 'opened' ? ' (unopened)' : ''}</span>`).join('') || 'No packs'}${p.sacrificed ? `<span class="chip">🔥 ${p.sacrificed} sacrificed</span>` : ''}</div>
+          <div class="row small muted" style="margin-top:6px">${p.packs.map(k => `<span class="chip">${k.status === 'choosing' ? '' : icon(k.set)}${k.status === 'choosing' ? 'unchosen' : esc(k.set.name)}${k.source === 'sacrifice' ? ' 🔥' : ''}${k.status !== 'opened' ? ' (unopened)' : ''}</span>`).join('') || 'No packs'}${p.sacrificed ? `<span class="chip">🔥 ${p.sacrificed} sacrificed</span>` : ''}</div>
           ${hits.length ? `<div class="mini-cards">${hits.map(c => `<img src="${esc(c.image)}" alt="${esc(c.name)}" title="${esc(c.name)}" loading="lazy" data-card="${g.id}:${p.id}:${esc(c.set)}/${esc(c.number)}">`).join('')}</div>` : ''}
         </div>`;
       }).join('')}</div></details>`;
     }).join('')}</div>`;
-  const lookup = key => { const [gid, pid] = key.split(':'); const g = games.find(x => x.id === gid); return g?.players.find(p => p.id === pid); };
+  const lookup = key => { const [gid, pid] = key.split(':'); const g = pods.find(x => x.id === gid); return g?.players.find(p => p.id === pid); };
   $$('[data-copy]', view).forEach(b => b.onclick = () => {
     const p = lookup(b.dataset.copy);
     const pulls = p.packs.filter(k => k.status === 'opened').flatMap(k => k.cards);
@@ -813,32 +1126,39 @@ async function renderHistory(view) {
 }
 
 // ---------------- live sync ----------------
+let es = null;
 function connect() {
-  const es = new EventSource('/api/events');
+  es?.close();
+  es = new EventSource('/api/events');
   const dot = $('#liveDot');
   es.addEventListener('hello', () => dot.classList.add('on'));
   es.onerror = () => dot.classList.remove('on');
-  const onState = async () => {
+  const onState = async e => {
     try {
-      const prevSpins = new Set(S.game?.spins.map(s => s.id) || []);
+      const info = JSON.parse(e.data || '{}');
       await loadState();
-      const fresh = (S.game?.spins || []).filter(s => !prevSpins.has(s.id) && !S.seenSpins.has(s.id));
-      fresh.forEach(s => S.seenSpins.add(s.id));
-      const spin = fresh.at(-1);
-      if (spin && S.route === 'wheel' && !S.spinning) {
-        S.wheelPlayer = spin.playerId;
-        renderWheel($('#view'));
-        await runSpin(spin);
-        return;
-      }
-      if (spin) {
-        const set = S.setsByCode.get(spin.setCode);
-        toast(`🎡 ${esc(playerById(spin.playerId)?.name)} spun <b>${esc(set?.name || spin.setCode)}</b> · <a href="#wheel">watch</a>`, 'good');
+      S.pools = null;
+      if (e.type === 'spin') {
+        const pod = podById(info.podId);
+        if (pod?.spin && !S.seenSpins.has(pod.spin.id)) {
+          S.seenSpins.add(pod.spin.id);
+          if (S.route === 'wheel' && S.podId === pod.id && !S.spinning) {
+            // Animate from the resting position, as if we'd watched it live.
+            buildGeom();
+            const view = $('#view');
+            const keep = S.rot;
+            renderWheel(view);
+            S.rot = keep; drawWheel();
+            await runSpin(pod.id, pod.spin);
+            return;
+          }
+          toast(`🎡 ${esc(pod.name)} spun <b>${esc(pod.spin.set.name)}</b> · <a href="#wheel?pod=${pod.id}">see it</a>`, 'good');
+        }
       }
       if (S.spinning || S.opening) return;
       // Don't yank the page out from under someone mid-reveal or typing.
       const typing = document.activeElement && ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName);
-      if (S.route === 'sets' && typing) return;
+      if (['sets', 'pods', 'account', 'pools'].includes(S.route) && typing) return;
       if (S.route === 'packs' && $('.mcard.down')) return;
       if (S.route === 'history') S.history = null;
       render();
@@ -859,14 +1179,11 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') $('#modal').
 
 // ---------------- boot ----------------
 (async function boot() {
-  parseRoute();
   $('#view').innerHTML = '<div class="spinner"></div>';
   try {
-    await Promise.all([loadState(), loadSets()]);
-    for (const sp of S.game?.spins || []) S.seenSpins.add(sp.id);
-  } catch (err) { fail(err); }
-  if (!location.hash) location.replace(S.game?.status === 'awarded' ? '#wheel' : '#game');
-  parseRoute();
-  render();
-  connect();
+    const r = await api('/auth/me');
+    S.passwordRules = r.passwordRules; S.emailEnabled = r.emailEnabled;
+    if (r.user && !location.hash.startsWith('#reset')) await enterApp(r.user);
+    else showAuth();
+  } catch (err) { fail(err); showAuth(); }
 })();

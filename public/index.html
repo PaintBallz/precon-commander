@@ -12,23 +12,21 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <header class="top">
-    <a class="brand" href="#game">
+  <header class="top" id="top" hidden>
+    <a class="brand" href="#pods">
       <img src="/favicon.svg" alt="" width="30" height="30" />
       <span>Pre-Con <b>Commander</b></span>
     </a>
     <nav class="tabs" id="tabs">
-      <a href="#game" data-tab="game">Game</a>
+      <a href="#pods" data-tab="pods">Pods</a>
       <a href="#wheel" data-tab="wheel">Wheel</a>
       <a href="#packs" data-tab="packs">Packs</a>
+      <a href="#pools" data-tab="pools">Pools</a>
       <a href="#sets" data-tab="sets">All Sets</a>
       <a href="#history" data-tab="history">History</a>
     </nav>
     <div class="top-tools">
-      <label class="me" title="Which player is using this device">
-        <span>I am</span>
-        <select id="meSelect"><option value="">—</option></select>
-      </label>
+      <a class="me-btn" id="meBtn" href="#account" title="Your account"></a>
       <button class="icon-btn" id="soundBtn" title="Wheel sound" aria-label="Toggle wheel sound">🔊</button>
       <span class="live" id="liveDot" title="Live sync"></span>
     </div>

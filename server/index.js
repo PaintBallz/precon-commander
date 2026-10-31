@@ -1,19 +1,27 @@
-// Pre-Con Commander — game-night wheel + booster opener.
-// One shared "current game" that every phone sees live (Server-Sent Events).
+// Pre-Con Commander — league companion: pods, one wheel spin per pod, booster
+// opener and per-player card pools. Every phone sees changes live (Server-Sent Events).
+//
+// League = everyone with an account. Pod = one game of 2–4 league players.
+// When a pod ends, its winner spins the wheel ONCE. Every player's packs are
+// that set (winner 3, everyone else 2); a player can Sacrifice a Pack (give up
+// one of their spun-set packs) to turn another one into any set they like.
 import express from 'express';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { saveGame, loadGame, currentGame, finishedGames, lastGame, kvGet, kvSet } from './db.js';
+import { savePod, loadPod, activePods, finishedPods, kvGet, kvSet } from './db.js';
 import { getBoosterSets, BOOSTER_SET_TYPES } from './scryfall.js';
 import { openPack, hasRealPack, realPackKind, localPackSets } from './packs.js';
+import { requireAuth, requireAdmin, authRoutes, seedAdmin, listUsers, getUser } from './auth.js';
 
 const PORT = Number(process.env.PORT || 3000);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WINNER_PACKS = 3;
 const LOSER_PACKS = 2;
+const MAX_POD = 4;
 
 const app = express();
+app.set('trust proxy', 'loopback, uniquelocal');
 app.use(express.json({ limit: '200kb' }));
 app.use(express.static(path.join(ROOT, 'public'), { extensions: ['html'], maxAge: 0 }));
 
@@ -21,16 +29,20 @@ const id = (n = 8) => crypto.randomBytes(n).toString('base64url').slice(0, n);
 const now = () => new Date().toISOString();
 class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
 const wrap = fn => (req, res) => Promise.resolve(fn(req, res)).catch(err => {
-  if (!(err instanceof HttpError)) console.error(err);
+  if (!err.status) console.error(err);
   res.status(err.status || 500).json({ error: err.message || 'Something went wrong' });
 });
+
+app.get('/healthz', (req, res) => res.json({ ok: true }));
+app.use('/api', requireAuth);
+authRoutes(app, wrap);
 
 // ---------- live updates ----------
 const clients = new Set();
 let version = Date.now();
-function broadcast(kind = 'state') {
+function broadcast(kind = 'state', data = {}) {
   version = Date.now();
-  const msg = `event: ${kind}\ndata: ${JSON.stringify({ version })}\n\n`;
+  const msg = `event: ${kind}\ndata: ${JSON.stringify({ version, ...data })}\n\n`;
   for (const res of clients) res.write(msg);
 }
 app.get('/api/events', (req, res) => {
@@ -42,7 +54,7 @@ app.get('/api/events', (req, res) => {
   req.on('close', () => { clearInterval(ping); clients.delete(res); });
 });
 
-// ---------- sets + wheel settings ----------
+// ---------- sets + wheel settings (admin edits, everyone reads) ----------
 const DEFAULT_SETTINGS = { minYear: 1993, maxYear: 2100, types: [...BOOSTER_SET_TYPES], excluded: [], weights: {} };
 function getSettings() { return { ...DEFAULT_SETTINGS, ...kvGet('wheel_settings', {}) }; }
 
@@ -74,6 +86,7 @@ app.get('/api/sets', wrap(async (req, res) => {
 }));
 
 app.put('/api/settings', wrap(async (req, res) => {
+  requireAdmin(req);
   const b = req.body || {};
   const s = getSettings();
   if (b.minYear != null) s.minYear = Math.max(1993, Math.min(2100, Number(b.minYear) || 1993));
@@ -94,173 +107,217 @@ app.put('/api/settings', wrap(async (req, res) => {
   res.json({ ok: true, settings: s });
 }));
 
-// ---------- game state ----------
-function remaining(p) { return p.awarded - p.sacrificed - p.packs.length; }
-function publicGame(g) {
-  if (!g) return null;
-  return { ...g, players: g.players.map(p => ({ ...p, remaining: remaining(p) })) };
+// ---------- league members ----------
+const members = () => listUsers().map(u => ({ id: u.id, username: u.username, precon: u.precon || '', isAdmin: !!u.is_admin }));
+app.get('/api/members', (req, res) => res.json({ members: members() }));
+
+// ---------- pods ----------
+const spunPacks = p => p.packs.filter(k => k.status === 'ready' && k.source === 'wheel');
+function requirePod(podId) {
+  const pod = loadPod(podId);
+  if (!pod || !['playing', 'awarded'].includes(pod.status)) throw new HttpError(404, 'That pod is not running.');
+  return pod;
 }
-function requireGame() {
-  const g = currentGame();
-  if (!g) throw new HttpError(404, 'No game in progress — start one on the Game tab.');
-  return g;
-}
-function findPlayer(g, playerId) {
-  const p = g.players.find(p => p.id === playerId);
-  if (!p) throw new HttpError(404, 'Player not found');
+function findPlayer(pod, playerId) {
+  const p = pod.players.find(p => p.id === playerId);
+  if (!p) throw new HttpError(404, 'Player not found in this pod');
   return p;
 }
-function findPack(g, packId) {
-  for (const p of g.players) {
+function findPack(pod, packId) {
+  for (const p of pod.players) {
     const pack = p.packs.find(k => k.id === packId);
     if (pack) return { player: p, pack };
   }
   throw new HttpError(404, 'Pack not found');
+}
+const inPod = (pod, user) => pod.players.some(p => p.id === user.id);
+function requireMember(pod, user) {
+  if (!user.isAdmin && !inPod(pod, user)) throw new HttpError(403, 'Only players in this pod (or the admin) can do that.');
+}
+function requireOwner(player, user) {
+  if (!user.isAdmin && player.id !== user.id) throw new HttpError(403, `Only ${player.name} (or the admin) can use this pack.`);
 }
 async function setInfo(code) {
   const s = (await allSets()).find(s => s.code === code);
   if (!s) throw new HttpError(400, `Unknown set ${code}`);
   return { code: s.code, name: s.name, icon: s.icon, released: s.released, type: s.type };
 }
-function commit(g, kind) { g.updatedAt = now(); saveGame(g); broadcast(kind); return publicGame(g); }
+const newPack = set => ({ id: id(10), status: 'ready', source: 'wheel', set, wheelSet: set, cards: null });
+function commit(pod, kind = 'state', data = {}) { pod.updatedAt = now(); savePod(pod); broadcast(kind, { podId: pod.id, ...data }); return pod; }
 
 app.get('/api/state', (req, res) => {
-  const g = currentGame();
-  const last = g ? null : lastGame();
-  res.json({ version, game: publicGame(g), lastPlayers: (g || last)?.players.map(p => ({ name: p.name, precon: p.precon })) || [] });
+  res.json({ version, me: req.user, pods: activePods(), members: members() });
 });
 
-app.post('/api/game', wrap(async (req, res) => {
-  if (currentGame()) throw new HttpError(409, 'A game is already in progress. Finish or discard it first.');
-  const players = (req.body?.players || []).map(p => ({ name: String(p.name || '').trim().slice(0, 40), precon: String(p.precon || '').trim().slice(0, 80) })).filter(p => p.name);
-  if (players.length < 2 || players.length > 8) throw new HttpError(400, 'Enter between 2 and 8 player names.');
-  const g = {
-    id: id(10),
-    status: 'playing',
-    createdAt: now(),
-    winnerId: null,
-    players: players.map((p, i) => ({ id: `p${i + 1}`, name: p.name, precon: p.precon, awarded: 0, sacrificed: 0, packs: [] })),
-    spins: [],
-  };
-  res.json({ game: commit(g, 'state') });
+app.post('/api/pods', wrap(async (req, res) => {
+  const wanted = Array.isArray(req.body?.players) ? req.body.players : [];
+  const ids = wanted.map(p => String(p.userId || '')).filter(Boolean);
+  if (ids.length < 2 || ids.length > MAX_POD) throw new HttpError(400, `A pod has 2 to ${MAX_POD} players.`);
+  if (new Set(ids).size !== ids.length) throw new HttpError(400, 'Each player can only be in the pod once.');
+  const busy = new Map(activePods().flatMap(pod => pod.players.map(p => [p.id, pod])));
+  const players = wanted.map((w, i) => {
+    const u = getUser(String(w.userId));
+    if (!u) throw new HttpError(400, `Player ${i + 1} is not a league member.`);
+    if (busy.has(u.id)) throw new HttpError(409, `${u.username} is already playing in ${busy.get(u.id).name}.`);
+    const precon = String(w.precon ?? u.precon ?? '').trim().slice(0, 80);
+    return { id: u.id, name: u.username, precon, awarded: 0, sacrificed: 0, packs: [] };
+  });
+  if (!req.user.isAdmin && !ids.includes(req.user.id)) throw new HttpError(403, 'Add yourself to the pod (only the admin can start pods for others).');
+  const n = kvGet('pod_counter', 0) + 1;
+  kvSet('pod_counter', n);
+  const pod = { id: id(10), name: `Pod ${n}`, status: 'playing', createdAt: now(), createdBy: req.user.id, winnerId: null, spin: null, players };
+  res.json({ pod: commit(pod) });
 }));
 
-app.post('/api/game/winner', wrap(async (req, res) => {
-  const g = requireGame();
-  const winner = findPlayer(g, req.body?.playerId);
-  if (g.players.some(p => p.packs.length || p.sacrificed)) throw new HttpError(409, 'Packs have already been spun — adjust pack counts instead of changing the winner.');
-  g.winnerId = winner.id;
-  g.status = 'awarded';
-  g.wonAt = now();
-  for (const p of g.players) p.awarded = p.id === winner.id ? WINNER_PACKS : LOSER_PACKS;
-  res.json({ game: commit(g, 'state') });
+app.post('/api/pods/:id/winner', wrap(async (req, res) => {
+  const pod = requirePod(req.params.id);
+  requireMember(pod, req.user);
+  if (pod.spin) throw new HttpError(409, 'The wheel has already been spun. Ask the admin to adjust packs instead.');
+  const winner = findPlayer(pod, req.body?.playerId);
+  pod.winnerId = winner.id;
+  pod.status = 'awarded';
+  pod.wonAt = now();
+  for (const p of pod.players) p.awarded = p.id === winner.id ? WINNER_PACKS : LOSER_PACKS;
+  res.json({ pod: commit(pod) });
 }));
 
-app.post('/api/game/award', wrap(async (req, res) => {
-  const g = requireGame();
-  const p = findPlayer(g, req.body?.playerId);
+// Admin-only pack adjustments. Before the spin they change the award; after
+// it they add a pack of the spun set or remove an unopened one.
+app.post('/api/pods/:id/award', wrap(async (req, res) => {
+  requireAdmin(req);
+  const pod = requirePod(req.params.id);
+  if (pod.status !== 'awarded') throw new HttpError(409, 'Crown a winner first.');
+  const p = findPlayer(pod, req.body?.playerId);
   const delta = Math.sign(Number(req.body?.delta) || 0);
-  if (delta < 0 && remaining(p) < 1) throw new HttpError(409, `${p.name} has no unspun packs to remove.`);
+  if (pod.spin) {
+    if (delta > 0) p.packs.push(newPack(pod.spin.set));
+    if (delta < 0) {
+      const k = spunPacks(p).at(-1);
+      if (!k) throw new HttpError(409, `${p.name} has no unopened wheel pack to remove.`);
+      p.packs.splice(p.packs.indexOf(k), 1);
+    }
+  } else if (delta < 0 && p.awarded < 1) throw new HttpError(409, `${p.name} has no packs to remove.`);
   p.awarded = Math.max(0, p.awarded + delta);
-  res.json({ game: commit(g, 'state') });
+  res.json({ pod: commit(pod) });
 }));
 
-app.post('/api/game/spin', wrap(async (req, res) => {
-  const g = requireGame();
-  if (g.status !== 'awarded') throw new HttpError(409, 'Pick the winner first — packs are awarded after the game.');
-  const p = findPlayer(g, req.body?.playerId);
-  if (remaining(p) < 1) throw new HttpError(409, `${p.name} has no packs left to spin for.`);
+// The one spin per pod. Only the winner (or the admin) can pull the lever.
+app.post('/api/pods/:id/spin', wrap(async (req, res) => {
+  const pod = requirePod(req.params.id);
+  if (pod.status !== 'awarded') throw new HttpError(409, 'Crown the winner first: the winner spins the wheel.');
+  if (pod.spin) throw new HttpError(409, `This pod already spun ${pod.spin.set.name}. There is only one spin per pod.`);
+  if (!req.user.isAdmin && req.user.id !== pod.winnerId) throw new HttpError(403, `Only the winner, ${findPlayer(pod, pod.winnerId).name}, can spin.`);
   const sets = await allSets();
   const wheel = wheelFor(sets, getSettings());
-  if (!wheel.length) throw new HttpError(409, 'The wheel is empty — loosen the wheel filters.');
+  if (!wheel.length) throw new HttpError(409, 'The wheel is empty. The admin needs to loosen the wheel filters.');
   const total = wheel.reduce((s, w) => s + w.weight, 0);
   let r = Math.random() * total, pick = wheel[wheel.length - 1];
   for (const w of wheel) { r -= w.weight; if (r < 0) { pick = w; break; } }
   const set = await setInfo(pick.code);
-  const pack = { id: id(10), status: 'ready', source: 'wheel', set, wheelSet: set, spunAt: now(), cards: null };
-  p.packs.push(pack);
-  const spin = { id: id(10), playerId: p.id, packId: pack.id, setCode: set.code, at: now(), offset: Math.random() };
-  g.spins.push(spin);
-  res.json({ game: commit(g, 'spin'), spin });
+  pod.spin = { id: id(10), setCode: set.code, set, by: req.user.id, at: now(), offset: Math.random() };
+  for (const p of pod.players) p.packs = Array.from({ length: p.awarded }, () => newPack(set));
+  res.json({ pod: commit(pod, 'spin', { spinId: pod.spin.id }), spin: pod.spin });
 }));
 
-app.post('/api/game/pack/:packId/sacrifice', wrap(async (req, res) => {
-  const g = requireGame();
-  const { player, pack } = findPack(g, req.params.packId);
-  if (pack.status !== 'ready' || pack.source !== 'wheel') throw new HttpError(409, 'Only an unopened pack from the wheel can be swapped.');
-  if (remaining(player) < 1) throw new HttpError(409, `${player.name} needs another unspun pack to sacrifice.`);
+// Sacrifice: give up one of your spun-set packs so this one can be any set.
+app.post('/api/pods/:id/packs/:packId/sacrifice', wrap(async (req, res) => {
+  const pod = requirePod(req.params.id);
+  const { player, pack } = findPack(pod, req.params.packId);
+  requireOwner(player, req.user);
+  if (pack.status !== 'ready' || pack.source !== 'wheel') throw new HttpError(409, 'Only an unopened pack of the spun set can be swapped.');
+  const fodder = spunPacks(player).filter(k => k.id !== pack.id).at(-1);
+  if (!fodder) throw new HttpError(409, `${player.name} needs another unopened ${pack.set.name} pack to sacrifice.`);
+  player.packs.splice(player.packs.indexOf(fodder), 1);
   player.sacrificed += 1;
   pack.status = 'choosing';
   pack.source = 'sacrifice';
   pack.sacrificedAt = now();
-  res.json({ game: commit(g, 'state'), packId: pack.id });
+  res.json({ pod: commit(pod), packId: pack.id });
 }));
 
-app.post('/api/game/pack/:packId/choose', wrap(async (req, res) => {
-  const g = requireGame();
-  const { pack } = findPack(g, req.params.packId);
+app.post('/api/pods/:id/packs/:packId/choose', wrap(async (req, res) => {
+  const pod = requirePod(req.params.id);
+  const { player, pack } = findPack(pod, req.params.packId);
+  requireOwner(player, req.user);
   if (pack.status !== 'choosing') throw new HttpError(409, 'This pack is not waiting for a set choice.');
   pack.set = await setInfo(String(req.body?.setCode || ''));
   pack.status = 'ready';
   pack.chosenAt = now();
-  res.json({ game: commit(g, 'state'), packId: pack.id });
+  res.json({ pod: commit(pod), packId: pack.id });
 }));
 
 const opening = new Set();
-app.post('/api/game/pack/:packId/open', wrap(async (req, res) => {
-  const packId = req.params.packId;
-  if (opening.has(packId)) throw new HttpError(409, 'That pack is already being opened.');
-  let g = requireGame();
-  let { pack } = findPack(g, packId);
-  if (pack.status === 'opened') return res.json({ game: publicGame(g), pack });
+app.post('/api/pods/:id/packs/:packId/open', wrap(async (req, res) => {
+  const { packId } = req.params;
+  let pod = requirePod(req.params.id);
+  let { player, pack } = findPack(pod, packId);
+  requireOwner(player, req.user);
+  if (pack.status === 'opened') return res.json({ pod, pack });
   if (pack.status !== 'ready') throw new HttpError(409, 'Choose a set for this pack first.');
+  if (opening.has(packId)) throw new HttpError(409, 'That pack is already being opened.');
   opening.add(packId);
   try {
     const sets = await allSets();
     const set = sets.find(s => s.code === pack.set.code) || pack.set;
     const result = await openPack(set);
     // Re-load in case something else changed while Scryfall was answering.
-    g = requireGame();
-    ({ pack } = findPack(g, packId));
+    pod = requirePod(req.params.id);
+    ({ pack } = findPack(pod, packId));
     pack.cards = result.cards;
     pack.boosterType = result.boosterType;
     pack.generated = result.generated;
     pack.status = 'opened';
     pack.openedAt = now();
-    res.json({ game: commit(g, 'state'), pack });
+    res.json({ pod: commit(pod), pack });
   } finally {
     opening.delete(packId);
   }
 }));
 
-app.post('/api/game/finish', wrap(async (req, res) => {
-  const g = requireGame();
-  if (!g.winnerId) throw new HttpError(409, 'Pick a winner before finishing the game.');
-  g.status = 'done';
-  g.finishedAt = now();
-  saveGame(g);
-  broadcast('state');
+app.post('/api/pods/:id/finish', wrap(async (req, res) => {
+  const pod = requirePod(req.params.id);
+  requireMember(pod, req.user);
+  if (!pod.winnerId) throw new HttpError(409, 'Pick a winner before finishing the pod.');
+  pod.status = 'done';
+  pod.finishedAt = now();
+  res.json({ ok: true, pod: commit(pod) });
+}));
+
+app.post('/api/pods/:id/discard', wrap(async (req, res) => {
+  const pod = requirePod(req.params.id);
+  requireMember(pod, req.user);
+  pod.status = 'discarded';
+  pod.finishedAt = now();
+  commit(pod);
   res.json({ ok: true });
 }));
 
-app.post('/api/game/discard', wrap(async (req, res) => {
-  const g = requireGame();
-  g.status = 'discarded';
-  g.finishedAt = now();
-  saveGame(g);
-  broadcast('state');
-  res.json({ ok: true });
-}));
-
-app.get('/api/history', (req, res) => res.json({ games: finishedGames() }));
-app.get('/api/game/:id', (req, res) => {
-  const g = loadGame(req.params.id);
-  if (!g) return res.status(404).json({ error: 'Not found' });
-  res.json({ game: publicGame(g) });
+app.get('/api/history', (req, res) => res.json({ pods: finishedPods() }));
+app.get('/api/pods/:id', (req, res) => {
+  const pod = loadPod(req.params.id);
+  if (!pod) return res.status(404).json({ error: 'Not found' });
+  res.json({ pod });
 });
 
-app.get('/healthz', (req, res) => res.json({ ok: true }));
+// ---------- pools ----------
+// A player's pool = every card they've opened in a running or finished pod
+// (discarded pods don't count). Their precon is separate and not listed.
+app.get('/api/pools', (req, res) => {
+  const pools = new Map(listUsers().map(u => [u.id, { userId: u.id, username: u.username, precon: u.precon || '', packs: [], pods: 0 }]));
+  for (const pod of [...activePods(), ...finishedPods()]) {
+    for (const p of pod.players) {
+      const pool = pools.get(p.id) || { userId: p.id, username: p.name, precon: p.precon, packs: [], pods: 0 };
+      pool.pods++;
+      for (const k of p.packs) if (k.status === 'opened') {
+        pool.packs.push({ podId: pod.id, podName: pod.name, at: k.openedAt, set: k.set, source: k.source, cards: k.cards });
+      }
+      pools.set(p.id, pool);
+    }
+  }
+  res.json({ pools: [...pools.values()].sort((a, b) => a.username.localeCompare(b.username)) });
+});
 
+seedAdmin();
 app.listen(PORT, () => {
   console.log(`Pre-Con Commander listening on :${PORT}`);
   allSets().then(s => console.log(`${s.length} booster sets available`)).catch(() => {});

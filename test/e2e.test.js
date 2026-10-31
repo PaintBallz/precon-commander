@@ -4,11 +4,11 @@
 //   (or, without the site running:  docker compose run --rm pre-con-commander npm run e2e)
 //
 // It starts a second copy of the server on its own port with a throwaway
-// database in /tmp, so real game nights and wheel settings are never touched,
-// then plays a full game night against live Scryfall: create game → crown
-// winner → spin (with live-sync event) → open a real-data booster → Sacrifice a
-// Pack → choose sets → open generated old + modern boosters → copy lists →
-// wheel odds → finish → history.
+// database in /tmp, so real league data and wheel settings are never touched,
+// then plays a full league night against live Scryfall: admin first login →
+// sign-ups → pod → crown winner → the pod's one spin (with live-sync event) →
+// open boosters → Sacrifice a Pack → choose sets → generated old + modern
+// boosters → pools → copy lists → admin-only wheel odds → finish → history.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -25,36 +25,46 @@ const LIVE_SCRYFALL = !process.env.SCRYFALL_BASE;
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'pcc-e2e-'));
 let server, serverLog = '';
 
-async function call(method, url, body) {
-  const res = await fetch(BASE + url, {
-    method,
-    headers: body ? { 'Content-Type': 'application/json' } : {},
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const text = await res.text();
-  let json; try { json = JSON.parse(text); } catch { json = { raw: text }; }
-  return { status: res.status, json, headers: res.headers, text };
+// One cookie jar per "phone".
+function client() {
+  let cookie = '';
+  const call = async (method, url, body) => {
+    const headers = { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(cookie ? { Cookie: cookie } : {}) };
+    const res = await fetch(BASE + url, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    const set = res.headers.get('set-cookie');
+    if (set) cookie = set.split(';')[0].endsWith('=') ? '' : set.split(';')[0];
+    const text = await res.text();
+    let json; try { json = JSON.parse(text); } catch { json = { raw: text }; }
+    return { status: res.status, json, headers: res.headers, text };
+  };
+  return {
+    get: url => call('GET', url),
+    post: (url, body = {}) => call('POST', url, body),
+    put: (url, body) => call('PUT', url, body),
+    get cookie() { return cookie; },
+  };
 }
-const get = url => call('GET', url);
-const post = (url, body = {}) => call('POST', url, body);
-const put = (url, body) => call('PUT', url, body);
 async function ok(p) {
   const r = await p;
   assert.ok(r.status >= 200 && r.status < 300, `expected 2xx, got ${r.status}: ${JSON.stringify(r.json)}`);
   return r.json;
 }
-const player = (g, id) => g.players.find(p => p.id === id);
 const count = (cards, pred) => cards.filter(pred).length;
 const isRareUp = c => c.rarity === 'rare' || c.rarity === 'mythic';
 const isBasic = c => /Basic( Snow)? Land/.test(c.type);
+const PW = 'league2026';
 
 // Shared state across the ordered steps.
-const S = {};
+const S = { u: {} };
+const anon = client();
+const admin = client();
+const nick = client(), mike = client(), joe = client(), dan = client(), eve = client();
+const player = (pod, who) => pod.players.find(p => p.id === S.u[who].id);
 
 before(async () => {
   server = spawn(process.execPath, ['--no-warnings', 'server/index.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), DATA_DIR },
+    env: { ...process.env, PORT: String(PORT), DATA_DIR, SMTP_HOST: '', MAIL_FROM: '' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   server.stdout.on('data', d => { serverLog += d; });
@@ -72,19 +82,82 @@ after(() => {
 });
 
 test('serves the app shell and assets', async () => {
-  const home = await get('/');
+  const home = await anon.get('/');
   assert.equal(home.status, 200);
   assert.match(home.text, /<title>Pre-Con Commander<\/title>/);
   for (const f of ['/app.js', '/styles.css', '/decklist.js', '/favicon.svg']) {
-    assert.equal((await get(f)).status, 200, `${f} should be served`);
+    assert.equal((await anon.get(f)).status, 200, `${f} should be served`);
   }
-  const app = (await get('/app.js')).text;
+  const app = (await anon.get('/app.js')).text;
   assert.doesNotMatch(app, /price|\$\d/i, 'no prices or values anywhere in the UI');
   assert.doesNotMatch(app, /booster box|open box/i, 'no booster boxes in the UI');
 });
 
+test('the league is behind a login', async () => {
+  for (const url of ['/api/state', '/api/sets', '/api/pools', '/api/history', '/api/events']) {
+    assert.equal((await anon.get(url)).status, 401, `${url} needs a login`);
+  }
+  const me = await ok(anon.get('/api/auth/me'));
+  assert.equal(me.user, null);
+  assert.match(me.passwordRules, /8 characters/);
+  assert.equal((await anon.post('/api/auth/login', { username: 'admin', password: 'nope' })).status, 401);
+});
+
+test('admin starts on "changeme" and must change it first', async () => {
+  const { user } = await ok(admin.post('/api/auth/login', { username: 'admin', password: 'changeme' }));
+  assert.equal(user.isAdmin, true);
+  assert.equal(user.mustChange, true);
+  assert.match(admin.cookie, /^pcc_sid=/);
+  const blocked = await admin.get('/api/state');
+  assert.equal(blocked.status, 403);
+  assert.equal(blocked.json.mustChange, true);
+  assert.equal((await admin.post('/api/auth/password', { current: 'changeme', password: 'short1' })).status, 400, 'too short');
+  assert.equal((await admin.post('/api/auth/password', { current: 'changeme', password: 'lettersonly' })).status, 400, 'needs a number');
+  assert.equal((await admin.post('/api/auth/password', { current: 'wrong', password: 'Admin2026' })).status, 400, 'current password checked');
+  const r = await ok(admin.post('/api/auth/password', { current: 'changeme', password: 'Admin2026' }));
+  assert.equal(r.user.mustChange, false);
+  await ok(admin.get('/api/state'));
+  assert.equal((await anon.post('/api/auth/login', { username: 'admin', password: 'changeme' })).status, 401, 'old password is gone');
+});
+
+test('sign-up needs a username, an email and a simple-rules password', async () => {
+  assert.equal((await anon.post('/api/auth/signup', { username: 'Nick', password: PW })).status, 400, 'email required');
+  assert.equal((await anon.post('/api/auth/signup', { username: 'Nick', email: 'not-an-email', password: PW })).status, 400);
+  assert.equal((await anon.post('/api/auth/signup', { username: 'Nick', email: 'nick@example.com', password: 'abc' })).status, 400, 'weak password');
+  assert.equal((await anon.post('/api/auth/signup', { username: 'x', email: 'x@example.com', password: PW })).status, 400, 'username too short');
+  for (const [name, c] of [['Nick', nick], ['Mike', mike], ['Joe', joe], ['Dan', dan], ['Eve', eve]]) {
+    const { user } = await ok(c.post('/api/auth/signup', { username: name, email: `${name.toLowerCase()}@example.com`, password: PW }));
+    assert.equal(user.isAdmin, false);
+    S.u[name] = user;
+  }
+  assert.equal((await anon.post('/api/auth/signup', { username: 'nick', email: 'other@example.com', password: PW })).status, 409, 'usernames are unique (any case)');
+  assert.equal((await anon.post('/api/auth/signup', { username: 'Nick2', email: 'NICK@example.com', password: PW })).status, 409, 'one account per email');
+  await ok(nick.put('/api/auth/profile', { precon: 'Animated Army' }));
+  const { members } = await ok(nick.get('/api/members'));
+  assert.equal(members.length, 6, 'admin + 5 players: more than one pod\'s worth');
+  assert.equal(members.find(m => m.username === 'Nick').precon, 'Animated Army');
+  assert.equal(JSON.stringify(members).includes('@'), false, 'member list does not expose emails');
+  // Logging in by email works too.
+  await ok(client().post('/api/auth/login', { username: 'eve@example.com', password: PW }));
+});
+
+test('password reset: admin link (no email configured) sets a new password', async () => {
+  const forgot = await ok(anon.post('/api/auth/forgot', { email: 'joe@example.com' }));
+  assert.equal(forgot.emailEnabled, false);
+  assert.equal((await joe.post(`/api/admin/users/${S.u.Joe.id}/reset-link`)).status, 403, 'only the admin hands out links');
+  const { link } = await ok(admin.post(`/api/admin/users/${S.u.Joe.id}/reset-link`));
+  const token = new URL(link.replace('#reset?', 'reset?')).searchParams.get('token');
+  assert.ok(token);
+  const phone = client();
+  assert.equal((await phone.post('/api/auth/reset', { token, password: 'weak' })).status, 400);
+  await ok(phone.post('/api/auth/reset', { token, password: 'NewJoe2026' }));
+  assert.equal((await phone.post('/api/auth/reset', { token, password: 'NewJoe2027' })).status, 400, 'a link works once');
+  assert.equal((await joe.get('/api/state')).status, 401, 'old sessions are signed out');
+  await ok(joe.post('/api/auth/login', { username: 'Joe', password: 'NewJoe2026' }));
+});
+
 test('set list: every booster set from Scryfall, nothing else', async () => {
-  const d = await ok(get('/api/sets'));
+  const d = await ok(nick.get('/api/sets'));
   S.sets = d.sets;
   const codes = new Set(d.sets.map(s => s.code));
   if (LIVE_SCRYFALL) assert.ok(d.sets.length > 100, `expected 100+ booster sets, got ${d.sets.length}`);
@@ -102,32 +175,43 @@ test('set list: every booster set from Scryfall, nothing else', async () => {
   assert.ok(d.sets.find(s => s.code === 'blb').realPack, 'BLB uses the real booster data');
 });
 
-test('creating a game validates players', async () => {
-  assert.equal((await post('/api/game', { players: [{ name: 'Solo' }] })).status, 400);
-  const { game } = await ok(post('/api/game', { players: [
-    { name: 'Nick', precon: 'Animated Army' }, { name: 'Mike', precon: 'Death Toll' }, { name: 'Joe' }, { name: 'Dan' },
-  ] }));
-  assert.equal(game.status, 'playing');
-  assert.equal(game.players.length, 4);
-  assert.equal((await post('/api/game', { players: [{ name: 'A' }, { name: 'B' }] })).status, 409, 'only one game at a time');
-  S.game = game;
+test('only the admin can edit All Sets / the wheel', async () => {
+  assert.equal((await nick.put('/api/settings', { excluded: ['blb'] })).status, 403);
+  assert.equal((await nick.put('/api/settings', { reset: true })).status, 403);
+  assert.equal((await ok(nick.get('/api/sets'))).settings.excluded.length, 0, 'nothing changed');
 });
 
-test('no spinning before a winner is crowned', async () => {
-  const r = await post('/api/game/spin', { playerId: 'p1' });
-  assert.equal(r.status, 409);
+test('pods hold 2 to 4 league members', async () => {
+  const ids = names => names.map(n => ({ userId: S.u[n].id }));
+  assert.equal((await nick.post('/api/pods', { players: ids(['Nick']) })).status, 400);
+  assert.equal((await nick.post('/api/pods', { players: ids(['Nick', 'Mike', 'Joe', 'Dan', 'Eve']) })).status, 400, 'max 4 per pod');
+  assert.equal((await nick.post('/api/pods', { players: [{ userId: S.u.Nick.id }, { userId: 'ghost' }] })).status, 400);
+  assert.equal((await eve.post('/api/pods', { players: ids(['Nick', 'Mike']) })).status, 403, 'players add themselves');
+  const { pod } = await ok(nick.post('/api/pods', { players: [...ids(['Nick']), { userId: S.u.Mike.id, precon: 'Death Toll' }, ...ids(['Joe', 'Dan'])] }));
+  assert.equal(pod.status, 'playing');
+  assert.equal(pod.name, 'Pod 1');
+  assert.deepEqual(pod.players.map(p => [p.name, p.precon]), [['Nick', 'Animated Army'], ['Mike', 'Death Toll'], ['Joe', ''], ['Dan', '']]);
+  assert.equal((await eve.post('/api/pods', { players: ids(['Eve', 'Nick']) })).status, 409, 'Nick is already in a pod');
+  S.pod = pod;
+});
+
+test('no spin before the winner is crowned; outsiders can\'t crown', async () => {
+  assert.equal((await nick.post(`/api/pods/${S.pod.id}/spin`)).status, 409);
+  assert.equal((await eve.post(`/api/pods/${S.pod.id}/winner`, { playerId: S.u.Nick.id })).status, 403);
 });
 
 test('winner gets 3 packs, everyone else gets 2', async () => {
-  const { game } = await ok(post('/api/game/winner', { playerId: 'p1' }));
-  assert.equal(game.status, 'awarded');
-  assert.deepEqual(game.players.map(p => [p.name, p.awarded, p.remaining]), [['Nick', 3, 3], ['Mike', 2, 2], ['Joe', 2, 2], ['Dan', 2, 2]]);
+  const { pod } = await ok(mike.post(`/api/pods/${S.pod.id}/winner`, { playerId: S.u.Nick.id }));
+  assert.equal(pod.status, 'awarded');
+  assert.deepEqual(pod.players.map(p => [p.name, p.awarded]), [['Nick', 3], ['Mike', 2], ['Joe', 2], ['Dan', 2]]);
 });
 
-test('a spin picks a set from the wheel and is pushed live to other devices', async () => {
+test('only the winner spins, once, and it is pushed live to other devices', async () => {
+  assert.equal((await mike.post(`/api/pods/${S.pod.id}/spin`)).status, 403, 'only the winner spins');
   // Listen like a second phone would.
   const ctrl = new AbortController();
-  const res = await fetch(BASE + '/api/events', { signal: ctrl.signal });
+  const res = await fetch(BASE + '/api/events', { signal: ctrl.signal, headers: { Cookie: eve.cookie } });
+  assert.equal(res.status, 200);
   const reader = res.body.getReader();
   const gotSpin = (async () => {
     let buf = '';
@@ -135,27 +219,31 @@ test('a spin picks a set from the wheel and is pushed live to other devices', as
       const { value, done } = await reader.read();
       if (done) return false;
       buf += new TextDecoder().decode(value);
-      if (buf.includes('event: spin')) return true;
+      if (buf.includes('event: spin') && buf.includes(S.pod.id)) return true;
     }
   })();
   await new Promise(r => setTimeout(r, 200));
 
-  const { game, spin } = await ok(post('/api/game/spin', { playerId: 'p1' }));
+  const { pod, spin } = await ok(nick.post(`/api/pods/${S.pod.id}/spin`));
   const live = await Promise.race([gotSpin, new Promise(r => setTimeout(() => r(false), 5000))]);
   ctrl.abort();
   assert.ok(live, 'spin event reached the other device');
-
-  const pack = player(game, 'p1').packs.find(k => k.id === spin.packId);
-  assert.equal(pack.status, 'ready');
-  assert.equal(pack.source, 'wheel');
   assert.ok(S.sets.some(s => s.code === spin.setCode), 'landed on a set from the list');
-  assert.equal(player(game, 'p1').remaining, 2);
-  S.p1Pack = pack;
+  for (const p of pod.players) {
+    assert.equal(p.packs.length, p.awarded, `${p.name} has all their packs`);
+    assert.ok(p.packs.every(k => k.set.code === spin.setCode && k.status === 'ready' && k.source === 'wheel'), `${p.name}'s packs are all the spun set`);
+  }
+  const again = await nick.post(`/api/pods/${S.pod.id}/spin`);
+  assert.equal(again.status, 409, 'there is only one spin per pod');
+  S.pod = pod; S.spin = spin;
 });
 
 test('a spun pack opens as that set\'s regular booster (never Collector)', async () => {
-  const { pack } = await ok(post(`/api/game/pack/${S.p1Pack.id}/open`));
+  const k = player(S.pod, 'Nick').packs[0];
+  assert.equal((await mike.post(`/api/pods/${S.pod.id}/packs/${k.id}/open`)).status, 403, 'you can only open your own packs');
+  const { pack } = await ok(nick.post(`/api/pods/${S.pod.id}/packs/${k.id}/open`));
   assert.equal(pack.status, 'opened');
+  assert.equal(pack.set.code, S.spin.setCode);
   assert.doesNotMatch(pack.boosterType, /collector/i);
   assert.ok(pack.cards.length >= 12 && pack.cards.length <= 16, `pack has ${pack.cards.length} cards`);
   for (const c of pack.cards) {
@@ -164,13 +252,13 @@ test('a spun pack opens as that set\'s regular booster (never Collector)', async
     assert.equal(c.price, undefined, 'cards carry no price');
   }
   assert.ok(count(pack.cards, isRareUp) >= 1, 'at least one rare or mythic');
-  const again = await post(`/api/game/pack/${S.p1Pack.id}/open`);
+  const again = await nick.post(`/api/pods/${S.pod.id}/packs/${k.id}/open`);
   assert.deepEqual(again.json.pack.cards, pack.cards, 're-opening returns the same cards');
+  S.nickCards = pack.cards;
 });
 
 test('card images load from Scryfall', { skip: !LIVE_SCRYFALL && 'mock Scryfall' }, async () => {
-  const { game } = await ok(get('/api/state'));
-  const card = player(game, 'p1').packs[0].cards.find(isRareUp);
+  const card = S.nickCards.find(isRareUp);
   assert.match(card.image, /^https:\/\/cards\.scryfall\.io\//, 'image comes from the Scryfall CDN');
   // The CDN answers 400 to Node's default User-Agent; browsers are fine.
   const img = await fetch(card.image, { method: 'HEAD', headers: { 'User-Agent': 'PreconCommander-e2e/1.0' } });
@@ -178,43 +266,46 @@ test('card images load from Scryfall', { skip: !LIVE_SCRYFALL && 'mock Scryfall'
   assert.match(img.headers.get('content-type'), /^image\//);
 });
 
-test('Sacrifice a Pack costs one extra pack and lets you pick any set', async () => {
-  const { spin } = await ok(post('/api/game/spin', { playerId: 'p2' }));
-  let { game } = await ok(post(`/api/game/pack/${spin.packId}/sacrifice`));
-  const mike = player(game, 'p2');
-  assert.equal(mike.sacrificed, 1);
-  assert.equal(mike.remaining, 0, 'Mike: 2 awarded − 1 spun − 1 sacrificed');
-  assert.equal(mike.packs[0].status, 'choosing');
-  assert.equal((await post(`/api/game/pack/${spin.packId}/open`)).status, 409, 'cannot open before choosing');
-  assert.equal((await post(`/api/game/pack/${spin.packId}/choose`, { setCode: 'nope' })).status, 400);
+test('Sacrifice a Pack gives up one spun pack to pick any set for another', async () => {
+  const mk = () => player(S.pod, 'Mike');
+  const k = mk().packs[0];
+  assert.equal((await joe.post(`/api/pods/${S.pod.id}/packs/${k.id}/sacrifice`)).status, 403, 'not your pack');
+  let { pod } = await ok(mike.post(`/api/pods/${S.pod.id}/packs/${k.id}/sacrifice`));
+  S.pod = pod;
+  assert.equal(mk().sacrificed, 1);
+  assert.equal(mk().packs.length, 1, 'Mike: 2 packs − 1 sacrificed');
+  assert.equal(mk().packs[0].status, 'choosing');
+  assert.equal((await mike.post(`/api/pods/${S.pod.id}/packs/${k.id}/open`)).status, 409, 'cannot open before choosing');
+  assert.equal((await mike.post(`/api/pods/${S.pod.id}/packs/${k.id}/choose`, { setCode: 'nope' })).status, 400);
 
-  ({ game } = await ok(post(`/api/game/pack/${spin.packId}/choose`, { setCode: 'blb' })));
-  const pack = player(game, 'p2').packs[0];
+  ({ pod } = await ok(mike.post(`/api/pods/${S.pod.id}/packs/${k.id}/choose`, { setCode: 'blb' })));
+  S.pod = pod;
+  const pack = mk().packs[0];
   assert.equal(pack.set.code, 'blb');
   assert.equal(pack.status, 'ready');
-  assert.notEqual(pack.wheelSet, undefined, 'the original wheel result is kept for history');
+  assert.equal(pack.wheelSet.code, S.spin.setCode, 'the spun set is kept for history');
 
-  const opened = (await ok(post(`/api/game/pack/${spin.packId}/open`))).pack;
+  const opened = (await ok(mike.post(`/api/pods/${S.pod.id}/packs/${k.id}/open`))).pack;
   assert.equal(opened.boosterType, 'Play Booster', 'Bloomburrow uses its real Play Booster data');
   assert.equal(opened.cards.length, 14);
-  assert.equal((await post('/api/game/spin', { playerId: 'p2' })).status, 409, 'Mike has nothing left to spin');
 });
 
-test('cannot sacrifice your last pack', async () => {
-  // Joe: 2 packs. Spin one, sacrifice (uses the 2nd), then spin is impossible.
-  const a = await ok(post('/api/game/spin', { playerId: 'p3' }));
-  await ok(post(`/api/game/pack/${a.spin.packId}/sacrifice`));
-  // Dan: spin both, then try to sacrifice with nothing left.
-  await ok(post('/api/game/spin', { playerId: 'p4' }));
-  const b = await ok(post('/api/game/spin', { playerId: 'p4' }));
-  const r = await post(`/api/game/pack/${b.spin.packId}/sacrifice`);
-  assert.equal(r.status, 409);
-  S.joePack = a.spin.packId;
+test('cannot sacrifice without another spun pack to give up', async () => {
+  // Dan opens one of his 2 packs, then can't sacrifice the other.
+  const [a, b] = player(S.pod, 'Dan').packs;
+  await ok(dan.post(`/api/pods/${S.pod.id}/packs/${a.id}/open`));
+  assert.equal((await dan.post(`/api/pods/${S.pod.id}/packs/${b.id}/sacrifice`)).status, 409);
+  // Joe sacrifices; his second pack is gone, so he can't sacrifice again.
+  const j = player(S.pod, 'Joe').packs[0];
+  const { pod } = await ok(joe.post(`/api/pods/${S.pod.id}/packs/${j.id}/sacrifice`));
+  S.pod = pod;
+  assert.equal(player(pod, 'Joe').packs.length, 1);
+  S.joePack = j.id;
 });
 
 test('generated booster for an old set (Alpha): 11 commons, 3 uncommons, 1 rare, no land slot', async () => {
-  await ok(post(`/api/game/pack/${S.joePack}/choose`, { setCode: 'lea' }));
-  const { pack } = await ok(post(`/api/game/pack/${S.joePack}/open`));
+  await ok(joe.post(`/api/pods/${S.pod.id}/packs/${S.joePack}/choose`, { setCode: 'lea' }));
+  const { pack } = await ok(joe.post(`/api/pods/${S.pod.id}/packs/${S.joePack}/open`));
   assert.equal(pack.generated, true);
   assert.equal(pack.cards.length, 15);
   assert.equal(count(pack.cards, c => c.rarity === 'common'), 11);
@@ -225,22 +316,38 @@ test('generated booster for an old set (Alpha): 11 commons, 3 uncommons, 1 rare,
 });
 
 test('generated booster for a modern set (Magic 2010): land slot + rare/mythic', async () => {
-  const { game } = await ok(post('/api/game/award', { playerId: 'p2', delta: 1 }));
-  assert.equal(player(game, 'p2').remaining, 1, 'manual +1 pack works');
-  const { spin } = await ok(post('/api/game/spin', { playerId: 'p2' }));
-  await ok(post('/api/game/award', { playerId: 'p2', delta: 1 }));
-  await ok(post(`/api/game/pack/${spin.packId}/sacrifice`));
-  await ok(post(`/api/game/pack/${spin.packId}/choose`, { setCode: 'm10' }));
-  const { pack } = await ok(post(`/api/game/pack/${spin.packId}/open`));
+  assert.equal((await nick.post(`/api/pods/${S.pod.id}/award`, { playerId: S.u.Nick.id, delta: 1 })).status, 403, 'only the admin adjusts packs');
+  let { pod } = await ok(admin.post(`/api/pods/${S.pod.id}/award`, { playerId: S.u.Nick.id, delta: 1 }));
+  const nk = player(pod, 'Nick');
+  assert.equal(nk.packs.length, 4, 'admin +1 adds a pack of the spun set');
+  assert.equal(nk.packs.at(-1).set.code, S.spin.setCode);
+  const k = nk.packs.find(x => x.status === 'ready');
+  ({ pod } = await ok(nick.post(`/api/pods/${S.pod.id}/packs/${k.id}/sacrifice`)));
+  await ok(nick.post(`/api/pods/${S.pod.id}/packs/${k.id}/choose`, { setCode: 'm10' }));
+  const { pack } = await ok(nick.post(`/api/pods/${S.pod.id}/packs/${k.id}/open`));
   assert.equal(pack.cards.length, 15);
   assert.equal(count(pack.cards, isBasic), 1, 'one basic land');
   assert.ok(count(pack.cards, isRareUp) >= 1);
   assert.ok(count(pack.cards, c => c.rarity === 'uncommon') >= 3);
 });
 
+test('pools track each player\'s opened cards at all times', async () => {
+  const { pools } = await ok(eve.get('/api/pools'));
+  const pool = name => pools.find(p => p.username === name);
+  const { pod } = await ok(nick.get(`/api/pods/${S.pod.id}`));
+  S.pod = pod;
+  for (const name of ['Nick', 'Mike', 'Joe', 'Dan']) {
+    const opened = player(pod, name).packs.filter(k => k.status === 'opened');
+    assert.equal(pool(name).packs.length, opened.length, `${name}'s pool has every opened pack (running pod)`);
+    assert.equal(pool(name).packs.flatMap(k => k.cards).length, opened.flatMap(k => k.cards).length);
+  }
+  assert.equal(pool('Nick').precon, 'Animated Army', 'the precon is shown but not listed as cards');
+  assert.equal(pool('Eve').packs.length, 0, 'Eve has not played yet');
+  assert.equal(pool('Eve').pods, 0);
+});
+
 test('copy-to-clipboard text is Moxfield/Archidekt format', async () => {
-  const { game } = await ok(get('/api/state'));
-  const pulls = player(game, 'p2').packs.filter(k => k.status === 'opened').flatMap(k => k.cards);
+  const pulls = player(S.pod, 'Nick').packs.filter(k => k.status === 'opened').flatMap(k => k.cards);
   const text = listText(pulls);
   const lines = text.split('\n');
   for (const l of lines) assert.match(l, /^\d+ .+ \([A-Z0-9]+\) \S+$/, `bad line: ${l}`);
@@ -249,46 +356,58 @@ test('copy-to-clipboard text is Moxfield/Archidekt format', async () => {
   assert.equal(listText([{ name: 'Forest', set: 'blb', number: '278' }, { name: 'Forest', set: 'blb', number: '278' }]), '2 Forest (BLB) 278');
 });
 
-test('wheel odds follow per-set weights and exclusions', async () => {
+test('finishing saves the pod to history (and its pool stays)', async () => {
+  assert.equal((await eve.post(`/api/pods/${S.pod.id}/finish`)).status, 403, 'only pod players (or the admin) finish it');
+  await ok(dan.post(`/api/pods/${S.pod.id}/finish`));
+  const st = await ok(nick.get('/api/state'));
+  assert.equal(st.pods.length, 0);
+  const { pods } = await ok(nick.get('/api/history'));
+  assert.equal(pods.length, 1);
+  assert.equal(pods[0].winnerId, S.u.Nick.id);
+  assert.equal(pods[0].spin.setCode, S.spin.setCode);
+  assert.ok(pods[0].finishedAt);
+  assert.ok(player(pods[0], 'Mike').packs.some(k => k.source === 'sacrifice' && k.cards?.length), 'sacrificed packs and pulls are kept');
+  const { pools } = await ok(nick.get('/api/pools'));
+  assert.ok(pools.find(p => p.username === 'Mike').packs.length >= 1, 'finished pods stay in the pools');
+});
+
+test('wheel odds follow per-set weights and exclusions (admin)', async () => {
   const keep = ['blb', 'lea'];
   const excluded = S.sets.map(s => s.code).filter(c => !keep.includes(c));
-  const set = await ok(put('/api/settings', { excluded, weights: { blb: 3 } }));
+  const set = await ok(admin.put('/api/settings', { excluded, weights: { blb: 3 } }));
   assert.equal(set.settings.weights.blb, 3);
-  const d = await ok(get('/api/sets'));
+  const d = await ok(eve.get('/api/sets'));
   assert.deepEqual(d.wheel.map(w => w.code).sort(), keep.sort());
   assert.ok(Math.abs(d.sets.find(s => s.code === 'blb').chance - 0.75) < 1e-9, 'weight 3 vs 1 → 75%');
 
+  // One spin per pod, so spin N throwaway pods (admin + Eve) and discard them.
   const N = 120;
-  for (let i = 0; i < N; i++) await ok(post('/api/game/award', { playerId: 'p4', delta: 1 }));
   const hits = { blb: 0, lea: 0 };
-  for (let i = 0; i < N; i++) hits[(await ok(post('/api/game/spin', { playerId: 'p4' }))).spin.setCode]++;
+  for (let i = 0; i < N; i++) {
+    const { pod } = await ok(admin.post('/api/pods', { players: [{ userId: S.u.Eve.id }, { userId: (await ok(admin.get('/api/auth/me'))).user.id }] }));
+    await ok(eve.post(`/api/pods/${pod.id}/winner`, { playerId: S.u.Eve.id }));
+    hits[(await ok(eve.post(`/api/pods/${pod.id}/spin`))).spin.setCode]++;
+    await ok(eve.post(`/api/pods/${pod.id}/discard`));
+  }
   assert.equal(hits.blb + hits.lea, N, 'only sets on the wheel come up');
   assert.ok(hits.blb / N > 0.6 && hits.blb / N < 0.9, `blb came up ${hits.blb}/${N}, expected ~75%`);
 
-  const filtered = await ok(put('/api/settings', { excluded: [], weights: {}, minYear: 2024, maxYear: 2100 }));
+  const filtered = await ok(admin.put('/api/settings', { excluded: [], weights: {}, minYear: 2024, maxYear: 2100 }));
   assert.equal(filtered.settings.minYear, 2024);
-  const d2 = await ok(get('/api/sets'));
+  const d2 = await ok(eve.get('/api/sets'));
   assert.ok(d2.wheel.every(w => d2.sets.find(s => s.code === w.code).year >= 2024), 'year filter applies');
-  await ok(put('/api/settings', { reset: true }));
-  assert.equal((await ok(get('/api/sets'))).wheel.length, S.sets.length, 'reset restores the full wheel');
+  await ok(admin.put('/api/settings', { reset: true }));
+  assert.equal((await ok(eve.get('/api/sets'))).wheel.length, S.sets.length, 'reset restores the full wheel');
 });
 
-test('finishing saves the game night to history', async () => {
-  await ok(post('/api/game/finish'));
-  const st = await ok(get('/api/state'));
-  assert.equal(st.game, null);
-  assert.deepEqual(st.lastPlayers.map(p => p.name), ['Nick', 'Mike', 'Joe', 'Dan'], 'next game pre-fills the same players');
-  const { games } = await ok(get('/api/history'));
-  assert.equal(games.length, 1);
-  const g = games[0];
-  assert.equal(g.winnerId, 'p1');
-  assert.ok(g.finishedAt);
-  assert.ok(player(g, 'p2').packs.some(k => k.source === 'sacrifice' && k.cards?.length), 'sacrificed packs and pulls are kept');
+test('discarded pods are not in history or pools', async () => {
+  const { pods } = await ok(eve.get('/api/history'));
+  assert.equal(pods.length, 1);
+  const { pools } = await ok(eve.get('/api/pools'));
+  assert.equal(pools.find(p => p.username === 'Eve').packs.length, 0);
 });
 
-test('a discarded game is not saved to history', async () => {
-  await ok(post('/api/game', { players: [{ name: 'A' }, { name: 'B' }] }));
-  await ok(post('/api/game/discard'));
-  const { games } = await ok(get('/api/history'));
-  assert.equal(games.length, 1);
+test('logging out ends the session', async () => {
+  await ok(eve.post('/api/auth/logout'));
+  assert.equal((await eve.get('/api/state')).status, 401);
 });

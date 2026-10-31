@@ -1,6 +1,8 @@
 // SQLite storage (Node's built-in node:sqlite — no native build step).
-// Games and settings are stored as JSON documents; the app is tiny and
-// single-process, so this keeps the schema trivial.
+// Pods and settings are stored as JSON documents; the app is tiny and
+// single-process, so this keeps the schema trivial. Accounts and sessions get
+// real columns because they are looked up by username / email / token.
+// (The old single-game `games` table is left in place but no longer used.)
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -17,6 +19,33 @@ db.exec(`
     created_at TEXT NOT NULL,
     finished_at TEXT,
     data TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS pods (
+    id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    finished_at TEXT,
+    data TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    email TEXT UNIQUE COLLATE NOCASE,
+    pass_hash TEXT NOT NULL,
+    is_admin INTEGER NOT NULL DEFAULT 0,
+    must_change INTEGER NOT NULL DEFAULT 0,
+    precon TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    expires_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS reset_tokens (
+    token TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    expires_at INTEGER NOT NULL
   );
   CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
@@ -42,25 +71,20 @@ export function kvSet(key, value) {
     .run(key, JSON.stringify(value));
 }
 
-export function saveGame(game) {
-  db.prepare(`INSERT INTO games (id, status, created_at, finished_at, data) VALUES (?, ?, ?, ?, ?)
+export function savePod(pod) {
+  db.prepare(`INSERT INTO pods (id, status, created_at, finished_at, data) VALUES (?, ?, ?, ?, ?)
               ON CONFLICT(id) DO UPDATE SET status = excluded.status, finished_at = excluded.finished_at, data = excluded.data`)
-    .run(game.id, game.status, game.createdAt, game.finishedAt || null, JSON.stringify(game));
+    .run(pod.id, pod.status, pod.createdAt, pod.finishedAt || null, JSON.stringify(pod));
 }
-export function loadGame(id) {
-  const row = db.prepare('SELECT data FROM games WHERE id = ?').get(id);
+export function loadPod(id) {
+  const row = db.prepare('SELECT data FROM pods WHERE id = ?').get(id);
   return row ? JSON.parse(row.data) : null;
 }
-export function currentGame() {
-  const row = db.prepare(`SELECT data FROM games WHERE status IN ('playing','awarded') ORDER BY created_at DESC LIMIT 1`).get();
-  return row ? JSON.parse(row.data) : null;
+export function activePods() {
+  return db.prepare(`SELECT data FROM pods WHERE status IN ('playing','awarded') ORDER BY created_at`).all().map(r => JSON.parse(r.data));
 }
-export function finishedGames() {
-  return db.prepare(`SELECT data FROM games WHERE status = 'done' ORDER BY finished_at DESC`).all().map(r => JSON.parse(r.data));
-}
-export function lastGame() {
-  const row = db.prepare(`SELECT data FROM games WHERE status IN ('done','playing','awarded') ORDER BY created_at DESC LIMIT 1`).get();
-  return row ? JSON.parse(row.data) : null;
+export function finishedPods() {
+  return db.prepare(`SELECT data FROM pods WHERE status = 'done' ORDER BY finished_at DESC`).all().map(r => JSON.parse(r.data));
 }
 
 export function cacheGetMany(keys) {
