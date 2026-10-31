@@ -85,6 +85,10 @@ test('serves the app shell and assets', async () => {
   const home = await anon.get('/');
   assert.equal(home.status, 200);
   assert.match(home.text, /<title>Pre-Con Commander<\/title>/);
+  // Cloudflare caches .js/.css for hours, so the page must link versioned URLs.
+  assert.match(home.text, /\/app\.js\?v=[0-9a-f]{10}"/, 'script URL carries a content version');
+  assert.match(home.text, /\/styles\.css\?v=[0-9a-f]{10}"/, 'stylesheet URL carries a content version');
+  assert.equal(home.headers.get('cache-control'), 'no-cache');
   for (const f of ['/app.js', '/styles.css', '/decklist.js', '/favicon.svg']) {
     assert.equal((await anon.get(f)).status, 200, `${f} should be served`);
   }

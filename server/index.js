@@ -6,6 +6,7 @@
 // that set (winner 3, everyone else 2); a player can Sacrifice a Pack (give up
 // one of their spun-set packs) to turn another one into any set they like.
 import express from 'express';
+import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -23,7 +24,21 @@ const MAX_POD = 4;
 const app = express();
 app.set('trust proxy', 'loopback, uniquelocal');
 app.use(express.json({ limit: '200kb' }));
-app.use(express.static(path.join(ROOT, 'public'), { extensions: ['html'], maxAge: 0 }));
+
+// Cloudflare gives .js/.css a 4-hour browser cache no matter what we send, so
+// the page links its script and stylesheet with a content hash: a new deploy
+// is a new URL and phones never mix a fresh page with a stale script.
+const PUBLIC = path.join(ROOT, 'public');
+const ASSET_VERSION = crypto.createHash('sha1')
+  .update(['app.js', 'styles.css', 'decklist.js'].map(f => fs.readFileSync(path.join(PUBLIC, f))).join('\0'))
+  .digest('hex').slice(0, 10);
+const INDEX_HTML = fs.readFileSync(path.join(PUBLIC, 'index.html'), 'utf8')
+  .replace('/styles.css"', `/styles.css?v=${ASSET_VERSION}"`)
+  .replace('/app.js"', `/app.js?v=${ASSET_VERSION}"`);
+app.get(['/', '/index.html'], (req, res) => {
+  res.set('Cache-Control', 'no-cache').type('html').send(INDEX_HTML);
+});
+app.use(express.static(PUBLIC, { extensions: ['html'], maxAge: 0 }));
 
 const id = (n = 8) => crypto.randomBytes(n).toString('base64url').slice(0, n);
 const now = () => new Date().toISOString();
