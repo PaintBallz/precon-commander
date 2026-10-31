@@ -329,3 +329,8 @@ form label input { color: var(--text); font-weight: 400; }
 .vote-box details summary { cursor: pointer; margin-top: 6px; }
 .vote-opts { display: flex; flex-wrap: wrap; gap: 8px; }
 .vote-opts .btn { min-width: 110px; }
+
+/* ---------- export site switch ---------- */
+.export-site { display: inline-flex; align-items: center; gap: 4px; font-size: .8rem; color: var(--muted); white-space: nowrap; }
+.export-site button { border: 1px solid var(--line); background: var(--bg2); color: var(--muted); border-radius: 999px; padding: 3px 9px; cursor: pointer; font-size: .78rem; font-weight: 600; }
+.export-site button.sel { background: var(--panel2); color: var(--gold2); border-color: #6b5222; }

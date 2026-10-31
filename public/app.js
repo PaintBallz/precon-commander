@@ -1,7 +1,7 @@
 // Pre-Con Commander — client. Plain ES modules, no build step.
 // League = everyone with an account. Pod = one game of 2–4 players; its winner
 // spins the wheel once and every player's packs come from that set.
-import { cardLine, listText } from './decklist.js';
+import { listText, SITES } from './decklist.js';
 const $ = (sel, el = document) => el.querySelector(sel);
 const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -15,6 +15,7 @@ const S = {
   pods: [], members: [], sets: [], setsByCode: new Map(), wheel: [], settings: null, types: [],
   history: null, pools: null, route: 'pods', params: {},
   sound: store.get('sound', true),
+  exportSite: SITES[store.get('exportSite', 'moxfield')] ? store.get('exportSite', 'moxfield') : 'moxfield',
   podId: null, packsPlayer: null,
   seenSpins: new Set(), animatePacks: new Set(), spinning: false, rot: 0,
 };
@@ -83,6 +84,22 @@ paintSound();
 soundBtn.addEventListener('click', () => { S.sound = !S.sound; store.set('sound', S.sound); paintSound(); });
 
 // ---- deck-list text ("1 Card Name (SET) 123" — Moxfield / Archidekt) ----
+// Which deck builder copied lists are formatted for (remembered per device).
+const site = () => S.exportSite;
+const siteName = () => SITES[S.exportSite];
+const listFor = cards => listText(cards, site());
+function exportToggle() {
+  return `<span class="export-site" title="Copied lists are formatted for this site's import box">Copy for
+    ${Object.entries(SITES).map(([k, n]) => `<button type="button" data-site="${k}" class="${k === S.exportSite ? 'sel' : ''}">${n}</button>`).join('')}</span>`;
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-site]');
+  if (!b || b.dataset.site === S.exportSite) return;
+  S.exportSite = b.dataset.site;
+  store.set('exportSite', S.exportSite);
+  render();
+});
+
 async function copyText(text, what = 'List') {
   try {
     await navigator.clipboard.writeText(text);
@@ -92,7 +109,7 @@ async function copyText(text, what = 'List') {
     document.body.append(ta); ta.select();
     document.execCommand('copy'); ta.remove();
   }
-  toast(`📋 ${esc(what)} copied — paste it into your deck list`, 'good');
+  toast(`📋 ${esc(what)} copied for ${siteName()}. Paste it into ${siteName()}'s import box.`, 'good');
 }
 
 // ---------------- routing ----------------
@@ -310,7 +327,7 @@ async function renderAccount(view) {
         <pre class="list" style="white-space:pre-wrap;word-break:break-all">${esc(r.link)}</pre>
         <div class="row" style="justify-content:flex-end"><button class="btn gold" id="cpy">📋 Copy link</button><button class="btn ghost" id="cls">Close</button></div></div></div>`;
       m.hidden = false;
-      $('#cpy', m).onclick = () => copyText(r.link, 'Reset link');
+      $('#cpy', m).onclick = async () => { await navigator.clipboard.writeText(r.link).catch(() => {}); toast('📋 Reset link copied', 'good'); };
       $('#cls', m).onclick = () => { m.hidden = true; };
     } catch (err) { fail(err); }
   });
@@ -880,12 +897,13 @@ function renderPacks(view) {
           <h3>All of ${esc(p.name)}'s pulls this pod</h3>
           <p class="small muted" style="margin:0 0 10px">${pulls.length} cards from ${plural(p.packs.filter(k => k.status === 'opened').length, 'pack')}, merged into one list. Everything is also in <a href="#pools?player=${p.id}">${esc(p.name)}'s pool</a>.</p>
           <button class="btn gold" id="copyAll" style="width:100%">📋 Copy all pulls</button>
+          <div style="margin-top:8px">${exportToggle()}</div>
         </div>` : ''}
       </aside>
       <section id="packView"></section>
     </div>`;
   $$('[data-k]', view).forEach(b => b.onclick = () => go(`#packs?pod=${pod.id}&player=${p.id}&pack=${b.dataset.k}`));
-  $('#copyAll', view)?.addEventListener('click', () => copyText(listText(pulls), `${p.name}'s ${pulls.length} pulls`));
+  $('#copyAll', view)?.addEventListener('click', () => copyText(listFor(pulls), `${p.name}'s ${pulls.length} pulls`));
   renderPackView($('#packView', view), sel, p, pod);
 }
 
@@ -961,14 +979,15 @@ function renderPackView(el, pack, owner, pod) {
       <div class="small muted">${esc(owner.name)} · ${esc(pack.boosterType || 'Booster')} · ${cards.length} cards${pack.source === 'sacrifice' ? ' · 🔥 chosen with a sacrifice' : ''}</div></div></div>
       <div class="row">
         ${animate ? `<button class="btn sm" id="revealAll">Reveal all</button>` : ''}
+        ${exportToggle()}
         <button class="btn gold" id="copyPack">📋 Copy pack list</button>
         ${isAdmin() ? `<button class="btn danger sm" id="delPack" title="Admin: delete this pack and its pulls">🗑 Delete pack</button>` : ''}
       </div>
     </div>
     ${hits.length ? `<div class="row" style="margin-bottom:12px">${hits.map(c => `<span class="chip ${c.rarity === 'mythic' ? 'gold' : ''}">${c.rarity === 'mythic' ? '★' : '◆'} ${esc(c.name)}${c.foil ? ' (foil)' : ''}</span>`).join('')}</div>` : ''}
     <div class="cards" id="cards">${cards.map((c, i) => cardHtml(c, i, animate)).join('')}</div>
-    <details style="margin-top:16px"><summary class="muted small" style="cursor:pointer">Show list text</summary><pre class="list">${esc(listText(cards))}</pre></details>`;
-  $('#copyPack', el).onclick = () => copyText(listText(cards), `${pack.set.name} pack`);
+    <details style="margin-top:16px"><summary class="muted small" style="cursor:pointer">Show list text</summary><pre class="list">${esc(listFor(cards))}</pre></details>`;
+  $('#copyPack', el).onclick = () => copyText(listFor(cards), `${pack.set.name} pack`);
   $('#delPack', el)?.addEventListener('click', () => deletePackFlow(pod.id, pack, owner));
   $$('.mcard', el).forEach(m => m.onclick = () => {
     if (m.classList.contains('down')) { m.classList.remove('down'); return; }
@@ -998,12 +1017,12 @@ function cardModal(c) {
       <div class="row">
         ${c.back ? `<button class="btn sm" id="flipBtn">↻ Flip</button>` : ''}
         <a class="btn sm" href="${esc(c.uri)}" target="_blank" rel="noopener">Scryfall ↗</a>
-        <button class="btn sm" id="copyOne">📋 Copy</button>
+        <button class="btn sm" id="copyOne" title="Formatted for ${siteName()}">📋 Copy (${siteName()})</button>
         ${isAdmin() && c.id ? `<button class="btn sm danger" id="delOne">🗑 Remove</button>` : ''}
         <button class="btn sm ghost" id="closeM">Close</button>
       </div></div>`;
     $('#flipBtn', m)?.addEventListener('click', e => { e.stopPropagation(); showBack = !showBack; paint(); });
-    $('#copyOne', m).onclick = e => { e.stopPropagation(); copyText(`1 ${cardLine(c)}`, c.name); };
+    $('#copyOne', m).onclick = e => { e.stopPropagation(); copyText(listFor([c]), c.name); };
     $('#closeM', m).onclick = () => { m.hidden = true; };
     $('#delOne', m)?.addEventListener('click', e => { e.stopPropagation(); deleteCardFlow(c); });
   };
@@ -1049,7 +1068,7 @@ async function renderPools(view) {
       </div>
       <div class="row">
         ${pool.pods.length ? `<select class="input" id="pp" title="Show cards from one pod"><option value="">All pods</option>${pool.pods.map(x => `<option value="${x.id}" ${poolFilter.pod === x.id ? 'selected' : ''}>${esc(x.name)}${x.status === 'done' ? '' : ' (running)'}</option>`).join('')}</select>` : ''}
-        ${cards.length ? `<button class="btn gold" id="copyPool">📋 Copy ${podName ? 'these cards' : 'whole pool'}</button>` : ''}
+        ${cards.length ? `${exportToggle()}<button class="btn gold" id="copyPool">📋 Copy ${podName ? 'these cards' : 'whole pool'}</button>` : ''}
       </div>
     </div>
     ${cards.length ? `
@@ -1067,7 +1086,7 @@ async function renderPools(view) {
       <div class="row" style="margin-top:10px">${packs.map(k => `<span class="chip">${icon(k.set)}${esc(k.set.name)}${k.source === 'sacrifice' ? ' 🔥' : ''} <span class="dim">· ${esc(k.podName)} · ${k.cards.length}</span>${isAdmin() ? `<button class="chip-x" data-delpack="${k.podId}:${k.packId}" title="Admin: delete this pack and its pulls">✕</button>` : ''}</span>`).join('')}</div>
       ${isAdmin() ? '<p class="small dim" style="margin:10px 0 0">Admin: ✕ deletes a whole pack; open a card and use 🗑 Remove to delete a single copy.</p>' : ''}
     </details>` : `<div class="empty"><p>${pool.userId === S.me.id ? 'Your' : `${esc(pool.username)}'s`} pool is empty. Cards show up here as soon as packs are opened.</p></div>`}`;
-  $('#copyPool', view)?.addEventListener('click', () => copyText(listText(cards), `${pool.username}'s pool${podName ? ` from ${podName}` : ''} (${cards.length} cards)`));
+  $('#copyPool', view)?.addEventListener('click', () => copyText(listFor(cards), `${pool.username}'s pool${podName ? ` from ${podName}` : ''} (${cards.length} cards)`));
   $('#pp', view)?.addEventListener('change', e => { poolFilter.pod = e.target.value; renderPools(view); });
   $$('[data-delpack]', view).forEach(b => b.onclick = () => {
     const [podId, packId] = b.dataset.delpack.split(':');
@@ -1212,7 +1231,7 @@ async function renderHistory(view) {
   const table = [...stats.values()].sort((a, b) => b.wins - a.wins || b.wins / b.games - a.wins / a.games);
   view.innerHTML = `
     <div class="hero"><div><h1>League History</h1><p>${plural(pods.length, 'pod')} played.</p></div>
-      ${isAdmin() ? `<div class="row"><button class="btn danger" id="clearHist">🗑 Clear league history</button></div>` : ''}</div>
+      <div class="row">${exportToggle()}${isAdmin() ? `<button class="btn danger" id="clearHist">🗑 Clear league history</button>` : ''}</div></div>
     <div class="panel" style="margin-bottom:22px;overflow-x:auto">
       <h2>Standings</h2>
       <table class="standings"><thead><tr><th>Player</th><th class="num">Pods</th><th class="num">Wins</th><th class="num">Win %</th><th class="num">Packs</th><th class="num">Sacrificed</th><th class="num">Rares</th><th class="num">Mythics</th></tr></thead>
@@ -1250,7 +1269,7 @@ async function renderHistory(view) {
   $$('[data-copy]', view).forEach(b => b.onclick = () => {
     const p = lookup(b.dataset.copy);
     const pulls = p.packs.filter(k => k.status === 'opened').flatMap(k => k.cards);
-    copyText(listText(pulls), `${p.name}'s pulls`);
+    copyText(listFor(pulls), `${p.name}'s pulls`);
   });
   $$('[data-card]', view).forEach(img => img.onclick = () => {
     const [gid, pid, sn] = img.dataset.card.split(':');

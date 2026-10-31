@@ -23,8 +23,13 @@ Local: http://127.0.0.1:8101
 5. Each player then either **opens** their packs of the spun set (its regular booster, never
    a Collector Booster) or uses **Sacrifice a Pack**: give up one spun-set pack to make
    another pack any set they choose (on **All Sets**).
-6. **Packs tab**: rip packs open, then **Copy pack list** or **Copy all pulls**. Lists use
-   the Moxfield/Archidekt format: `1 Card Name (SET) 123`.
+6. **Packs tab**: rip packs open, then **Copy pack list** or **Copy all pulls**. A
+   **Copy for: Moxfield | Archidekt** switch (remembered per device) picks the import format:
+   - Moxfield: `1 Card Name (SET) 123`, foils `1 Card Name (SET) 123 *F*`
+   - Archidekt: `1x Card Name (set) 123`, foils `1x Card Name (set) 123 *F*`
+
+   Double-faced cards keep their full `Front // Back` name. The same switch is on Pools and
+   History.
 7. **Finish pod** saves it to **History** (standings, packs, pulls).
 
 **Pools tab**: each player's cards from every running or finished pod (discarded pods don't

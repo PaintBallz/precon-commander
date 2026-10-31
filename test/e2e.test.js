@@ -409,14 +409,28 @@ test('pools track each player\'s opened cards at all times', async () => {
   assert.deepEqual(pool('Nick').pods.map(x => x.id), [S.pod.id], 'pools know which pod each player played');
 });
 
-test('copy-to-clipboard text is Moxfield/Archidekt format', async () => {
+test('copied lists match the Moxfield and Archidekt import formats', async () => {
   const pulls = player(S.pod, 'Nick').packs.filter(k => k.status === 'opened').flatMap(k => k.cards);
-  const text = listText(pulls);
-  const lines = text.split('\n');
-  for (const l of lines) assert.match(l, /^\d+ .+ \([A-Z0-9]+\) \S+$/, `bad line: ${l}`);
-  const total = lines.reduce((a, l) => a + Number(l.split(' ')[0]), 0);
-  assert.equal(total, pulls.length, 'combined list keeps every card (duplicates merged with counts)');
-  assert.equal(listText([{ name: 'Forest', set: 'blb', number: '278' }, { name: 'Forest', set: 'blb', number: '278' }]), '2 Forest (BLB) 278');
+  const formats = {
+    moxfield: /^(\d+) .+ \([A-Z0-9]+\) \S+( \*F\*)?$/,   // 1 Name (SET) 123 [*F*]
+    archidekt: /^(\d+)x .+ \([a-z0-9]+\) \S+( \*F\*)?$/, // 1x Name (set) 123 [*F*]
+  };
+  for (const [site, re] of Object.entries(formats)) {
+    const lines = listText(pulls, site).split('\n');
+    for (const l of lines) assert.match(l, re, `bad ${site} line: ${l}`);
+    const total = lines.reduce((a, l) => a + Number(l.match(re)[1]), 0);
+    assert.equal(total, pulls.length, `${site}: every card kept (duplicates merged with counts)`);
+    assert.equal(lines.filter(l => l.endsWith(' *F*')).length, new Set(pulls.filter(c => c.foil).map(c => `${c.set}/${c.number}`)).size, `${site}: foils are marked`);
+  }
+  assert.equal(listText(pulls), listText(pulls, 'moxfield'), 'Moxfield is the default');
+
+  const forest = { name: 'Forest', set: 'blb', number: '278' };
+  const foilBolt = { name: 'Lightning Bolt', set: 'm10', number: '146', foil: true };
+  const delver = { name: 'Delver of Secrets // Insectile Aberration', set: 'isd', number: '51' };
+  assert.equal(listText([forest, forest, foilBolt, { ...foilBolt, foil: false }, delver], 'moxfield'),
+    '2 Forest (BLB) 278\n1 Lightning Bolt (M10) 146 *F*\n1 Lightning Bolt (M10) 146\n1 Delver of Secrets // Insectile Aberration (ISD) 51');
+  assert.equal(listText([forest, forest, foilBolt, { ...foilBolt, foil: false }, delver], 'archidekt'),
+    '2x Forest (blb) 278\n1x Lightning Bolt (m10) 146 *F*\n1x Lightning Bolt (m10) 146\n1x Delver of Secrets // Insectile Aberration (isd) 51');
 });
 
 test('finishing saves the pod to history (and its pool stays)', async () => {
