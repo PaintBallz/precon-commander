@@ -391,6 +391,21 @@ function wirePods(view) {
     try { await post(`/pods/${pod.id}/finish`); S.history = null; S.pools = null; await loadState(); go('#history'); } catch (err) { fail(err); }
   });
   $$('[data-delete]', view).forEach(b => b.onclick = () => deletePodFlow(podById(b.dataset.delete)));
+  $$('[data-vote]', view).forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    try {
+      S.justVoted = Date.now();
+      const r = await post(`/pods/${b.dataset.vote}/vote`, { candidateId: b.dataset.cand });
+      S.pods = S.pods.map(x => x.id === r.pod.id ? r.pod : x);
+      render();
+      if (r.result === 'tied') toast('🗳 It\'s a tie: re-vote between the tied players.', 'good');
+      if (r.result === 'decided') toast(`🗳 ${esc(nameIn(r.pod, r.pod.vote.winnerId))} wins the bonus pack!`, 'good');
+    } catch (err) { fail(err); b.disabled = false; }
+  });
+  $$('[data-skipvote]', view).forEach(b => b.onclick = async () => {
+    if (!await confirmBox('Skip the vote?', 'Nobody gets the bonus pack, and the winner can spin right away.', 'Skip vote', true)) return;
+    try { await post(`/pods/${b.dataset.skipvote}/vote/skip`); await loadState(); render(); } catch (err) { fail(err); }
+  });
   $$('[data-discard]', view).forEach(b => b.onclick = async () => {
     const pod = podById(b.dataset.discard);
     if (!await confirmBox(`Discard ${esc(pod.name)}?`, 'It will not be saved to History, and any opened cards leave the players\' pools.', 'Discard', true)) return;
@@ -435,6 +450,41 @@ async function deleteCardFlow(c) {
   try { await del(`/pool-cards/${c.id}`); $('#modal').hidden = true; await afterAdminDelete(`${esc(c.name)} removed.`); } catch (err) { fail(err); }
 }
 
+// ---- bonus-pack vote ----
+const voteOpen = pod => pod.vote?.status === 'open';
+const nameIn = (pod, id) => pod.players.find(p => p.id === id)?.name || '?';
+function roundLine(pod, r) {
+  const counts = r.candidates.map(c => `${esc(nameIn(pod, c))} <b>${r.tally[c]}</b>`).join(' · ');
+  return `<div class="small muted">Round ${r.round}: ${counts}${r.tied ? ` → tie, re-vote between ${r.tied.map(c => esc(nameIn(pod, c))).join(' and ')}` : ''}</div>`;
+}
+function votePanel(pod) {
+  const v = pod.vote;
+  if (!v || pod.status !== 'awarded' && v.status === 'open') return '';
+  const past = v.rounds.map(r => roundLine(pod, r)).join('');
+  if (v.status === 'done') {
+    return `<div class="vote-box done"><div><b>🗳 ${esc(nameIn(pod, v.winnerId))} won the vote</b> and gets <b>+${v.bonus} pack</b>.</div>${past ? `<details><summary class="small muted">How it went</summary>${past}</details>` : ''}</div>`;
+  }
+  if (v.status === 'skipped') {
+    return `<div class="vote-box done small muted">🗳 ${pod.players.length < 3 ? 'No bonus-pack vote: 2-player pods skip it (each player could only vote for the other).' : 'The bonus-pack vote was skipped by the admin.'}</div>`;
+  }
+  const cur = v.current;
+  const me = pod.players.find(p => p.id === S.me.id);
+  const tied = cur.round > 1 ? v.rounds.at(-1).tied : null;
+  return `<div class="vote-box">
+    <div class="spread"><h3 style="margin:0">🗳 Bonus pack vote${cur.round > 1 ? ` · re-vote ${cur.round - 1}` : ''}</h3>
+      <span class="small muted">${cur.voted.length} of ${pod.players.length} voted</span></div>
+    <p class="small muted" style="margin:6px 0 10px">${tied
+      ? `Tied between ${tied.map(c => `<b>${esc(nameIn(pod, c))}</b>`).join(' and ')}. Everyone votes again, between them only.`
+      : `Everyone votes for the player who earns <b>+${v.bonus} pack</b>. You can't vote for yourself. Ballots stay secret until everyone has voted; a tie means a re-vote.`}</p>
+    ${me ? `<div class="vote-opts">${cur.candidates.filter(c => c !== me.id).map(c => `<button class="btn ${cur.myVote === c ? 'gold' : ''}" data-vote="${pod.id}" data-cand="${c}">${cur.myVote === c ? '✓ ' : ''}${esc(nameIn(pod, c))}</button>`).join('')}</div>
+      <div class="small muted" style="margin-top:6px">${cur.myVote ? `You voted for <b>${esc(nameIn(pod, cur.myVote))}</b>. You can change it until the last vote is in.` : 'Tap a player to vote.'}</div>`
+      : '<div class="small muted">Only the players in this pod vote.</div>'}
+    <div class="row" style="margin-top:10px;gap:6px">${pod.players.map(p => `<span class="chip ${cur.voted.includes(p.id) ? 'ok' : ''}">${cur.voted.includes(p.id) ? '✓' : '…'} ${esc(p.name)}</span>`).join('')}</div>
+    ${past ? `<div style="margin-top:8px">${past}</div>` : ''}
+    ${isAdmin() ? `<div style="margin-top:10px"><button class="btn ghost sm" data-skipvote="${pod.id}">Skip vote (admin, no bonus pack)</button></div>` : ''}
+  </div>`;
+}
+
 // Admin: permanently delete a pod and everything in it (packs, pulls, pool cards).
 async function deletePodFlow(pod) {
   const cards = pod.players.reduce((s, p) => s + p.packs.reduce((t, k) => t + (k.cards?.length || 0), 0), 0);
@@ -449,19 +499,21 @@ function podPanel(pod) {
   const winner = pod.players.find(p => p.id === pod.winnerId);
   let head;
   if (pod.status === 'playing') head = `Playing since ${new Date(pod.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}. When the game ends, crown the winner.`;
+  else if (voteOpen(pod)) head = `👑 ${esc(winner.name)} won. Now vote for who gets the bonus pack, then ${esc(winner.name)} spins.`;
   else if (!pod.spin) head = `👑 ${esc(winner.name)} won and spins the wheel for the whole pod.`;
   else head = `${icon(pod.spin.set)} Spun <b>${esc(pod.spin.set.name)}</b>. Everyone opens that set, or sacrifices a pack to pick any set.`;
   return `<div class="panel pod">
     <div class="spread pod-head">
       <div><h2 style="margin:0">${esc(pod.name)}</h2><div class="small muted">${head}</div></div>
       <div class="row">
-        ${pod.status === 'awarded' && !pod.spin ? `<a class="btn gold" href="#wheel?pod=${pod.id}">${S.me.id === pod.winnerId ? 'Spin the wheel →' : 'Watch the spin →'}</a>` : ''}
+        ${pod.status === 'awarded' && !pod.spin && !voteOpen(pod) ? `<a class="btn gold" href="#wheel?pod=${pod.id}">${S.me.id === pod.winnerId ? 'Spin the wheel →' : 'Watch the spin →'}</a>` : ''}
         ${pod.spin ? `<a class="btn gold" href="#packs?pod=${pod.id}">Open packs →</a>` : ''}
         ${member && pod.status === 'awarded' ? `<button class="btn" data-finish="${pod.id}">Finish pod</button>` : ''}
         ${member ? `<button class="btn danger sm" data-discard="${pod.id}">Discard</button>` : ''}
         ${isAdmin() ? `<button class="btn danger sm" data-delete="${pod.id}" title="Admin: delete this pod permanently">🗑 Delete</button>` : ''}
       </div>
     </div>
+    ${votePanel(pod)}
     <div class="players">${pod.players.map(p => playerCard(p, pod, member)).join('')}</div>
   </div>`;
 }
@@ -476,7 +528,7 @@ function playerCard(p, pod, member) {
   return `<div class="pcard ${won ? 'winner' : ''} ${p.id === S.me.id ? 'me' : ''}">
     ${won ? '<span class="crown">👑</span>' : ''}
     <div>
-      <div class="pname">${esc(p.name)}${p.id === S.me.id ? ' <span class="dim small">(you)</span>' : ''}</div>
+      <div class="pname">${esc(p.name)}${p.id === S.me.id ? ' <span class="dim small">(you)</span>' : ''}${pod.vote?.winnerId === p.id ? ' <span class="chip gold" title="Won the bonus-pack vote">🗳 +1</span>' : ''}</div>
       ${p.precon ? `<div class="precon">${esc(p.precon)}</div>` : ''}
     </div>
     ${pod.status === 'playing'
@@ -649,7 +701,7 @@ function renderWheel(view) {
   if (pod.spin && !S.spinning) restOn(pod.spin);
   const st = S.settings;
   const winner = pod.players.find(p => p.id === pod.winnerId);
-  const mayspin = pod.status === 'awarded' && !pod.spin && (isAdmin() || S.me.id === pod.winnerId);
+  const mayspin = pod.status === 'awarded' && !pod.spin && !voteOpen(pod) && (isAdmin() || S.me.id === pod.winnerId);
   view.innerHTML = `
     ${podSwitcher(pod, 'wheel')}
     <div class="wheel-layout">
@@ -667,6 +719,7 @@ function renderWheel(view) {
           <h3>${esc(pod.name)}</h3>
           <p class="small muted" style="margin:0">${pod.status === 'playing' ? 'Still playing. Crown the winner on the Pods tab first.'
             : pod.spin ? `${esc(pod.players.find(p => p.id === pod.spin.by)?.name || winner.name)} spun the wheel. One spin per pod: every pack is this set unless sacrificed.`
+            : voteOpen(pod) ? `🗳 The pod is voting on the bonus pack. <a href="#pods">Vote on the Pods tab</a>; the spin unlocks when it's decided.`
             : `👑 <b>${esc(winner.name)}</b> spins once for the whole pod.${mayspin ? '' : ' Waiting for them to spin…'}`}</p>
         </div>
         <div id="revealBox"></div>
@@ -694,7 +747,7 @@ function renderWheel(view) {
   requestAnimationFrame(drawWheel);
   const spinBtn = $('#spinBtn', view);
   spinBtn.disabled = !mayspin || S.spinning || !S.wheel.length;
-  spinBtn.title = pod.spin ? 'This pod already spun' : pod.status !== 'awarded' ? 'Crown a winner first' : !mayspin ? `Only ${winner.name} can spin` : 'Spin!';
+  spinBtn.title = pod.spin ? 'This pod already spun' : pod.status !== 'awarded' ? 'Crown a winner first' : voteOpen(pod) ? 'Finish the bonus-pack vote first' : !mayspin ? `Only ${winner.name} can spin` : 'Spin!';
   spinBtn.onclick = async () => {
     spinBtn.disabled = true;
     try {
@@ -1167,7 +1220,7 @@ async function renderHistory(view) {
     <div class="grid" style="gap:12px">${pods.map(g => {
       const w = g.players.find(p => p.id === g.winnerId);
       return `<details class="hgame"><summary>
-        <div><b style="font-family:Cinzel">${esc(g.name)} · ${fmtDate(g.finishedAt || g.createdAt)}</b> <span class="muted">· 👑 ${esc(w?.name || '—')}${w?.precon ? ` with ${esc(w.precon)}` : ''}${g.spin ? ` · spun ${esc(g.spin.set.name)}` : ''}</span></div>
+        <div><b style="font-family:Cinzel">${esc(g.name)} · ${fmtDate(g.finishedAt || g.createdAt)}</b> <span class="muted">· 👑 ${esc(w?.name || '—')}${w?.precon ? ` with ${esc(w.precon)}` : ''}${g.spin ? ` · spun ${esc(g.spin.set.name)}` : ''}${g.vote?.winnerId ? ` · 🗳 ${esc(nameIn(g, g.vote.winnerId))}` : ''}</span></div>
         <div class="row">${g.spin ? icon(g.spin.set) : ''}${g.players.flatMap(p => p.packs).filter(k => k.source === 'sacrifice' && k.status !== 'choosing').slice(0, 8).map(k => icon(k.set)).join('')}</div>
       </summary><div class="body">${isAdmin() ? `<div class="spread small muted" style="margin-bottom:8px"><span>Admin: deleting removes this pod from History and its cards from the pools.</span><button class="btn danger sm" data-hdel="${g.id}">🗑 Delete pod</button></div>` : ''}${g.players.map(p => {
         const pulls = p.packs.filter(k => k.status === 'opened').flatMap(k => k.cards);
@@ -1235,6 +1288,10 @@ function connect() {
           }
           toast(`🎡 ${esc(pod.name)} spun <b>${esc(pod.spin.set.name)}</b> · <a href="#wheel?pod=${pod.id}">see it</a>`, 'good');
         }
+      }
+      if ((info.vote === 'tied' || info.vote === 'decided') && Date.now() - (S.justVoted || 0) > 3000) {
+        const pod = podById(info.podId);
+        if (pod?.players.some(p => p.id === S.me.id)) toast(info.vote === 'tied' ? `🗳 ${esc(pod.name)}: tie! Re-vote between the tied players.` : `🗳 ${esc(pod.name)}: ${esc(nameIn(pod, pod.vote.winnerId))} wins the bonus pack.`, 'good');
       }
       if (S.spinning || S.opening) return;
       // Don't yank the page out from under someone mid-reveal or typing.

@@ -15,13 +15,17 @@ Local: http://127.0.0.1:8101
    8 characters with a letter and a number. Set your precon on the **Account** page.
 2. **Pods tab**: start a pod with 2 to 4 league members, then crown the winner when the game
    ends. Several pods can run at once.
-3. **Wheel tab**: the winner spins once for the whole pod. Every phone watches the spin live.
-4. Each player then either **opens** their packs of the spun set (its regular booster, never
+3. **Bonus-pack vote** (Pods tab): every player votes for someone else (never themselves) to
+   get **+1 pack**. Ballots are secret until everyone has voted. If the most votes are tied,
+   everyone re-votes between just the tied players, until one player has the most. 2-player
+   pods skip the vote, and the admin can skip a stuck one.
+4. **Wheel tab**: once the vote is decided, the winner spins once for the whole pod. Every phone watches the spin live.
+5. Each player then either **opens** their packs of the spun set (its regular booster, never
    a Collector Booster) or uses **Sacrifice a Pack**: give up one spun-set pack to make
    another pack any set they choose (on **All Sets**).
-5. **Packs tab**: rip packs open, then **Copy pack list** or **Copy all pulls**. Lists use
+6. **Packs tab**: rip packs open, then **Copy pack list** or **Copy all pulls**. Lists use
    the Moxfield/Archidekt format: `1 Card Name (SET) 123`.
-6. **Finish pod** saves it to **History** (standings, packs, pulls).
+7. **Finish pod** saves it to **History** (standings, packs, pulls).
 
 **Pools tab**: each player's cards from every running or finished pod (discarded pods don't
 count), grouped with counts, searchable, and copyable as one deck list.
@@ -68,6 +72,7 @@ Everything is saved in SQLite at `data/app.db`. League data lives in tables:
 | `pod_packs` | pack: spun or chosen set, sacrificed / chosen / opened |
 | `pool_cards` | opened card, tied to its pod, pack and player (pools are built from this) |
 | `booster_sets` | set referenced by a pack (name, symbol, release date) |
+| `pod_votes` | ballot in a pod's bonus-pack vote (round, voter, candidate) |
 | `users`, `sessions`, `reset_tokens` | accounts and logins |
 
 Deleting a pod cascades to its players, packs and pool cards. Databases from before the

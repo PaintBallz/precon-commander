@@ -322,3 +322,10 @@ form label input { color: var(--text); font-weight: 400; }
 .mcard .qty { position: absolute; right: 6px; top: 6px; z-index: 2; font-weight: 800; font-size: .8rem; padding: 2px 7px; border-radius: 999px; background: var(--gold); color: #1a1408; box-shadow: 0 2px 6px rgba(0,0,0,.5); }
 .chip-x { border: 0; background: transparent; color: var(--dim); cursor: pointer; padding: 0 0 0 4px; font-size: .8rem; line-height: 1; }
 .chip-x:hover { color: var(--danger); }
+
+/* ---------- bonus-pack vote ---------- */
+.vote-box { border: 1px solid #6b5222; background: rgba(217,168,78,.06); border-radius: 12px; padding: 14px 16px; margin-bottom: 16px; }
+.vote-box.done { border-color: var(--line); background: var(--bg2); }
+.vote-box details summary { cursor: pointer; margin-top: 6px; }
+.vote-opts { display: flex; flex-wrap: wrap; gap: 8px; }
+.vote-opts .btn { min-width: 110px; }

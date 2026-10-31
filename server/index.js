@@ -2,7 +2,9 @@
 // opener and per-player card pools. Every phone sees changes live (Server-Sent Events).
 //
 // League = everyone with an account. Pod = one game of 2–4 league players.
-// When a pod ends, its winner spins the wheel ONCE. Every player's packs are
+// When a pod ends, the players vote (never for themselves) on who earns a
+// bonus pack; a tie means a re-vote between the tied players until one has the
+// most votes. Then the winner spins the wheel ONCE. Every player's packs are
 // that set (winner 3, everyone else 2); a player can Sacrifice a Pack (give up
 // one of their spun-set packs) to turn another one into any set they like.
 import express from 'express';
@@ -161,8 +163,62 @@ const newPack = set => ({ id: id(10), status: 'ready', source: 'wheel', set, whe
 // Save, tell every phone, and hand back the pod as stored (so cards carry their ids).
 function commit(pod, kind = 'state', data = {}) { pod.updatedAt = now(); savePod(pod); broadcast(kind, { podId: pod.id, ...data }); return loadPod(pod.id); }
 
+// ---------- the bonus-pack vote ----------
+// Round 1: everyone is a candidate. A round closes when every player has
+// voted; if the most votes are tied, the next round is between just those
+// players. The first round with a single leader decides it: +1 pack.
+// A 2-player pod can only ever tie (each must vote for the other), so it skips.
+const MIN_VOTERS = 3;
+const BONUS_PACKS = 1;
+function tallyOf(pod, round, candidates) {
+  const tally = Object.fromEntries(candidates.map(c => [c, 0]));
+  for (const b of pod.vote.ballots) if (b.round === round && b.candidateId in tally) tally[b.candidateId]++;
+  const max = Math.max(...Object.values(tally));
+  return { tally, top: candidates.filter(c => tally[c] === max) };
+}
+function candidatesFor(pod, round) {
+  let cands = pod.players.map(p => p.id);
+  for (let r = 1; r < round; r++) cands = tallyOf(pod, r, cands).top;
+  return cands;
+}
+function openVote(pod) {
+  pod.vote = pod.players.length >= MIN_VOTERS
+    ? { status: 'open', round: 1, winnerId: null, ballots: [] }
+    : { status: 'skipped', round: 0, winnerId: null, ballots: [] };
+}
+function closeRoundIfComplete(pod) {
+  const v = pod.vote;
+  if (v.ballots.filter(b => b.round === v.round).length < pod.players.length) return;
+  const { top } = tallyOf(pod, v.round, candidatesFor(pod, v.round));
+  if (top.length > 1) { v.round += 1; return; }
+  v.status = 'done';
+  v.winnerId = top[0];
+  v.decidedAt = now();
+  findPlayer(pod, top[0]).awarded += BONUS_PACKS;
+}
+// What a phone gets to see: ballots stay secret while a round is open (only
+// who has voted, plus your own choice); closed rounds show their counts.
+function view(req, pod) {
+  if (!pod?.vote) return pod;
+  const v = pod.vote;
+  const closed = v.status === 'open' ? v.round - 1 : v.round;
+  const rounds = [];
+  for (let r = 1; r <= closed; r++) {
+    const candidates = candidatesFor(pod, r);
+    const { tally, top } = tallyOf(pod, r, candidates);
+    rounds.push({ round: r, candidates, tally, tied: top.length > 1 ? top : null });
+  }
+  const current = v.status === 'open' ? {
+    round: v.round,
+    candidates: candidatesFor(pod, v.round),
+    voted: v.ballots.filter(b => b.round === v.round).map(b => b.voterId),
+    myVote: v.ballots.find(b => b.round === v.round && b.voterId === req.user.id)?.candidateId || null,
+  } : null;
+  return { ...pod, vote: { status: v.status, round: v.round, winnerId: v.winnerId, decidedAt: v.decidedAt, bonus: BONUS_PACKS, rounds, current } };
+}
+
 app.get('/api/state', (req, res) => {
-  res.json({ version, me: req.user, pods: activePods(), members: members() });
+  res.json({ version, me: req.user, pods: activePods().map(p => view(req, p)), members: members() });
 });
 
 app.post('/api/pods', wrap(async (req, res) => {
@@ -182,19 +238,21 @@ app.post('/api/pods', wrap(async (req, res) => {
   const n = kvGet('pod_counter', 0) + 1;
   kvSet('pod_counter', n);
   const pod = { id: id(10), name: `Pod ${n}`, status: 'playing', createdAt: now(), createdBy: req.user.id, winnerId: null, spin: null, players };
-  res.json({ pod: commit(pod) });
+  res.json({ pod: view(req, commit(pod)) });
 }));
 
 app.post('/api/pods/:id/winner', wrap(async (req, res) => {
   const pod = requirePod(req.params.id);
   requireMember(pod, req.user);
   if (pod.spin) throw new HttpError(409, 'The wheel has already been spun. Ask the admin to adjust packs instead.');
+  if (pod.vote?.ballots.length) throw new HttpError(409, 'Voting has started, so the winner can no longer be changed.');
   const winner = findPlayer(pod, req.body?.playerId);
   pod.winnerId = winner.id;
   pod.status = 'awarded';
   pod.wonAt = now();
   for (const p of pod.players) p.awarded = p.id === winner.id ? WINNER_PACKS : LOSER_PACKS;
-  res.json({ pod: commit(pod) });
+  openVote(pod);
+  res.json({ pod: view(req, commit(pod)) });
 }));
 
 // Admin-only pack adjustments. Before the spin they change the award; after
@@ -214,7 +272,37 @@ app.post('/api/pods/:id/award', wrap(async (req, res) => {
     }
   } else if (delta < 0 && p.awarded < 1) throw new HttpError(409, `${p.name} has no packs to remove.`);
   p.awarded = Math.max(0, p.awarded + delta);
-  res.json({ pod: commit(pod) });
+  res.json({ pod: view(req, commit(pod)) });
+}));
+
+// Cast (or change) your ballot for the current round.
+app.post('/api/pods/:id/vote', wrap(async (req, res) => {
+  const pod = requirePod(req.params.id);
+  if (pod.vote?.status !== 'open') throw new HttpError(409, pod.vote ? 'The vote is already over.' : 'Crown the winner first, then vote.');
+  if (!inPod(pod, req.user)) throw new HttpError(403, 'Only players in this pod can vote.');
+  const candidateId = String(req.body?.candidateId || '');
+  if (candidateId === req.user.id) throw new HttpError(400, "You can't vote for yourself.");
+  const candidates = candidatesFor(pod, pod.vote.round);
+  if (!candidates.includes(candidateId)) {
+    throw new HttpError(400, pod.vote.round > 1 ? 'This re-vote is only between the tied players.' : 'Vote for a player in this pod.');
+  }
+  const v = pod.vote;
+  v.ballots = v.ballots.filter(b => !(b.round === v.round && b.voterId === req.user.id));
+  v.ballots.push({ round: v.round, voterId: req.user.id, candidateId, at: now() });
+  const round = v.round;
+  closeRoundIfComplete(pod);
+  const kind = v.status === 'done' ? 'decided' : v.round > round ? 'tied' : 'voted';
+  res.json({ pod: view(req, commit(pod, 'state', { vote: kind })), result: kind });
+}));
+
+// Admin: end a stuck vote with no bonus pack.
+app.post('/api/pods/:id/vote/skip', wrap(async (req, res) => {
+  requireAdmin(req);
+  const pod = requirePod(req.params.id);
+  if (pod.vote?.status !== 'open') throw new HttpError(409, 'There is no vote in progress.');
+  pod.vote.status = 'skipped';
+  pod.vote.decidedAt = now();
+  res.json({ pod: view(req, commit(pod)) });
 }));
 
 // The one spin per pod. Only the winner (or the admin) can pull the lever.
@@ -222,6 +310,7 @@ app.post('/api/pods/:id/spin', wrap(async (req, res) => {
   const pod = requirePod(req.params.id);
   if (pod.status !== 'awarded') throw new HttpError(409, 'Crown the winner first: the winner spins the wheel.');
   if (pod.spin) throw new HttpError(409, `This pod already spun ${pod.spin.set.name}. There is only one spin per pod.`);
+  if (pod.vote?.status === 'open') throw new HttpError(409, 'Finish the bonus-pack vote first: the spin hands out everyone\'s packs.');
   if (!req.user.isAdmin && req.user.id !== pod.winnerId) throw new HttpError(403, `Only the winner, ${findPlayer(pod, pod.winnerId).name}, can spin.`);
   const sets = await allSets();
   const wheel = wheelFor(sets, getSettings());
@@ -232,7 +321,7 @@ app.post('/api/pods/:id/spin', wrap(async (req, res) => {
   const set = await setInfo(pick.code);
   pod.spin = { id: id(10), setCode: set.code, set, by: req.user.id, at: now(), offset: Math.random() };
   for (const p of pod.players) p.packs = Array.from({ length: p.awarded }, () => newPack(set));
-  res.json({ pod: commit(pod, 'spin', { spinId: pod.spin.id }), spin: pod.spin });
+  res.json({ pod: view(req, commit(pod, 'spin', { spinId: pod.spin.id })), spin: pod.spin });
 }));
 
 // Sacrifice: give up one of your spun-set packs so this one can be any set.
@@ -248,7 +337,7 @@ app.post('/api/pods/:id/packs/:packId/sacrifice', wrap(async (req, res) => {
   pack.status = 'choosing';
   pack.source = 'sacrifice';
   pack.sacrificedAt = now();
-  res.json({ pod: commit(pod), packId: pack.id });
+  res.json({ pod: view(req, commit(pod)), packId: pack.id });
 }));
 
 app.post('/api/pods/:id/packs/:packId/choose', wrap(async (req, res) => {
@@ -259,7 +348,7 @@ app.post('/api/pods/:id/packs/:packId/choose', wrap(async (req, res) => {
   pack.set = await setInfo(String(req.body?.setCode || ''));
   pack.status = 'ready';
   pack.chosenAt = now();
-  res.json({ pod: commit(pod), packId: pack.id });
+  res.json({ pod: view(req, commit(pod)), packId: pack.id });
 }));
 
 const opening = new Set();
@@ -268,7 +357,7 @@ app.post('/api/pods/:id/packs/:packId/open', wrap(async (req, res) => {
   let pod = requirePod(req.params.id);
   let { player, pack } = findPack(pod, packId);
   requireOwner(player, req.user);
-  if (pack.status === 'opened') return res.json({ pod, pack });
+  if (pack.status === 'opened') return res.json({ pod: view(req, pod), pack });
   if (pack.status !== 'ready') throw new HttpError(409, 'Choose a set for this pack first.');
   if (opening.has(packId)) throw new HttpError(409, 'That pack is already being opened.');
   opening.add(packId);
@@ -285,7 +374,7 @@ app.post('/api/pods/:id/packs/:packId/open', wrap(async (req, res) => {
     pack.status = 'opened';
     pack.openedAt = now();
     const saved = commit(pod);
-    res.json({ pod: saved, pack: findPack(saved, packId).pack });
+    res.json({ pod: view(req, saved), pack: findPack(saved, packId).pack });
   } finally {
     opening.delete(packId);
   }
@@ -297,7 +386,7 @@ app.post('/api/pods/:id/finish', wrap(async (req, res) => {
   if (!pod.winnerId) throw new HttpError(409, 'Pick a winner before finishing the pod.');
   pod.status = 'done';
   pod.finishedAt = now();
-  res.json({ ok: true, pod: commit(pod) });
+  res.json({ ok: true, pod: view(req, commit(pod)) });
 }));
 
 app.post('/api/pods/:id/discard', wrap(async (req, res) => {
@@ -331,7 +420,7 @@ app.delete('/api/pods/:id/packs/:packId', wrap(async (req, res) => {
   pod.updatedAt = now();
   savePod(pod);
   broadcast('state', { podId: pod.id });
-  res.json({ ok: true, pod: loadPod(pod.id), removed: { packId: pack.id, cards: pack.cards?.length || 0 } });
+  res.json({ ok: true, pod: view(req, loadPod(pod.id)), removed: { packId: pack.id, cards: pack.cards?.length || 0 } });
 }));
 
 // Admin: remove a single pulled card from a player's pool.
@@ -353,11 +442,11 @@ app.delete('/api/history', wrap(async (req, res) => {
   res.json({ ok: true, deletedPods: n });
 }));
 
-app.get('/api/history', (req, res) => res.json({ pods: finishedPods() }));
+app.get('/api/history', (req, res) => res.json({ pods: finishedPods().map(p => view(req, p)) }));
 app.get('/api/pods/:id', (req, res) => {
   const pod = loadPod(req.params.id);
   if (!pod) return res.status(404).json({ error: 'Not found' });
-  res.json({ pod });
+  res.json({ pod: view(req, pod) });
 });
 
 // ---------- pools ----------

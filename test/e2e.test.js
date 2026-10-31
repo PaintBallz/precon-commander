@@ -210,6 +210,52 @@ test('winner gets 3 packs, everyone else gets 2', async () => {
   const { pod } = await ok(mike.post(`/api/pods/${S.pod.id}/winner`, { playerId: S.u.Nick.id }));
   assert.equal(pod.status, 'awarded');
   assert.deepEqual(pod.players.map(p => [p.name, p.awarded]), [['Nick', 3], ['Mike', 2], ['Joe', 2], ['Dan', 2]]);
+  assert.equal(pod.vote.status, 'open', 'crowning the winner opens the bonus-pack vote');
+  assert.equal(pod.vote.current.round, 1);
+  assert.equal(pod.vote.current.candidates.length, 4);
+});
+
+test('the pod votes for a bonus pack: no self-votes, ties go to a re-vote', async () => {
+  const url = `/api/pods/${S.pod.id}/vote`;
+  const vote = (c, who) => c.post(url, { candidateId: S.u[who].id });
+  assert.equal((await nick.post(`/api/pods/${S.pod.id}/spin`)).status, 409, 'no spin until the vote is decided');
+  assert.equal((await vote(nick, 'Nick')).status, 400, "you can't vote for yourself");
+  assert.equal((await vote(eve, 'Nick')).status, 403, 'only pod players vote');
+  assert.equal((await nick.post(url, { candidateId: S.u.Eve.id })).status, 400, 'only pod players can be voted for');
+
+  // Round 1: 2–2 tie between Nick and Mike (Joe changes his mind once).
+  await ok(vote(joe, 'Dan'));
+  await ok(vote(joe, 'Nick'));
+  let r = await ok(vote(nick, 'Mike'));
+  assert.equal(r.result, 'voted');
+  assert.deepEqual(r.pod.vote.current.voted.sort(), [S.u.Joe.id, S.u.Nick.id].sort());
+  assert.equal(r.pod.vote.current.myVote, S.u.Mike.id, 'you see your own ballot');
+  const dansView = (await ok(dan.get('/api/state'))).pods[0].vote;
+  assert.equal(dansView.current.myVote, null);
+  assert.equal(JSON.stringify(dansView).includes('candidateId'), false, 'other ballots stay secret while the round is open');
+  assert.equal((await mike.post(`/api/pods/${S.pod.id}/winner`, { playerId: S.u.Mike.id })).status, 409, 'winner is locked once voting starts');
+  await ok(vote(mike, 'Nick'));
+  r = await ok(vote(dan, 'Mike'));
+  assert.equal(r.result, 'tied');
+  const v = r.pod.vote;
+  assert.equal(v.status, 'open');
+  assert.equal(v.current.round, 2);
+  assert.deepEqual(v.current.candidates.sort(), [S.u.Nick.id, S.u.Mike.id].sort(), 're-vote is between the tied players');
+  assert.deepEqual(v.rounds[0].tally, { [S.u.Nick.id]: 2, [S.u.Mike.id]: 2, [S.u.Joe.id]: 0, [S.u.Dan.id]: 0 }, 'closed rounds show their counts');
+  assert.equal((await vote(joe, 'Dan')).status, 400, 'players who were not tied are out of the re-vote');
+
+  // Round 2: Mike wins 3–1. Mike, a candidate, still can't vote for himself.
+  assert.equal((await vote(mike, 'Mike')).status, 400);
+  await ok(vote(mike, 'Nick'));
+  await ok(vote(nick, 'Mike'));
+  await ok(vote(joe, 'Mike'));
+  r = await ok(vote(dan, 'Mike'));
+  assert.equal(r.result, 'decided');
+  assert.equal(r.pod.vote.status, 'done');
+  assert.equal(r.pod.vote.winnerId, S.u.Mike.id);
+  assert.deepEqual(r.pod.players.map(p => [p.name, p.awarded]), [['Nick', 3], ['Mike', 3], ['Joe', 2], ['Dan', 2]], 'the vote winner gets +1 pack');
+  assert.equal((await vote(joe, 'Mike')).status, 409, 'the vote is over');
+  S.pod = r.pod;
 });
 
 test('only the winner spins, once, and it is pushed live to other devices', async () => {
@@ -284,7 +330,7 @@ test('Sacrifice a Pack gives up one spun pack to pick any set for another', asyn
   let { pod } = await ok(mike.post(`/api/pods/${S.pod.id}/packs/${k.id}/sacrifice`));
   S.pod = pod;
   assert.equal(mk().sacrificed, 1);
-  assert.equal(mk().packs.length, 1, 'Mike: 2 packs − 1 sacrificed');
+  assert.equal(mk().packs.length, 2, 'Mike: 3 packs (2 + vote bonus) − 1 sacrificed');
   assert.equal(mk().packs[0].status, 'choosing');
   assert.equal((await mike.post(`/api/pods/${S.pod.id}/packs/${k.id}/open`)).status, 409, 'cannot open before choosing');
   assert.equal((await mike.post(`/api/pods/${S.pod.id}/packs/${k.id}/choose`, { setCode: 'nope' })).status, 400);
@@ -383,6 +429,24 @@ test('finishing saves the pod to history (and its pool stays)', async () => {
   assert.ok(pools.find(p => p.username === 'Mike').packs.length >= 1, 'finished pods stay in the pools');
 });
 
+test('2-player pods skip the vote; the admin can skip a stuck one', async () => {
+  const two = (await ok(eve.post('/api/pods', { players: [{ userId: S.u.Eve.id }, { userId: S.u.Joe.id }] }))).pod;
+  const crowned = (await ok(eve.post(`/api/pods/${two.id}/winner`, { playerId: S.u.Eve.id }))).pod;
+  assert.equal(crowned.vote.status, 'skipped', 'two players could only ever tie');
+  assert.deepEqual(crowned.players.map(p => p.awarded), [3, 2], 'no bonus pack');
+  await ok(eve.post(`/api/pods/${two.id}/discard`));
+
+  const three = (await ok(eve.post('/api/pods', { players: ['Eve', 'Joe', 'Dan'].map(n => ({ userId: S.u[n].id })) }))).pod;
+  await ok(eve.post(`/api/pods/${three.id}/winner`, { playerId: S.u.Eve.id }));
+  await ok(eve.post(`/api/pods/${three.id}/vote`, { candidateId: S.u.Joe.id }));
+  assert.equal((await eve.post(`/api/pods/${three.id}/vote/skip`)).status, 403, 'only the admin can skip');
+  const skipped = (await ok(admin.post(`/api/pods/${three.id}/vote/skip`))).pod;
+  assert.equal(skipped.vote.status, 'skipped');
+  assert.deepEqual(skipped.players.map(p => p.awarded), [3, 2, 2]);
+  await ok(eve.post(`/api/pods/${three.id}/spin`));
+  await ok(eve.post(`/api/pods/${three.id}/discard`));
+});
+
 test('pods, players, packs and pool cards are stored as tables', async () => {
   const db = new DatabaseSync(path.join(DATA_DIR, 'app.db'), { readOnly: true });
   try {
@@ -398,6 +462,10 @@ test('pods, players, packs and pool cards are stored as tables', async () => {
     assert.ok(cards.every(c => c.pack_id && c.user_id && c.name && c.set_code && c.number && c.rarity), 'cards keep pod, pack and player ids');
     const mikes = db.prepare('SELECT count(*) n FROM pool_cards WHERE pod_id = ? AND user_id = ?').get(S.pod.id, S.u.Mike.id).n;
     assert.equal(mikes, 14, "Mike's BLB Play Booster is in his pool for this pod");
+    assert.equal(pod.vote_status, 'done');
+    assert.equal(pod.vote_winner_id, S.u.Mike.id);
+    const ballots = db.prepare('SELECT round, count(*) n FROM pod_votes WHERE pod_id = ? GROUP BY round ORDER BY round').all(S.pod.id);
+    assert.deepEqual(ballots.map(b => [b.round, b.n]), [[1, 4], [2, 4]], 'every ballot of both rounds is a pod_votes row');
   } finally { db.close(); }
 });
 

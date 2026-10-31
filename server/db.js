@@ -7,6 +7,8 @@
 //   pool_cards   every opened card, tied to its pod, pack and player: a
 //                player's pool is their pool_cards in pods that weren't discarded
 //   booster_sets name/icon/date for set codes the packs refer to
+//   pod_votes    the pod's bonus-pack vote: one ballot per voter per round
+//                (a tie starts a new round between the tied players)
 // Deleting a pod cascades to its players, packs and pool cards.
 // Settings and Scryfall caches stay as small JSON documents.
 // (The old single-game `games` table and the pre-table `pods_legacy_json` are
@@ -125,6 +127,14 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS pool_cards_user ON pool_cards(user_id, pod_id);
   CREATE INDEX IF NOT EXISTS pool_cards_pack ON pool_cards(pack_id, seq);
+  CREATE TABLE IF NOT EXISTS pod_votes (
+    pod_id TEXT NOT NULL REFERENCES pods(id) ON DELETE CASCADE,
+    round INTEGER NOT NULL,
+    voter_id TEXT NOT NULL,
+    candidate_id TEXT NOT NULL,
+    cast_at TEXT NOT NULL,
+    PRIMARY KEY (pod_id, round, voter_id)
+  );
 
   CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
@@ -140,6 +150,11 @@ db.exec(`
     data TEXT NOT NULL
   );
 `);
+
+// Columns added after the pods table first shipped.
+for (const [col, def] of [['vote_status', 'TEXT'], ['vote_round', 'INTEGER'], ['vote_winner_id', 'TEXT'], ['vote_decided_at', 'TEXT']]) {
+  if (!db.prepare(`SELECT 1 FROM pragma_table_info('pods') WHERE name = ?`).get(col)) db.exec(`ALTER TABLE pods ADD COLUMN ${col} ${def}`);
+}
 
 export function kvGet(key, fallback = null) {
   const row = db.prepare('SELECT value FROM kv WHERE key = ?').get(key);
@@ -159,6 +174,7 @@ function transaction(fn) {
 // The rest of the app works with a pod as one object:
 // { id, name, status, createdAt, createdBy, winnerId, wonAt, finishedAt, updatedAt,
 //   spin: { id, setCode, set, by, at, offset } | null,
+//   vote: { status: 'open'|'done'|'skipped', round, winnerId, decidedAt, ballots: [{ round, voterId, candidateId, at }] } | null,
 //   players: [{ id, name, precon, awarded, sacrificed,
 //               packs: [{ id, status, source, set, wheelSet, boosterType, generated, sacrificedAt, chosenAt, openedAt, cards }] }] }
 // savePod writes that object into the tables; loadPod reads it back.
@@ -180,6 +196,12 @@ export function savePod(pod) {
                   spin_by = excluded.spin_by, spin_at = excluded.spin_at, spin_offset = excluded.spin_offset`)
       .run(pod.id, pod.name, pod.status, pod.createdAt, pod.createdBy || null, pod.winnerId || null, pod.wonAt || null, pod.finishedAt || null,
         pod.updatedAt || null, pod.spin?.id || null, putSet(pod.spin?.set), pod.spin?.by || null, pod.spin?.at || null, pod.spin?.offset ?? null);
+    const v = pod.vote;
+    db.prepare('UPDATE pods SET vote_status = ?, vote_round = ?, vote_winner_id = ?, vote_decided_at = ? WHERE id = ?')
+      .run(v?.status || null, v?.round ?? null, v?.winnerId || null, v?.decidedAt || null, pod.id);
+    db.prepare('DELETE FROM pod_votes WHERE pod_id = ?').run(pod.id);
+    const addBallot = db.prepare('INSERT INTO pod_votes (pod_id, round, voter_id, candidate_id, cast_at) VALUES (?, ?, ?, ?, ?)');
+    for (const b of v?.ballots || []) addBallot.run(pod.id, b.round, b.voterId, b.candidateId, b.at);
 
     const upPlayer = db.prepare(`INSERT INTO pod_players (pod_id, user_id, seat, name, precon, awarded, sacrificed) VALUES (?, ?, ?, ?, ?, ?, ?)
                                  ON CONFLICT(pod_id, user_id) DO UPDATE SET seat = excluded.seat, name = excluded.name, precon = excluded.precon,
@@ -232,6 +254,9 @@ function assemble(rows) {
   const players = db.prepare(`SELECT * FROM pod_players WHERE pod_id IN (${marks}) ORDER BY pod_id, seat`).all(...ids);
   const packs = db.prepare(`SELECT * FROM pod_packs WHERE pod_id IN (${marks}) ORDER BY pod_id, user_id, seq`).all(...ids);
   const cards = db.prepare(`SELECT * FROM pool_cards WHERE pod_id IN (${marks}) ORDER BY pack_id, seq`).all(...ids);
+  const ballots = db.prepare(`SELECT * FROM pod_votes WHERE pod_id IN (${marks}) ORDER BY pod_id, round, cast_at`).all(...ids);
+  const ballotsBy = new Map();
+  for (const b of ballots) (ballotsBy.get(b.pod_id) || ballotsBy.set(b.pod_id, []).get(b.pod_id)).push({ round: b.round, voterId: b.voter_id, candidateId: b.candidate_id, at: b.cast_at });
   const sets = new Map();
   const cardsByPack = new Map();
   for (const c of cards) (cardsByPack.get(c.pack_id) || cardsByPack.set(c.pack_id, []).get(c.pack_id)).push(cardOf(c));
@@ -255,6 +280,7 @@ function assemble(rows) {
     id: r.id, name: r.name, status: r.status, createdAt: r.created_at, createdBy: r.created_by, winnerId: r.winner_id,
     wonAt: r.won_at || undefined, finishedAt: r.finished_at || undefined, updatedAt: r.updated_at || undefined,
     spin: r.spin_id ? { id: r.spin_id, setCode: r.spin_set_code, set: getSet(r.spin_set_code, sets), by: r.spin_by, at: r.spin_at, offset: r.spin_offset } : null,
+    vote: r.vote_status ? { status: r.vote_status, round: r.vote_round, winnerId: r.vote_winner_id || null, decidedAt: r.vote_decided_at || undefined, ballots: ballotsBy.get(r.id) || [] } : null,
     players: playersBy.get(r.id) || [],
   }));
 }
