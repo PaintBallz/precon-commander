@@ -334,3 +334,26 @@ form label input { color: var(--text); font-weight: 400; }
 .export-site { display: inline-flex; align-items: center; gap: 4px; font-size: .8rem; color: var(--muted); white-space: nowrap; }
 .export-site button { border: 1px solid var(--line); background: var(--bg2); color: var(--muted); border-radius: 999px; padding: 3px 9px; cursor: pointer; font-size: .78rem; font-weight: 600; }
 .export-site button.sel { background: var(--panel2); color: var(--gold2); border-color: #6b5222; }
+
+/* ---------- leagues ---------- */
+.league-sel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; max-width: 180px; font-size: .85rem; }
+.league-sel[hidden] { display: none; }
+.league-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; }
+.league-grid h2 { margin-bottom: 10px; }
+.code-box { display: inline-flex; align-items: center; gap: 10px; padding: 6px 8px 6px 14px; border: 1px dashed #6b5222; border-radius: 12px; background: rgba(217,168,78,.06); }
+.code-box b { font-family: ui-monospace, Consolas, monospace; font-size: 1.15rem; letter-spacing: .14em; color: var(--gold2); }
+.warn-box { margin-bottom: 16px; border-color: #6b5222; color: var(--gold2); }
+.member-list { display: grid; gap: 6px; }
+.member { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 10px; background: var(--bg2); border: 1px solid var(--line); }
+.rules-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.rules-grid input { width: 100%; }
+.rules-list { margin: 0; padding-left: 0; list-style: none; display: grid; gap: 8px; }
+.feed { display: grid; gap: 8px; max-height: 420px; overflow-y: auto; }
+.feed-item { display: grid; grid-template-columns: 112px 1fr; gap: 10px; font-size: .9rem; }
+@media (max-width: 760px) { .feed-item { grid-template-columns: 1fr; gap: 0; } }
+label.check { display: flex; align-items: center; gap: 8px; font-weight: 500; color: var(--text); }
+.pending { margin-bottom: 18px; border-color: #6b5222; background: rgba(217,168,78,.05); }
+.pending .chip { text-decoration: none; color: var(--text); }
+.absent-line { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.absent-line .chip { text-decoration: none; }
+tr.dim td { color: var(--dim); }

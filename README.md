@@ -1,25 +1,46 @@
 # Pre-Con Commander
 
-Commander league companion. Everyone in the league has an account and starts with one
-precon. Games are **pods** of 2 to 4 players. When a pod ends, the winner gets **3 packs**
-and everyone else gets **2**, and the winner spins a wheel of every Magic set that was sold
-in boosters **once**: every pack in the pod is that set. Every opened card goes into the
-player's **pool**, the cards they may use on top of their precon.
+Commander league companion. Players have accounts and belong to a **league** (3–16 players,
+one league at a time). Each league plays **pods**: games of 3–4 of its players, each on a
+precon. When a pod ends, the winner gets **3 packs**, everyone else gets **2**, the pod votes
+someone a **+1 bonus pack**, and the winner spins a wheel of every Magic set that was sold in
+boosters **once**: every pack is that set. League members who **missed** the pod get **1 pack**
+of the spun set too. Every opened card goes into the player's **pool** for that league, the
+cards they may use on top of their precon.
 
 Live at **https://precon-commander.paintballz.us** (docker-sites stack, Cloudflare Tunnel).
 Local: http://127.0.0.1:8101
+
+## Leagues
+
+- **League tab**: any player who isn't in a league can start one. By default it sweeps in
+  every player who isn't in a league yet (up to 16). Others join with the league's 6-letter
+  **invite code**, or the admin adds them. Players can leave between pods.
+- Shows the league's **standings** (pods, wins, win %, bonus votes won, pods missed, packs,
+  rares, mythics), **players**, **rules** and an **activity feed** (pods, winners, votes,
+  spins, mythic pulls, joins).
+- **Per-league rules** (admin): winner packs, everyone-else packs, packs for a missed pod,
+  vote bonus (0 turns absent packs or the vote off). A pod keeps the rules it started with.
+- **Per-league wheel** (admin, All Sets tab): each league has its own set list and odds.
+- **Seasons**: the admin can **end** a league. It becomes a read-only archive (standings,
+  history, pools) and its players can join or start another. The admin can also delete a
+  league with everything in it.
+- A header picker switches between leagues (the admin's view, or your past leagues).
 
 ## How a pod works
 
 1. **Log in / sign up**: username, email (for password recovery) and a password of at least
    8 characters with a letter and a number. Set your precon on the **Account** page.
-2. **Pods tab**: start a pod with 2 to 4 league members, then crown the winner when the game
-   ends. Several pods can run at once.
+2. **Pods tab**: start a pod with 3 to 4 players from your league, then crown the winner when
+   the game ends. Several pods can run at once.
 3. **Bonus-pack vote** (Pods tab): every player votes for someone else (never themselves) to
    get **+1 pack**. Ballots are secret until everyone has voted. If the most votes are tied,
-   everyone re-votes between just the tied players, until one player has the most. 2-player
-   pods skip the vote, and the admin can skip a stuck one.
-4. **Wheel tab**: once the vote is decided, the winner spins once for the whole pod. Every phone watches the spin live.
+   everyone re-votes between just the tied players, until one player has the most. Only the
+   pod's players vote (not the rest of the league). The admin can skip a stuck vote.
+4. **Wheel tab**: once the vote is decided, the winner spins once for the whole pod. Every phone
+   watches the spin live. Every league member who isn't in the pod gets 1 pack of the spun
+   set; the Pods tab shows them a "packs waiting for you" list, and those packs can be opened
+   even after the pod is finished.
 5. Each player then either **opens** their packs of the spun set (its regular booster, never
    a Collector Booster) or uses **Sacrifice a Pack**: give up one spun-set pack to make
    another pack any set they choose (on **All Sets**).
@@ -73,10 +94,13 @@ Everything is saved in SQLite at `data/app.db`. League data lives in tables:
 | Table | One row per |
 | --- | --- |
 | `pods` | pod: status, winner, the pod's one spin |
-| `pod_players` | player in a pod: precon, packs awarded, packs sacrificed |
+| `pod_players` | player in a pod (role `player`), or a league member who missed it (role `absent`) |
 | `pod_packs` | pack: spun or chosen set, sacrificed / chosen / opened |
 | `pool_cards` | opened card, tied to its pod, pack and player (pools are built from this) |
 | `booster_sets` | set referenced by a pack (name, symbol, release date) |
+| `leagues` | league: name, invite code, status, rules, wheel |
+| `league_members` | player in a league (joined / left) |
+| `league_events` | the league's activity feed |
 | `pod_votes` | ballot in a pod's bonus-pack vote (round, voter, candidate) |
 | `users`, `sessions`, `reset_tokens` | accounts and logins |
 

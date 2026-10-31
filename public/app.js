@@ -12,7 +12,8 @@ const store = {
 
 const S = {
   me: null, passwordRules: '', emailEnabled: false,
-  pods: [], members: [], sets: [], setsByCode: new Map(), wheel: [], settings: null, types: [],
+  pods: [], openPods: [], pending: [], members: [], sets: [], setsByCode: new Map(), wheel: [], settings: null, types: [],
+  league: null, leagues: [], myLeagueId: null, viewLeague: null, leagueDetail: null,
   history: null, pools: null, route: 'pods', params: {},
   sound: store.get('sound', true),
   exportSite: SITES[store.get('exportSite', 'moxfield')] ? store.get('exportSite', 'moxfield') : 'moxfield',
@@ -36,13 +37,25 @@ async function api(path, opts = {}) {
 const post = (path, body = {}) => api(path, { method: 'POST', body });
 const del = path => api(path, { method: 'DELETE', body: {} });
 
+// Every league-scoped call says which league is on screen (?league=…).
+const lq = (sep = '?') => (S.viewLeague ? `${sep}league=${encodeURIComponent(S.viewLeague)}` : '');
 async function loadState() {
-  const st = await api('/state');
-  S.me = st.me; S.pods = st.pods; S.members = st.members;
+  const st = await api('/state' + lq());
+  S.me = st.me; S.pods = st.pods; S.openPods = st.openPods || []; S.members = st.members; S.pending = st.pending || [];
+  S.league = st.league; S.leagues = st.leagues || []; S.myLeagueId = st.myLeagueId;
+  S.viewLeague = st.league?.id || null;
   paintMe();
+  paintLeaguePicker();
+}
+// Switch the whole app to another league (header picker, joining, creating…).
+async function showLeague(id) {
+  S.viewLeague = id || null;
+  S.leagueDetail = null; S.history = null; S.pools = null; S.podId = null;
+  await Promise.all([loadState(), loadSets()]);
+  render();
 }
 async function loadSets() {
-  const d = await api('/sets');
+  const d = await api('/sets' + lq());
   S.sets = d.sets; S.wheel = d.wheel; S.settings = d.settings; S.types = d.types;
   S.setsByCode = new Map(d.sets.map(s => [s.code, s]));
 }
@@ -57,16 +70,17 @@ function toast(msg, kind = '') {
 }
 const fail = err => toast(esc(err.message || err), 'err');
 const isAdmin = () => !!S.me?.isAdmin;
-const podById = id => S.pods.find(p => p.id === id);
+const podById = id => S.pods.find(p => p.id === id) || S.openPods.find(p => p.id === id);
 const myPod = () => S.pods.find(p => p.players.some(x => x.id === S.me?.id));
 function currentPod() {
-  const pod = podById(S.params.pod) || podById(S.podId) || myPod() || S.pods[0] || null;
+  const pod = podById(S.params.pod) || podById(S.podId) || myPod() || S.pods[0] || S.openPods[0] || null;
   S.podId = pod?.id || null;
   return pod;
 }
 const canAct = player => isAdmin() || player.id === S.me?.id;
 const spunPacks = p => p.packs.filter(k => k.status === 'ready' && k.source === 'wheel');
-const findPack = (pod, id) => { for (const p of pod?.players || []) { const k = p.packs.find(k => k.id === id); if (k) return { ...k, player: p }; } return null; };
+const people = pod => [...(pod?.players || []), ...(pod?.absentees || [])];
+const findPack = (pod, id) => { for (const p of people(pod)) { const k = p.packs.find(k => k.id === id); if (k) return { ...k, player: p }; } return null; };
 const icon = (set, cls = '') => set?.icon ? `<img class="set-icon ${cls}" src="${esc(set.icon)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : '';
 const pct = n => n >= 0.1 ? (n * 100).toFixed(1) + '%' : n > 0 ? (n * 100).toFixed(2) + '%' : '—';
 const typeLabel = t => ({ expansion: 'Expansion', core: 'Core', masters: 'Masters', draft_innovation: 'Draft Innovation' }[t] || t);
@@ -74,6 +88,15 @@ const fmtDate = iso => new Date(iso).toLocaleDateString(undefined, { weekday: 's
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 const RARITY_ORDER = { common: 0, uncommon: 1, rare: 2, mythic: 3, special: 3, bonus: 3 };
 const kindLabel = code => { const m = S.setsByCode.get(code); return m?.realPack ? `${{ play: 'Play', draft: 'Draft', set: 'Set' }[m.packKind]} Booster` : 'Booster'; };
+
+function paintLeaguePicker() {
+  const sel = $('#leagueSel');
+  const show = S.leagues.length && (isAdmin() || S.leagues.length > 1 || (S.league && S.league.id !== S.myLeagueId));
+  sel.hidden = !show;
+  if (!show) return;
+  sel.innerHTML = S.leagues.map(l => `<option value="${l.id}" ${l.id === S.viewLeague ? 'selected' : ''}>${esc(l.name)}${l.status === 'ended' ? ' (ended)' : ''}${l.id === S.myLeagueId ? ' ★' : ''}</option>`).join('');
+}
+$('#leagueSel').addEventListener('change', e => showLeague(e.target.value).catch(fail));
 
 function paintMe() {
   $('#meBtn').innerHTML = S.me ? `${isAdmin() ? '<span class="chip gold">admin</span>' : ''}<span>${esc(S.me.username)}</span>` : '';
@@ -113,7 +136,7 @@ async function copyText(text, what = 'List') {
 }
 
 // ---------------- routing ----------------
-const ROUTES = ['pods', 'wheel', 'packs', 'pools', 'sets', 'history', 'account'];
+const ROUTES = ['league', 'pods', 'wheel', 'packs', 'pools', 'sets', 'history', 'account'];
 function parseRoute() {
   const [r, q] = location.hash.replace(/^#/, '').split('?');
   S.route = ROUTES.includes(r) ? r : 'pods';
@@ -132,7 +155,7 @@ function render() {
   $$('#tabs a').forEach(a => a.classList.toggle('active', a.dataset.tab === S.route));
   const view = $('#view');
   if (S.route !== 'wheel') stopWheelLoop();
-  ({ pods: renderPods, wheel: renderWheel, packs: renderPacks, pools: renderPools, sets: renderSets, history: renderHistory, account: renderAccount })[S.route](view);
+  ({ league: renderLeague, pods: renderPods, wheel: renderWheel, packs: renderPacks, pools: renderPools, sets: renderSets, history: renderHistory, account: renderAccount })[S.route](view);
 }
 
 function confirmBox(title, body, okLabel = 'OK', danger = false) {
@@ -259,7 +282,7 @@ async function enterApp(user) {
   $('#view').innerHTML = '<div class="spinner"></div>';
   await Promise.all([loadState(), loadSets()]);
   for (const pod of S.pods) if (pod.spin) S.seenSpins.add(pod.spin.id);
-  if (!location.hash || location.hash.startsWith('#reset')) history.replaceState(null, '', myPod()?.spin ? '#wheel' : '#pods');
+  if (!location.hash || location.hash.startsWith('#reset')) history.replaceState(null, '', !S.league ? '#league' : myPod()?.spin ? '#wheel' : '#pods');
   parseRoute();
   render();
   connect();
@@ -333,23 +356,196 @@ async function renderAccount(view) {
   });
 }
 
+// =============== LEAGUE TAB ===============
+const LIMITS = { min: 3, max: 16, podMin: 3, podMax: 4 };
+const fmtWhen = iso => new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+async function refreshLeague() { S.leagueDetail = null; S.history = null; S.pools = null; await Promise.all([loadState(), loadSets()]); render(); }
+
+function joinCreateForms() {
+  const canJoin = !isAdmin() && !S.myLeagueId;
+  const canCreate = isAdmin() || !S.myLeagueId;
+  if (!canJoin && !canCreate) return '';
+  return `<div class="account-grid" style="margin-top:18px">
+    ${canJoin ? `<form class="panel grid" id="joinForm">
+      <h2>Join a league</h2>
+      <p class="small muted" style="margin:0">Got an invite code from a friend? Enter it here. You can be in one league at a time.</p>
+      <label>Invite code<input name="code" maxlength="12" autocomplete="off" required style="text-transform:uppercase;letter-spacing:.12em"></label>
+      <button class="btn gold">Join league</button>
+    </form>` : ''}
+    ${canCreate ? `<form class="panel grid" id="createForm">
+      <h2>Start a league</h2>
+      <p class="small muted" style="margin:0">A league has ${LIMITS.min}–${LIMITS.max} players and runs pods of ${LIMITS.podMin}–${LIMITS.podMax}. Share its invite code to bring people in.</p>
+      <label>League name<input name="name" maxlength="40" placeholder="e.g. Friday Night Commander"></label>
+      <label class="check"><input type="checkbox" name="addEveryone" checked> Add every player who isn't in a league yet (up to ${LIMITS.max})</label>
+      <button class="btn gold">Start league</button>
+    </form>` : ''}
+  </div>`;
+}
+function wireJoinCreate(view) {
+  $('#joinForm', view)?.addEventListener('submit', async e => {
+    e.preventDefault();
+    try {
+      const r = await post('/leagues/join', { code: new FormData(e.target).get('code').trim().toUpperCase() });
+      toast(`Welcome to ${esc(r.league.name)}! 🎉`, 'good');
+      await showLeague(r.league.id);
+    } catch (err) { fail(err); }
+  });
+  $('#createForm', view)?.addEventListener('submit', async e => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    try {
+      const r = await post('/leagues', { name: f.get('name'), addEveryone: f.get('addEveryone') === 'on' });
+      toast(`${esc(r.league.name)} is ready. Share the invite code ${esc(r.league.code || '')}.`, 'good');
+      await showLeague(r.league.id);
+    } catch (err) { fail(err); }
+  });
+}
+
+async function renderLeague(view) {
+  const l = S.league;
+  if (!l) {
+    view.innerHTML = `<div class="hero"><div><h1>League</h1><p>Pods belong to a league: ${LIMITS.min}–${LIMITS.max} players who play pods of ${LIMITS.podMin}–${LIMITS.podMax}, keep their own card pools, standings and wheel. ${isAdmin() ? 'Start one below.' : "You're not in one yet."}</p></div></div>${joinCreateForms()}`;
+    wireJoinCreate(view);
+    return;
+  }
+  if (!S.leagueDetail || S.leagueDetail.league.id !== l.id) {
+    view.innerHTML = '<div class="spinner"></div>';
+    try {
+      const d = await api(`/leagues/${l.id}`);
+      if (isAdmin() && d.league.status === 'active') d.candidates = (await api(`/leagues/${l.id}/candidates`)).players;
+      S.leagueDetail = d;
+    } catch (err) { fail(err); return; }
+    if (S.route !== 'league') return;
+  }
+  const { league, standings, events, candidates = [] } = S.leagueDetail;
+  const active = league.status === 'active';
+  const lim = league.limits || LIMITS;
+  const r = league.rules;
+  view.innerHTML = `
+    <div class="hero">
+      <div><h1>${esc(league.name)}</h1>
+        <p>${active ? `Started ${fmtDate(league.createdAt)}${league.createdBy ? ` by ${esc(league.createdBy)}` : ''}.` : `Ended ${fmtDate(league.endedAt)}. Its standings, history and pools stay here as an archive.`}
+        ${plural(league.members.length, 'player')} of ${lim.max}.</p></div>
+      <div class="row">
+        ${league.code && active ? `<div class="code-box" title="Friends join with this code on the League tab"><span class="small muted">Invite code</span><b>${esc(league.code)}</b><button class="btn sm" id="copyCode">📋 Copy</button></div>` : ''}
+        ${league.isMember && active ? `<button class="btn danger sm" id="leaveL">Leave league</button>` : ''}
+      </div>
+    </div>
+    ${active && league.members.length < lim.min ? `<div class="panel warn-box">${esc(league.name)} needs at least ${lim.min} players before a pod can start. Share the invite code.</div>` : ''}
+    ${!league.isMember && !isAdmin() ? `<div class="panel warn-box">You're viewing ${esc(league.name)}. ${S.myLeagueId ? '' : active ? 'Ask a member for its invite code to join.' : ''}</div>` : ''}
+    <div class="league-grid">
+      <section class="panel" style="overflow-x:auto">
+        <h2>Standings</h2>
+        ${standings.some(s => s.pods || s.missed) ? `<table class="standings"><thead><tr><th>Player</th><th class="num">Pods</th><th class="num">Wins</th><th class="num">Win %</th><th class="num" title="Bonus-pack votes won">🗳</th><th class="num" title="Pods missed (absent packs)">Missed</th><th class="num">Packs</th><th class="num">Rares</th><th class="num">Mythics</th></tr></thead>
+          <tbody>${standings.map((s, i) => `<tr class="${s.active ? '' : 'dim'}"><td>${i === 0 && s.wins ? '👑 ' : ''}<b>${esc(s.name)}</b>${s.active ? '' : ' <span class="small">(left)</span>'}</td><td class="num">${s.pods}</td><td class="num">${s.wins}</td><td class="num">${s.pods ? Math.round(s.wins / s.pods * 100) + '%' : '—'}</td><td class="num">${s.voteWins}</td><td class="num">${s.missed}</td><td class="num">${s.packs}</td><td class="num">${s.rares}</td><td class="num">${s.mythics}</td></tr>`).join('')}</tbody></table>`
+          : '<p class="muted">No finished pods yet. Standings fill in as pods are finished.</p>'}
+      </section>
+      <section class="panel">
+        <div class="spread"><h2 style="margin:0">Players</h2><span class="small muted">${league.members.length}/${lim.max}</span></div>
+        <div class="member-list">${league.members.map(m => `<div class="member"><div><b>${esc(m.username)}</b>${m.id === S.me.id ? ' <span class="dim small">(you)</span>' : ''}<div class="small muted">${esc(m.precon) || 'No precon set'}</div></div>
+          ${isAdmin() && active ? `<button class="btn ghost sm" data-rmm="${m.id}" data-name="${esc(m.username)}" title="Remove from the league">✕</button>` : ''}</div>`).join('') || '<p class="muted">Nobody yet.</p>'}</div>
+        ${isAdmin() && active ? `<div class="row" style="margin-top:10px">${candidates.length ? `<select class="input" id="addMember"><option value="">Add a player…</option>${candidates.map(c => `<option value="${c.id}">${esc(c.username)}</option>`).join('')}</select><button class="btn sm" id="addMemberBtn">Add</button>` : '<span class="small muted">Every player is already in a league.</span>'}</div>` : ''}
+      </section>
+      <section class="panel">
+        <h2>Rules</h2>
+        ${isAdmin() ? `<form id="rulesForm" class="grid" style="gap:10px">
+          <label>League name<input name="name" value="${esc(league.name)}" maxlength="40"></label>
+          <div class="rules-grid">
+            <label>Winner packs<input type="number" name="winnerPacks" min="0" max="10" value="${r.winnerPacks}"></label>
+            <label>Everyone else<input type="number" name="loserPacks" min="0" max="10" value="${r.loserPacks}"></label>
+            <label>Missed a pod<input type="number" name="absentPacks" min="0" max="5" value="${r.absentPacks}"></label>
+            <label>Vote bonus<input type="number" name="voteBonus" min="0" max="5" value="${r.voteBonus}"></label>
+          </div>
+          <p class="small muted" style="margin:0">0 turns absent packs or the vote off. Running pods keep the rules they started with.</p>
+          <button class="btn gold">Save rules</button>
+        </form>` : `<ul class="rules-list">
+          <li>👑 Winner: <b>${plural(r.winnerPacks, 'pack')}</b></li>
+          <li>Everyone else in the pod: <b>${plural(r.loserPacks, 'pack')}</b></li>
+          <li>🗳 Bonus-pack vote: ${r.voteBonus ? `<b>+${plural(r.voteBonus, 'pack')}</b>` : 'off'}</li>
+          <li>📦 Missed a pod: ${r.absentPacks ? `<b>${plural(r.absentPacks, 'pack')}</b> of the spun set` : 'nothing'}</li>
+          <li>🎡 One spin per pod, by the winner. Pods have ${lim.podMin}–${lim.podMax} players.</li>
+        </ul>`}
+      </section>
+      <section class="panel">
+        <h2>Activity</h2>
+        <div class="feed">${events.map(e => `<div class="feed-item"><span class="small dim">${fmtWhen(e.at)}</span><span>${esc(e.text)}</span></div>`).join('') || '<p class="muted">Nothing yet.</p>'}</div>
+      </section>
+    </div>
+    ${isAdmin() ? `<div class="panel" style="margin-top:18px"><h2>Admin</h2><div class="row">
+      ${active ? `<button class="btn" id="newCode">New invite code</button><button class="btn danger" id="endL">End league</button>` : ''}
+      <button class="btn danger" id="delL">🗑 Delete league</button></div>
+      <p class="small muted" style="margin:8px 0 0">Ending keeps everything as a read-only archive and frees the players to join another league. Deleting removes the league with all its pods, packs and pools.</p></div>` : ''}
+    ${joinCreateForms()}`;
+  wireJoinCreate(view);
+  $('#copyCode', view)?.addEventListener('click', async () => {
+    const text = `Join "${league.name}" on Pre-Con Commander: ${location.origin}  (League tab, invite code ${league.code})`;
+    try { await navigator.clipboard.writeText(text); } catch { /* shown below anyway */ }
+    toast(`📋 Invite copied: code <b>${esc(league.code)}</b>`, 'good');
+  });
+  $('#leaveL', view)?.addEventListener('click', async () => {
+    if (!await confirmBox(`Leave ${esc(league.name)}?`, 'You stop getting packs for missed pods and can join or start another league. Your past pods stay in its history.', 'Leave league', true)) return;
+    try { await post(`/leagues/${league.id}/leave`); S.viewLeague = null; await refreshLeague(); } catch (err) { fail(err); }
+  });
+  $$('[data-rmm]', view).forEach(b => b.onclick = async () => {
+    if (!await confirmBox(`Remove ${esc(b.dataset.name)}?`, `${esc(b.dataset.name)} leaves ${esc(league.name)}. Their past pods and pool stay in its history.`, 'Remove', true)) return;
+    try { await del(`/leagues/${league.id}/members/${b.dataset.rmm}`); await refreshLeague(); } catch (err) { fail(err); }
+  });
+  $('#addMemberBtn', view)?.addEventListener('click', async () => {
+    const userId = $('#addMember', view).value;
+    if (!userId) return;
+    try { await post(`/leagues/${league.id}/members`, { userId }); await refreshLeague(); } catch (err) { fail(err); }
+  });
+  $('#rulesForm', view)?.addEventListener('submit', async e => {
+    e.preventDefault();
+    const f = Object.fromEntries(new FormData(e.target));
+    const rules = Object.fromEntries(['winnerPacks', 'loserPacks', 'absentPacks', 'voteBonus'].map(k => [k, Number(f[k])]));
+    try { await api(`/leagues/${league.id}`, { method: 'PUT', body: { name: f.name, rules } }); toast('Rules saved.', 'good'); await refreshLeague(); } catch (err) { fail(err); }
+  });
+  $('#newCode', view)?.addEventListener('click', async () => {
+    if (!await confirmBox('New invite code?', 'The old code stops working.', 'New code')) return;
+    try { await post(`/leagues/${league.id}/code`); await refreshLeague(); } catch (err) { fail(err); }
+  });
+  $('#endL', view)?.addEventListener('click', async () => {
+    if (!await typedConfirm(`End ${esc(league.name)}?`, 'The league becomes a read-only archive (standings, history, pools) and its players can join other leagues. Running pods must be finished first.', 'END', 'End league')) return;
+    try { await post(`/leagues/${league.id}/end`); await refreshLeague(); } catch (err) { fail(err); }
+  });
+  $('#delL', view)?.addEventListener('click', async () => {
+    if (!await typedConfirm(`Delete ${esc(league.name)}?`, 'This permanently deletes the league with every pod, pack, vote and pool card in it.', 'DELETE', '🗑 Delete league')) return;
+    try { await del(`/leagues/${league.id}`); S.viewLeague = null; await refreshLeague(); toast('League deleted.', 'good'); } catch (err) { fail(err); }
+  });
+}
+
 // =============== PODS TAB ===============
+// Packs waiting for me anywhere in my league (including pods I missed).
+function pendingBanner() {
+  if (!S.pending.length || S.viewLeague !== S.myLeagueId) return '';
+  return `<div class="panel pending">
+    <h3 style="margin:0 0 8px">📦 ${plural(S.pending.length, 'pack')} waiting for you</h3>
+    <div class="row">${S.pending.map(k => `<a class="chip" href="#packs?pod=${k.podId}&player=${S.me.id}&pack=${k.packId}">${k.status === 'choosing' ? '❔' : icon(k.set)} ${k.status === 'choosing' ? 'Choose a set' : esc(k.set?.name || '')} <span class="dim">· ${esc(k.podName)}${k.absent ? ' (missed)' : ''}</span></a>`).join('')}</div>
+  </div>`;
+}
+
 function renderPods(view) {
+  const l = S.league;
+  if (!l) { view.innerHTML = `<div class="empty"><h2>You're not in a league yet</h2><p>Pods belong to a league. Join one with an invite code or start your own.</p><a class="btn gold" href="#league">Go to League</a></div>`; return; }
+  const r = l.rules;
   const mine = myPod();
+  const canStart = l.status === 'active' && (l.isMember || isAdmin());
   view.innerHTML = `
     <div class="hero"><div>
-      <h1>League Pods</h1>
-      <p>A pod is one game of up to 4 players, each on their precon. When it ends, the winner gets <b>3 packs</b> and everyone else gets <b>2</b>. The winner spins the wheel <b>once</b>, and every pack in the pod is that set, unless you <b>Sacrifice a Pack</b> to pick any set.</p>
+      <h1>${esc(l.name)} · Pods</h1>
+      <p>A pod is one game of ${LIMITS.podMin}–${LIMITS.podMax} league players, each on their precon. When it ends, the winner gets <b>${plural(r.winnerPacks, 'pack')}</b> and everyone else gets <b>${r.loserPacks}</b>${r.voteBonus ? `, and the pod votes someone a <b>+${r.voteBonus}</b> bonus` : ''}. The winner spins the wheel <b>once</b>: every pack is that set (or <b>Sacrifice a Pack</b> to pick any set)${r.absentPacks ? `, and league members who missed the pod get <b>${plural(r.absentPacks, 'pack')}</b> of it too` : ''}.</p>
     </div></div>
+    ${pendingBanner()}
     ${S.pods.length ? `<div class="grid" style="gap:18px;margin-bottom:24px">${S.pods.map(podPanel).join('')}</div>` : ''}
-    ${mine ? '' : newPodForm()}`;
+    ${l.status !== 'active' ? `<div class="panel muted">${esc(l.name)} has ended, so no new pods. Its history and pools are still here.</div>` : canStart && !mine ? newPodForm() : ''}`;
   wirePods(view);
 }
 
 function newPodForm() {
   const busy = new Map(S.pods.flatMap(pod => pod.players.map(p => [p.id, pod.name])));
   const free = S.members.filter(m => !busy.has(m.id));
-  if (free.length < 2) return `<div class="panel"><h2>Start a pod</h2><p class="muted">${S.members.length < 2 ? 'At least 2 league members need accounts. Have your friends sign up, then start a pod here.' : 'Everyone else is already in a pod.'}</p></div>`;
+  if (free.length < LIMITS.podMin) return `<div class="panel"><h2>Start a pod</h2><p class="muted">${S.members.length < LIMITS.podMin ? `A pod needs ${LIMITS.podMin} league players. Share the invite code on the <a href="#league">League tab</a>.` : `Not enough free players for a pod of ${LIMITS.podMin} right now.`}</p></div>`;
   return `<form class="panel player-form" id="newPod">
       <h2>Start a pod</h2>
       <div class="pf-rows"></div>
@@ -380,22 +576,22 @@ function wirePods(view) {
         <input type="text" class="precon" name="precon" placeholder="Precon / commander" value="${esc(m?.precon || '')}" maxlength="80">
         <button type="button" class="btn ghost sm rm" title="Remove" ${n === 1 && !isAdmin() ? 'disabled' : ''}>✕</button>`;
       $('select', d).onchange = e => { const mm = S.members.find(x => x.id === e.target.value); $('.precon', d).value = mm?.precon || ''; };
-      $('.rm', d).onclick = () => { if (rows.children.length > 2) { d.remove(); $$('.num', rows).forEach((e, i) => e.textContent = i + 1); } };
+      $('.rm', d).onclick = () => { if (rows.children.length > LIMITS.podMin) { d.remove(); $$('.num', rows).forEach((e, i) => e.textContent = i + 1); } };
       rows.append(d);
     };
     // The admin doesn't play, so their form starts empty.
-    if (isAdmin()) { addRow(); addRow(); } else { addRow(S.me.id); addRow(); }
-    $('#addP', form).onclick = () => rows.children.length < 4 ? addRow() : toast('A pod has at most 4 players.', 'err');
+    if (isAdmin()) { addRow(); addRow(); addRow(); } else { addRow(S.me.id); addRow(); addRow(); }
+    $('#addP', form).onclick = () => rows.children.length < LIMITS.podMax ? addRow() : toast(`A pod has at most ${LIMITS.podMax} players.`, 'err');
     form.onsubmit = async e => {
       e.preventDefault();
       const players = $$('.pf-row', rows).map(r => ({ userId: $('select', r).value, precon: $('.precon', r).value }));
       if (players.some(p => !p.userId)) return toast('Pick a league member for every row (or remove the empty row).', 'err');
-      try { const r = await post('/pods', { players }); S.podId = r.pod.id; await loadState(); render(); toast(`${esc(r.pod.name)} is on. Good luck! 🎲`, 'good'); } catch (err) { fail(err); }
+      try { const r = await post('/pods', { players, league: S.league?.id }); S.podId = r.pod.id; await loadState(); render(); toast(`${esc(r.pod.name)} is on. Good luck! 🎲`, 'good'); } catch (err) { fail(err); }
     };
   }
   $$('[data-win]', view).forEach(b => b.onclick = async () => {
     const pod = podById(b.dataset.pod), p = pod.players.find(x => x.id === b.dataset.win);
-    if (!await confirmBox(`Crown <b>${esc(p.name)}</b> the winner?`, `${esc(p.name)} gets 3 packs, everyone else gets 2, and ${esc(p.name)} spins the wheel for the whole pod.`, 'Crown winner 👑')) return;
+    if (!await confirmBox(`Crown <b>${esc(p.name)}</b> the winner?`, `${esc(p.name)} gets ${plural(pod.rules.winnerPacks, 'pack')}, everyone else gets ${pod.rules.loserPacks}, and ${esc(p.name)} spins the wheel for the whole pod.`, 'Crown winner 👑')) return;
     try { await post(`/pods/${pod.id}/winner`, { playerId: p.id }); await loadState(); render(); } catch (err) { fail(err); }
   });
   $$('[data-award]', view).forEach(b => b.onclick = async () => {
@@ -533,8 +729,21 @@ function podPanel(pod) {
     </div>
     ${votePanel(pod)}
     <div class="players">${pod.players.map(p => playerCard(p, pod, member)).join('')}</div>
+    ${absentLine(pod)}
   </div>`;
 }
+
+// League members who aren't in the pod get packs of the spun set.
+function absentLine(pod) {
+  const n = pod.rules?.absentPacks || 0;
+  if (pod.spin) {
+    if (!pod.absentees?.length) return '';
+    return `<div class="absent-line small muted">📦 Missed it, ${plural(n, 'pack')} each: ${pod.absentees.map(a => `<a class="chip" href="#packs?pod=${pod.id}&player=${a.id}">${esc(a.name)} · ${a.packs.filter(k => k.status === 'opened').length}/${a.packs.length} opened</a>`).join(' ')}</div>`;
+  }
+  const others = S.members.filter(m => !pod.players.some(p => p.id === m.id));
+  return n && others.length ? `<div class="absent-line small muted">📦 ${names(others.map(m => esc(m.username)))} ${others.length === 1 ? 'is' : 'are'} not in this pod and will get ${plural(n, 'pack')} of the spun set.</div>` : '';
+}
+const names = list => list.length < 2 ? list.join('') : `${list.slice(0, -1).join(', ')} and ${list.at(-1)}`;
 
 function playerCard(p, pod, member) {
   const won = pod.winnerId === p.id;
@@ -708,8 +917,9 @@ function restOn(spin) {
 }
 
 function podSwitcher(pod, route) {
-  if (S.pods.length < 2) return '';
-  return `<div class="player-tabs">${S.pods.map(x => `<a href="#${route}?pod=${x.id}" class="${x.id === pod.id ? 'sel' : ''}">${esc(x.name)}${x.players.some(p => p.id === S.me.id) ? ' ★' : ''}</a>`).join('')}</div>`;
+  const list = route === 'packs' ? [...S.pods, ...S.openPods] : S.pods;
+  if (list.length < 2) return '';
+  return `<div class="player-tabs">${list.map(x => `<a href="#${route}?pod=${x.id}" class="${x.id === pod.id ? 'sel' : ''}">${esc(x.name)}${x.status === 'done' ? ' (finished)' : ''}${people(x).some(p => p.id === S.me.id) ? ' ★' : ''}</a>`).join('')}</div>`;
 }
 
 function renderWheel(view) {
@@ -784,7 +994,7 @@ function renderWheel(view) {
         minYear: Number($('#minYear', view).value), maxYear: Number($('#maxYear', view).value),
         types: $$('.types input:checked', view).map(i => i.value), ...extra,
       };
-      try { await api('/settings', { method: 'PUT', body }); await loadSets(); renderWheel(view); } catch (err) { fail(err); }
+      try { await api('/settings', { method: 'PUT', body: { ...body, league: S.league?.id } }); await loadSets(); renderWheel(view); } catch (err) { fail(err); }
     };
     $('#minYear', view).onchange = () => saveFilters();
     $('#maxYear', view).onchange = () => saveFilters();
@@ -828,12 +1038,12 @@ function renderReveal(pod) {
   }
   const set = pod.spin.set;
   const year = (set.released || '').slice(0, 4);
-  const rows = pod.players.map(p => {
+  const rows = people(pod).map(p => {
     const sp = spunPacks(p).length;
     const status = p.packs.map(k => `<span class="chip">${k.status === 'choosing' ? '❔ choosing' : `${icon(k.set)}${k.source === 'sacrifice' ? '🔥 ' : ''}${k.status === 'opened' ? '✓' : ''}`}</span>`).join('');
     const mine = canAct(p);
     return `<div class="reveal-row">
-      <div><b>${pod.winnerId === p.id ? '👑 ' : ''}${esc(p.name)}</b><div class="row" style="gap:4px;margin-top:4px">${status}</div></div>
+      <div><b>${pod.winnerId === p.id ? '👑 ' : ''}${esc(p.name)}</b>${pod.absentees?.includes(p) ? ' <span class="dim small">missed the pod</span>' : ''}<div class="row" style="gap:4px;margin-top:4px">${status}</div></div>
       ${mine ? `<div class="row">
         <a class="btn sm gold" href="#packs?pod=${pod.id}&player=${p.id}">Open</a>
         ${sp >= 2 ? `<button class="btn sm danger" data-sac="${p.id}">🔥 Sacrifice</button>` : ''}
@@ -854,7 +1064,7 @@ function renderReveal(pod) {
     </div>
     <div class="panel reveal-list">${rows}</div>`;
   setArt(set.code).then(url => { const a = $('#revArt'); if (url && a) a.style.backgroundImage = `url("${url}")`; });
-  $$('[data-sac]', box).forEach(b => b.onclick = () => sacrifice(pod, pod.players.find(p => p.id === b.dataset.sac)));
+  $$('[data-sac]', box).forEach(b => b.onclick = () => sacrifice(pod, people(pod).find(p => p.id === b.dataset.sac)));
 }
 
 // Sacrifice: give up one spun-set pack so another becomes any set.
@@ -876,13 +1086,13 @@ function renderPacks(view) {
   if (!pod) { view.innerHTML = `<div class="empty"><h2>No pods running</h2><p>Opened cards live in <a href="#pools">Pools</a> and <a href="#history">History</a>.</p></div>`; return; }
   if (!pod.spin) { view.innerHTML = `${podSwitcher(pod, 'packs')}<div class="empty"><h2>${esc(pod.name)} hasn't spun yet</h2><p>${pod.status === 'playing' ? 'Finish the game and crown the winner first.' : 'The winner spins the wheel once, then everyone opens their packs here.'}</p><a class="btn gold" href="#${pod.status === 'playing' ? 'pods' : `wheel?pod=${pod.id}`}">${pod.status === 'playing' ? 'Go to Pods' : 'Go to the wheel'}</a></div>`; return; }
   if (S.params.player) S.packsPlayer = S.params.player;
-  const p = pod.players.find(x => x.id === S.packsPlayer) || pod.players.find(x => x.id === S.me.id) || pod.players[0];
+  const p = people(pod).find(x => x.id === S.packsPlayer) || people(pod).find(x => x.id === S.me.id) || pod.players[0];
   S.packsPlayer = p.id;
   const sel = (S.params.pack && p.packs.find(k => k.id === S.params.pack)) || p.packs.find(k => k.status !== 'opened') || p.packs.at(-1);
   const pulls = p.packs.filter(k => k.status === 'opened').flatMap(k => k.cards);
   view.innerHTML = `
     ${podSwitcher(pod, 'packs')}
-    <div class="player-tabs">${pod.players.map(x => `<a href="#packs?pod=${pod.id}&player=${x.id}" class="${x.id === p.id ? 'sel' : ''}">${pod.winnerId === x.id ? '👑 ' : ''}${esc(x.name)}</a>`).join('')}</div>
+    <div class="player-tabs">${people(pod).map(x => `<a href="#packs?pod=${pod.id}&player=${x.id}" class="${x.id === p.id ? 'sel' : ''}">${pod.winnerId === x.id ? '👑 ' : ''}${esc(x.name)}${pod.absentees?.includes(x) ? ' <span class="dim">· missed</span>' : ''}</a>`).join('')}</div>
     <div class="packs-layout">
       <aside class="grid" style="gap:12px">
         <div class="pack-list">
@@ -1038,7 +1248,7 @@ let poolFilter = { q: '', rarity: '', sort: 'rarity', pod: '' };
 async function renderPools(view) {
   if (!S.pools) {
     view.innerHTML = '<div class="spinner"></div>';
-    try { S.pools = (await api('/pools')).pools; } catch (err) { fail(err); return; }
+    try { S.pools = (await api('/pools' + lq())).pools; } catch (err) { fail(err); return; }
     if (S.route !== 'pools') return;
   }
   const pools = S.pools;
@@ -1058,7 +1268,7 @@ async function renderPools(view) {
   }
   const count = r => cards.filter(c => c.rarity === r).length;
   view.innerHTML = `
-    <div class="hero"><div><h1>Pools</h1><p>Every card a player may use on top of the precon they started with: everything they've opened in a pod (discarded pods don't count).</p></div></div>
+    <div class="hero"><div><h1>${esc(S.league?.name || 'League')} Pools</h1><p>Every card a player may use in this league on top of the precon they started with: everything they've opened in its pods, including packs for pods they missed (discarded pods don't count).</p></div></div>
     <div class="player-tabs">${pools.map(p => `<a href="#pools?player=${p.userId}" class="${p.userId === pool.userId ? 'sel' : ''}">${esc(p.username)} <span class="dim">${p.packs.reduce((s, k) => s + k.cards.length, 0)}</span></a>`).join('')}</div>
     <div class="panel pool-head">
       <div>
@@ -1083,7 +1293,7 @@ async function renderPools(view) {
     </div>
     <div class="cards" id="poolCards"></div>
     <details class="panel" style="margin-top:18px"><summary class="muted" style="cursor:pointer">Packs in this pool (${packs.length})</summary>
-      <div class="row" style="margin-top:10px">${packs.map(k => `<span class="chip">${icon(k.set)}${esc(k.set.name)}${k.source === 'sacrifice' ? ' 🔥' : ''} <span class="dim">· ${esc(k.podName)} · ${k.cards.length}</span>${isAdmin() ? `<button class="chip-x" data-delpack="${k.podId}:${k.packId}" title="Admin: delete this pack and its pulls">✕</button>` : ''}</span>`).join('')}</div>
+      <div class="row" style="margin-top:10px">${packs.map(k => `<span class="chip">${icon(k.set)}${esc(k.set.name)}${k.source === 'sacrifice' ? ' 🔥' : ''} <span class="dim">· ${esc(k.podName)}${k.absent ? ' (missed)' : ''} · ${k.cards.length}</span>${isAdmin() ? `<button class="chip-x" data-delpack="${k.podId}:${k.packId}" title="Admin: delete this pack and its pulls">✕</button>` : ''}</span>`).join('')}</div>
       ${isAdmin() ? '<p class="small dim" style="margin:10px 0 0">Admin: ✕ deletes a whole pack; open a card and use 🗑 Remove to delete a single copy.</p>' : ''}
     </details>` : `<div class="empty"><p>${pool.userId === S.me.id ? 'Your' : `${esc(pool.username)}'s`} pool is empty. Cards show up here as soon as packs are opened.</p></div>`}`;
   $('#copyPool', view)?.addEventListener('click', () => copyText(listFor(cards), `${pool.username}'s pool${podName ? ` from ${podName}` : ''} (${cards.length} cards)`));
@@ -1124,7 +1334,7 @@ function renderSets(view) {
   if (mode !== lastSetsMode) { setsFilter = { q: '', type: '', sort: setsFilter.sort === 'chance' && chooseMode ? 'new' : setsFilter.sort, only: '' }; lastSetsMode = mode; }
   view.innerHTML = `
     ${chooseMode ? `<div class="choose-banner"><div>🔥 <b>${esc(choosing.player.name)}</b> sacrificed a pack. Tap any set for the replacement booster.</div><a class="btn sm ghost" href="#packs?pod=${pod.id}&player=${choosing.player.id}">Back to packs</a></div>` : `
-      <div class="hero"><div><h1>All Sets</h1><p>Every Magic set that came in boosters, and its chance of coming up on the wheel. ${edit ? 'As admin you can toggle sets on or off the wheel and change their odds: a weight of 2 makes a set twice as likely as a weight-1 set.' : 'Only the league admin can change which sets are on the wheel and their odds.'}</p></div>
+      <div class="hero"><div><h1>All Sets${S.league ? ` · ${esc(S.league.name)}` : ''}</h1><p>Every Magic set that came in boosters, and its chance of coming up on ${S.league ? 'this league\'s' : 'the'} wheel (each league has its own). ${edit ? 'As admin you can toggle sets on or off the wheel and change their odds: a weight of 2 makes a set twice as likely as a weight-1 set.' : 'Only the league admin can change which sets are on the wheel and their odds.'}</p></div>
       <div class="row"><span class="chip ok">${S.wheel.length} on the wheel</span>${edit ? '<span class="chip gold">admin</span>' : ''}</div></div>`}
     <div class="set-tools">
       <input type="search" id="q" placeholder="Search ${S.sets.length} sets…" value="${esc(setsFilter.q)}">
@@ -1200,7 +1410,7 @@ function queueSave(after) {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     try {
-      await api('/settings', { method: 'PUT', body: { excluded: S.settings.excluded, weights: S.settings.weights } });
+      await api('/settings', { method: 'PUT', body: { excluded: S.settings.excluded, weights: S.settings.weights, league: S.league?.id } });
       await loadSets();
       after();
     } catch (err) { fail(err); }
@@ -1211,7 +1421,7 @@ function queueSave(after) {
 async function renderHistory(view) {
   if (!S.history) {
     view.innerHTML = '<div class="spinner"></div>';
-    try { S.history = (await api('/history')).pods; } catch (err) { fail(err); return; }
+    try { S.history = (await api('/history' + lq())).pods; } catch (err) { fail(err); return; }
     if (S.route !== 'history') return;
   }
   const pods = S.history;
@@ -1230,7 +1440,7 @@ async function renderHistory(view) {
   }
   const table = [...stats.values()].sort((a, b) => b.wins - a.wins || b.wins / b.games - a.wins / a.games);
   view.innerHTML = `
-    <div class="hero"><div><h1>League History</h1><p>${plural(pods.length, 'pod')} played.</p></div>
+    <div class="hero"><div><h1>${esc(S.league?.name || 'League')} History</h1><p>${plural(pods.length, 'pod')} played.</p></div>
       <div class="row">${exportToggle()}${isAdmin() ? `<button class="btn danger" id="clearHist">🗑 Clear league history</button>` : ''}</div></div>
     <div class="panel" style="margin-bottom:22px;overflow-x:auto">
       <h2>Standings</h2>
@@ -1264,7 +1474,7 @@ async function renderHistory(view) {
   $('#clearHist', view)?.addEventListener('click', async () => {
     const cards = pods.reduce((s, g) => s + g.players.reduce((t, p) => t + p.packs.reduce((u, k) => u + (k.cards?.length || 0), 0), 0), 0);
     if (!await typedConfirm('Clear league history?', `This permanently deletes all <b>${plural(pods.length, 'finished pod')}</b> (and any discarded ones), the standings built from them, and their <b>${cards} cards</b> from everyone's pools. Running pods are not touched.`, 'DELETE', '🗑 Clear history')) return;
-    try { const r = await del('/history'); await afterAdminDelete(`League history cleared (${plural(r.deletedPods, 'pod')} deleted).`); } catch (err) { fail(err); }
+    try { const r = await del('/history' + lq()); await afterAdminDelete(`League history cleared (${plural(r.deletedPods, 'pod')} deleted).`); } catch (err) { fail(err); }
   });
   $$('[data-copy]', view).forEach(b => b.onclick = () => {
     const p = lookup(b.dataset.copy);
@@ -1291,7 +1501,7 @@ function connect() {
     try {
       const info = JSON.parse(e.data || '{}');
       await loadState();
-      S.pools = null;
+      S.pools = null; S.leagueDetail = null;
       if (e.type === 'spin') {
         const pod = podById(info.podId);
         if (pod?.spin && !S.seenSpins.has(pod.spin.id)) {
@@ -1316,7 +1526,7 @@ function connect() {
       if (S.spinning || S.opening) return;
       // Don't yank the page out from under someone mid-reveal or typing.
       const typing = document.activeElement && ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName);
-      if (['sets', 'pods', 'account', 'pools'].includes(S.route) && typing) return;
+      if (['sets', 'pods', 'account', 'pools', 'league'].includes(S.route) && typing) return;
       if (S.route === 'packs' && $('.mcard.down')) return;
       if (S.route === 'history') S.history = null;
       render();

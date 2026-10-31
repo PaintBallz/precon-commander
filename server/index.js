@@ -1,27 +1,38 @@
-// Pre-Con Commander — league companion: pods, one wheel spin per pod, booster
-// opener and per-player card pools. Every phone sees changes live (Server-Sent Events).
+// Pre-Con Commander — league companion: leagues, pods, one wheel spin per pod,
+// booster opener and per-player card pools. Every phone sees changes live
+// (Server-Sent Events).
 //
-// League = everyone with an account. Pod = one game of 2–4 league players.
-// When a pod ends, the players vote (never for themselves) on who earns a
-// bonus pack; a tie means a re-vote between the tied players until one has the
-// most votes. Then the winner spins the wheel ONCE. Every player's packs are
-// that set (winner 3, everyone else 2); a player can Sacrifice a Pack (give up
-// one of their spun-set packs) to turn another one into any set they like.
+// League = 3–16 players (joined at creation, by invite code, or added by the
+// admin); a player is in one active league at a time. Pod = one game of 3–4
+// league players. When a pod ends, its players vote (never for themselves) on
+// who earns a bonus pack; a tie means a re-vote between the tied players until
+// one has the most votes. Then the winner spins the wheel ONCE: every player's
+// packs are that set (by default winner 3, everyone else 2), and every league
+// member who missed the pod gets 1 pack of it too. A player can Sacrifice a
+// Pack (give up one of their spun-set packs) to turn another into any set.
+// Pack counts, absent packs and the vote bonus are each league's own rules.
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { savePod, loadPod, activePods, finishedPods, deletePod, deleteHistory, poolCard, deletePoolCard, poolCards, poolPods, setInfoFor, kvGet, kvSet } from './db.js';
+import {
+  savePod, loadPod, activePods, finishedPods, pendingPacks, deletePod, deleteHistory, poolCard, deletePoolCard,
+  poolCards, poolPods, setInfoFor, kvGet, kvSet,
+} from './db.js';
+import {
+  LEAGUE_MIN, LEAGUE_MAX, DEFAULT_RULES, RULE_LIMITS, getLeague, leagueByCode, listLeagues, activeLeagueOf,
+  leagueMembers, isMember, addMember, removeMember, createLeague, updateLeague, newLeagueCode, endLeague, deleteLeague,
+  logEvent, leagueEvents, migrateToLeagues,
+} from './leagues.js';
 import { getBoosterSets, BOOSTER_SET_TYPES } from './scryfall.js';
 import { openPack, hasRealPack, realPackKind, localPackSets } from './packs.js';
 import { requireAuth, requireAdmin, authRoutes, seedAdmin, listUsers, getUser } from './auth.js';
 
 const PORT = Number(process.env.PORT || 3000);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const WINNER_PACKS = 3;
-const LOSER_PACKS = 2;
-const MAX_POD = 4;
+const POD_MIN = 3;
+const POD_MAX = 4;
 
 const app = express();
 app.set('trust proxy', 'loopback, uniquelocal');
@@ -49,6 +60,8 @@ const wrap = fn => (req, res) => Promise.resolve(fn(req, res)).catch(err => {
   if (!err.status) console.error(err);
   res.status(err.status || 500).json({ error: err.message || 'Something went wrong' });
 });
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+const names = list => list.length < 2 ? list.join('') : `${list.slice(0, -1).join(', ')} and ${list.at(-1)}`;
 
 app.get('/healthz', (req, res) => res.json({ ok: true }));
 app.use('/api', requireAuth);
@@ -71,9 +84,30 @@ app.get('/api/events', (req, res) => {
   req.on('close', () => { clearInterval(ping); clients.delete(res); });
 });
 
-// ---------- sets + wheel settings (admin edits, everyone reads) ----------
+// ---------- which league a request is about ----------
+// ?league=<id> picks one (any league can be viewed); otherwise it's your
+// active league, and for the admin (who isn't a member) the newest active one.
+function viewLeague(req) {
+  const asked = req.query.league || req.body?.league;
+  if (asked) {
+    const l = getLeague(String(asked));
+    if (!l) throw new HttpError(404, 'League not found');
+    return l;
+  }
+  return activeLeagueOf(req.user.id) || (req.user.isAdmin ? listLeagues().find(l => l.status === 'active') || listLeagues()[0] || null : null);
+}
+function requireLeague(id) {
+  const l = getLeague(id);
+  if (!l) throw new HttpError(404, 'League not found');
+  return l;
+}
+const rulesOf = pod => ({ ...DEFAULT_RULES, ...(pod.rules || {}) });
+
+// ---------- sets + wheel settings (each league has its own wheel; admin edits) ----------
 const DEFAULT_SETTINGS = { minYear: 1993, maxYear: 2100, types: [...BOOSTER_SET_TYPES], excluded: [], weights: {} };
-function getSettings() { return { ...DEFAULT_SETTINGS, ...kvGet('wheel_settings', {}) }; }
+// The site-wide wheel is the starting point for new leagues.
+function globalSettings() { return { ...DEFAULT_SETTINGS, ...kvGet('wheel_settings', {}) }; }
+function settingsFor(league) { return league ? { ...DEFAULT_SETTINGS, ...league.wheel } : globalSettings(); }
 
 async function allSets() {
   const sets = await getBoosterSets(localPackSets());
@@ -89,12 +123,14 @@ function wheelFor(sets, settings) {
 }
 
 app.get('/api/sets', wrap(async (req, res) => {
+  const league = viewLeague(req);
   const sets = await allSets();
-  const settings = getSettings();
+  const settings = settingsFor(league);
   const wheel = wheelFor(sets, settings);
   const total = wheel.reduce((s, w) => s + w.weight, 0);
   const onWheel = new Map(wheel.map(w => [w.code, w.weight]));
   res.json({
+    leagueId: league?.id || null,
     settings,
     types: BOOSTER_SET_TYPES,
     sets: sets.map(s => ({ ...s, weight: Number(settings.weights[s.code] ?? 1), onWheel: onWheel.has(s.code), chance: onWheel.has(s.code) ? onWheel.get(s.code) / total : 0 })),
@@ -105,7 +141,8 @@ app.get('/api/sets', wrap(async (req, res) => {
 app.put('/api/settings', wrap(async (req, res) => {
   requireAdmin(req);
   const b = req.body || {};
-  const s = getSettings();
+  const league = b.league ? requireLeague(String(b.league)) : null;
+  const s = settingsFor(league);
   if (b.minYear != null) s.minYear = Math.max(1993, Math.min(2100, Number(b.minYear) || 1993));
   if (b.maxYear != null) s.maxYear = Math.max(1993, Math.min(2100, Number(b.maxYear) || 2100));
   if (Array.isArray(b.types)) s.types = b.types.filter(t => BOOSTER_SET_TYPES.includes(t));
@@ -119,23 +156,210 @@ app.put('/api/settings', wrap(async (req, res) => {
     s.weights = w;
   }
   if (b.reset) Object.assign(s, structuredClone(DEFAULT_SETTINGS));
-  kvSet('wheel_settings', s);
-  broadcast('sets');
+  if (league) updateLeague(league.id, { wheel: s });
+  else kvSet('wheel_settings', s);
+  broadcast('sets', { leagueId: league?.id || null });
   res.json({ ok: true, settings: s });
 }));
 
-// ---------- league members ----------
-// Admin accounts manage the league; they don't play, so they're left out of
-// every list players see (members, pools).
-const leaguePlayers = () => listUsers().filter(u => !u.is_admin);
-const members = () => leaguePlayers().map(u => ({ id: u.id, username: u.username, precon: u.precon || '' }));
-app.get('/api/members', (req, res) => res.json({ members: members() }));
+// ---------- leagues ----------
+const creatorName = l => (l.createdBy && getUser(l.createdBy)?.username) || null;
+// Everything a phone gets about a league. Only members and the admin see the
+// invite code. Admin accounts are never listed (they don't play).
+function leagueView(req, l) {
+  if (!l) return null;
+  const member = isMember(l.id, req.user.id);
+  const members = leagueMembers(l.id);
+  return {
+    id: l.id, name: l.name, status: l.status, createdAt: l.createdAt, endedAt: l.endedAt, createdBy: creatorName(l),
+    code: member || req.user.isAdmin ? l.code : null, rules: l.rules, members, isMember: member,
+    limits: { min: LEAGUE_MIN, max: LEAGUE_MAX, podMin: POD_MIN, podMax: POD_MAX },
+  };
+}
+const leagueList = () => listLeagues().map(l => ({ id: l.id, name: l.name, status: l.status, members: l.members, pods: l.pods, createdAt: l.createdAt, endedAt: l.endedAt }));
+
+// Standings for a league: from its finished pods, plus how many pods each
+// member missed (and the packs that earned them).
+function standings(leagueId) {
+  const rows = new Map(leagueMembers(leagueId, { former: true }).map(m => [m.id, {
+    id: m.id, name: m.username, active: !m.leftAt, pods: 0, wins: 0, voteWins: 0, packs: 0, sacrificed: 0, rares: 0, mythics: 0, missed: 0,
+  }]));
+  const row = (id, name) => rows.get(id) || rows.set(id, { id, name, active: false, pods: 0, wins: 0, voteWins: 0, packs: 0, sacrificed: 0, rares: 0, mythics: 0, missed: 0 }).get(id);
+  const count = (s, packs) => {
+    for (const k of packs) if (k.status === 'opened') {
+      s.packs++;
+      for (const c of k.cards) { if (c.rarity === 'mythic') s.mythics++; if (c.rarity === 'rare') s.rares++; }
+    }
+  };
+  for (const pod of finishedPods(leagueId)) {
+    for (const p of pod.players) {
+      const s = row(p.id, p.name);
+      s.pods++;
+      if (pod.winnerId === p.id) s.wins++;
+      if (pod.vote?.winnerId === p.id) s.voteWins++;
+      s.sacrificed += p.sacrificed;
+      count(s, p.packs);
+    }
+    for (const a of pod.absentees) { const s = row(a.id, a.name); s.missed++; count(s, a.packs); }
+  }
+  return [...rows.values()].sort((a, b) => b.wins - a.wins || (b.wins / (b.pods || 1)) - (a.wins / (a.pods || 1)) || b.pods - a.pods || a.name.localeCompare(b.name));
+}
+
+app.get('/api/leagues', (req, res) => res.json({ leagues: leagueList(), myLeagueId: activeLeagueOf(req.user.id)?.id || null }));
+
+app.get('/api/leagues/:id', (req, res) => {
+  const l = getLeague(req.params.id);
+  if (!l) return res.status(404).json({ error: 'League not found' });
+  res.json({ league: leagueView(req, l), standings: standings(l.id), events: leagueEvents(l.id) });
+});
+
+// Any player can start a league (if they're not already in one). By default
+// every player who isn't in an active league joins it right away (up to 16).
+app.post('/api/leagues', wrap(async (req, res) => {
+  const name = String(req.body?.name || '').trim().slice(0, 40) || `League ${listLeagues().length + 1}`;
+  if (!req.user.isAdmin) {
+    const current = activeLeagueOf(req.user.id);
+    if (current) throw new HttpError(409, `You're already in ${current.name}. Leave it first to start a new league.`);
+  }
+  const league = createLeague({ name, createdBy: req.user.id, wheel: globalSettings() });
+  const joined = [];
+  if (!req.user.isAdmin) { addMember(league.id, req.user.id, req.user.id); joined.push(req.user.username); }
+  if (req.body?.addEveryone !== false) {
+    for (const u of listUsers()) {
+      if (joined.length >= LEAGUE_MAX) break;
+      if (u.is_admin || u.id === req.user.id || activeLeagueOf(u.id)) continue;
+      addMember(league.id, u.id, req.user.id);
+      joined.push(u.username);
+    }
+  }
+  logEvent(league.id, 'league', req.user.id, `${req.user.username} started ${league.name}${joined.length ? ` with ${names(joined)}` : ''}.`);
+  broadcast('state', { leagueId: league.id });
+  res.json({ league: leagueView(req, getLeague(league.id)) });
+}));
+
+function joinCheck(league, user) {
+  if (league.status !== 'active') throw new HttpError(409, `${league.name} has ended.`);
+  const current = activeLeagueOf(user.id);
+  if (current?.id === league.id) throw new HttpError(409, `${user.username} is already in ${league.name}.`);
+  if (current) throw new HttpError(409, `${user.username} is already in ${current.name} (one league at a time).`);
+  if (leagueMembers(league.id).length >= LEAGUE_MAX) throw new HttpError(409, `${league.name} is full (${LEAGUE_MAX} players).`);
+}
+
+app.post('/api/leagues/join', wrap(async (req, res) => {
+  if (req.user.isAdmin) throw new HttpError(400, 'The admin account manages leagues and does not join them.');
+  const league = leagueByCode(req.body?.code || '');
+  if (!league) throw new HttpError(404, 'No league has that code. Check it and try again.');
+  joinCheck(league, req.user);
+  addMember(league.id, req.user.id, req.user.id);
+  logEvent(league.id, 'join', req.user.id, `${req.user.username} joined with the invite code.`);
+  broadcast('state', { leagueId: league.id });
+  res.json({ league: leagueView(req, league) });
+}));
+
+const runningPodOf = (leagueId, userId) => activePods(leagueId).find(p => p.players.some(x => x.id === userId));
+
+app.post('/api/leagues/:id/leave', wrap(async (req, res) => {
+  const league = requireLeague(req.params.id);
+  if (!isMember(league.id, req.user.id)) throw new HttpError(409, `You're not in ${league.name}.`);
+  const pod = runningPodOf(league.id, req.user.id);
+  if (pod) throw new HttpError(409, `Finish ${pod.name} before leaving the league.`);
+  removeMember(league.id, req.user.id);
+  logEvent(league.id, 'leave', req.user.id, `${req.user.username} left the league.`);
+  broadcast('state', { leagueId: league.id });
+  res.json({ ok: true });
+}));
+
+// Admin: add or remove members by hand.
+app.post('/api/leagues/:id/members', wrap(async (req, res) => {
+  requireAdmin(req);
+  const league = requireLeague(req.params.id);
+  const u = getUser(String(req.body?.userId || ''));
+  if (!u || u.is_admin) throw new HttpError(400, 'Pick a player account.');
+  joinCheck(league, { id: u.id, username: u.username });
+  addMember(league.id, u.id, req.user.id);
+  logEvent(league.id, 'join', req.user.id, `${u.username} was added to the league by the admin.`);
+  broadcast('state', { leagueId: league.id });
+  res.json({ league: leagueView(req, league) });
+}));
+app.delete('/api/leagues/:id/members/:userId', wrap(async (req, res) => {
+  requireAdmin(req);
+  const league = requireLeague(req.params.id);
+  const u = getUser(req.params.userId);
+  if (!u || !isMember(league.id, u.id)) throw new HttpError(404, 'That player is not in this league.');
+  const pod = runningPodOf(league.id, u.id);
+  if (pod) throw new HttpError(409, `${u.username} is playing in ${pod.name}. Finish or discard it first.`);
+  removeMember(league.id, u.id);
+  logEvent(league.id, 'leave', req.user.id, `${u.username} was removed from the league by the admin.`);
+  broadcast('state', { leagueId: league.id });
+  res.json({ league: leagueView(req, league) });
+}));
+// Players the admin could add: not admins, not in an active league.
+app.get('/api/leagues/:id/candidates', wrap(async (req, res) => {
+  requireAdmin(req);
+  requireLeague(req.params.id);
+  res.json({ players: listUsers().filter(u => !u.is_admin && !activeLeagueOf(u.id)).map(u => ({ id: u.id, username: u.username })) });
+}));
+
+// Admin: rename, change the rules, new invite code, end or delete.
+app.put('/api/leagues/:id', wrap(async (req, res) => {
+  requireAdmin(req);
+  const league = requireLeague(req.params.id);
+  const b = req.body || {};
+  const changes = {};
+  if (b.name != null) {
+    changes.name = String(b.name).trim().slice(0, 40);
+    if (!changes.name) throw new HttpError(400, 'Give the league a name.');
+  }
+  if (b.rules && typeof b.rules === 'object') {
+    const rules = { ...league.rules };
+    for (const [k, [lo, hi]] of Object.entries(RULE_LIMITS)) {
+      if (b.rules[k] == null) continue;
+      const n = Math.round(Number(b.rules[k]));
+      if (!Number.isFinite(n) || n < lo || n > hi) throw new HttpError(400, `${k} must be ${lo}–${hi}.`);
+      rules[k] = n;
+    }
+    changes.rules = rules;
+  }
+  const updated = updateLeague(league.id, changes);
+  if (changes.rules) {
+    const r = changes.rules;
+    logEvent(league.id, 'rules', req.user.id, `Rules changed: winner ${r.winnerPacks}, others ${r.loserPacks}, absent ${r.absentPacks}, vote bonus ${r.voteBonus} pack(s). Running pods keep the rules they started with.`);
+  }
+  broadcast('state', { leagueId: league.id });
+  res.json({ league: leagueView(req, updated) });
+}));
+app.post('/api/leagues/:id/code', wrap(async (req, res) => {
+  requireAdmin(req);
+  const league = newLeagueCode(requireLeague(req.params.id).id);
+  broadcast('state', { leagueId: league.id });
+  res.json({ league: leagueView(req, league) });
+}));
+app.post('/api/leagues/:id/end', wrap(async (req, res) => {
+  requireAdmin(req);
+  const league = requireLeague(req.params.id);
+  if (league.status !== 'active') throw new HttpError(409, `${league.name} has already ended.`);
+  const running = activePods(league.id);
+  if (running.length) throw new HttpError(409, `Finish or discard ${names(running.map(p => p.name))} first.`);
+  endLeague(league.id);
+  logEvent(league.id, 'end', req.user.id, `${league.name} ended. Its standings, history and pools stay as an archive.`);
+  broadcast('state', { leagueId: league.id });
+  res.json({ ok: true });
+}));
+app.delete('/api/leagues/:id', wrap(async (req, res) => {
+  requireAdmin(req);
+  const league = requireLeague(req.params.id);
+  deleteLeague(league.id);
+  broadcast('state', { leagueId: league.id, deleted: true });
+  res.json({ ok: true, deleted: { id: league.id, name: league.name } });
+}));
 
 // ---------- pods ----------
 const spunPacks = p => p.packs.filter(k => k.status === 'ready' && k.source === 'wheel');
-function requirePod(podId) {
+// Running pods; with { opened: true } finished pods too (packs can still be opened after a pod is finished).
+function requirePod(podId, { opened = false } = {}) {
   const pod = loadPod(podId);
-  if (!pod || !['playing', 'awarded'].includes(pod.status)) throw new HttpError(404, 'That pod is not running.');
+  const ok = ['playing', 'awarded', ...(opened ? ['done'] : [])];
+  if (!pod || !ok.includes(pod.status)) throw new HttpError(404, 'That pod is not running.');
   return pod;
 }
 function findPlayer(pod, playerId) {
@@ -143,8 +367,9 @@ function findPlayer(pod, playerId) {
   if (!p) throw new HttpError(404, 'Player not found in this pod');
   return p;
 }
+// Packs belong to a pod's players or to the league members who missed it.
 function findPack(pod, packId) {
-  for (const p of pod.players) {
+  for (const p of [...pod.players, ...pod.absentees]) {
     const pack = p.packs.find(k => k.id === packId);
     if (pack) return { player: p, pack };
   }
@@ -164,15 +389,14 @@ async function setInfo(code) {
 }
 const newPack = set => ({ id: id(10), status: 'ready', source: 'wheel', set, wheelSet: set, cards: null });
 // Save, tell every phone, and hand back the pod as stored (so cards carry their ids).
-function commit(pod, kind = 'state', data = {}) { pod.updatedAt = now(); savePod(pod); broadcast(kind, { podId: pod.id, ...data }); return loadPod(pod.id); }
+function commit(pod, kind = 'state', data = {}) { pod.updatedAt = now(); savePod(pod); broadcast(kind, { podId: pod.id, leagueId: pod.leagueId, ...data }); return loadPod(pod.id); }
 
 // ---------- the bonus-pack vote ----------
-// Round 1: everyone is a candidate. A round closes when every player has
-// voted; if the most votes are tied, the next round is between just those
-// players. The first round with a single leader decides it: +1 pack.
-// A 2-player pod can only ever tie (each must vote for the other), so it skips.
-const MIN_VOTERS = 3;
-const BONUS_PACKS = 1;
+// Only the pod's own players vote, and only for each other. Round 1: everyone
+// in the pod is a candidate. A round closes when every player has voted; if
+// the most votes are tied, the next round is between just those players. The
+// first round with a single leader decides it: +voteBonus packs (league rule;
+// 0 turns the vote off).
 function tallyOf(pod, round, candidates) {
   const tally = Object.fromEntries(candidates.map(c => [c, 0]));
   for (const b of pod.vote.ballots) if (b.round === round && b.candidateId in tally) tally[b.candidateId]++;
@@ -185,7 +409,7 @@ function candidatesFor(pod, round) {
   return cands;
 }
 function openVote(pod) {
-  pod.vote = pod.players.length >= MIN_VOTERS
+  pod.vote = rulesOf(pod).voteBonus > 0 && pod.players.length >= POD_MIN
     ? { status: 'open', round: 1, winnerId: null, ballots: [] }
     : { status: 'skipped', round: 0, winnerId: null, ballots: [] };
 }
@@ -197,12 +421,14 @@ function closeRoundIfComplete(pod) {
   v.status = 'done';
   v.winnerId = top[0];
   v.decidedAt = now();
-  findPlayer(pod, top[0]).awarded += BONUS_PACKS;
+  findPlayer(pod, top[0]).awarded += rulesOf(pod).voteBonus;
 }
 // What a phone gets to see: ballots stay secret while a round is open (only
 // who has voted, plus your own choice); closed rounds show their counts.
 function view(req, pod) {
-  if (!pod?.vote) return pod;
+  if (!pod) return pod;
+  const out = { ...pod, rules: rulesOf(pod) };
+  if (!pod.vote) return out;
   const v = pod.vote;
   const closed = v.status === 'open' ? v.round - 1 : v.round;
   const rounds = [];
@@ -217,31 +443,59 @@ function view(req, pod) {
     voted: v.ballots.filter(b => b.round === v.round).map(b => b.voterId),
     myVote: v.ballots.find(b => b.round === v.round && b.voterId === req.user.id)?.candidateId || null,
   } : null;
-  return { ...pod, vote: { status: v.status, round: v.round, winnerId: v.winnerId, decidedAt: v.decidedAt, bonus: BONUS_PACKS, rounds, current } };
+  return { ...out, vote: { status: v.status, round: v.round, winnerId: v.winnerId, decidedAt: v.decidedAt, bonus: rulesOf(pod).voteBonus, rounds, current } };
 }
 
-app.get('/api/state', (req, res) => {
-  res.json({ version, me: req.user, pods: activePods().map(p => view(req, p)), members: members() });
-});
+app.get('/api/state', wrap(async (req, res) => {
+  const league = viewLeague(req);
+  const mine = activeLeagueOf(req.user.id);
+  // Finished pods where I still have packs to open stay reachable.
+  const pending = mine ? pendingPacks(req.user.id, mine.id) : [];
+  const running = league ? activePods(league.id) : [];
+  const openPodIds = [...new Set(pending.filter(k => k.podStatus === 'done').map(k => k.podId))];
+  res.json({
+    version, me: req.user, myLeagueId: mine?.id || null,
+    league: leagueView(req, league), leagues: leagueList(),
+    pods: running.map(p => view(req, p)),
+    openPods: openPodIds.map(id => view(req, loadPod(id))).filter(Boolean),
+    members: league ? leagueMembers(league.id).map(m => ({ id: m.id, username: m.username, precon: m.precon })) : [],
+    pending,
+  });
+}));
+
+app.get('/api/members', wrap(async (req, res) => {
+  const league = viewLeague(req);
+  res.json({ members: league ? leagueMembers(league.id).map(m => ({ id: m.id, username: m.username, precon: m.precon })) : [] });
+}));
 
 app.post('/api/pods', wrap(async (req, res) => {
+  const league = req.body?.league ? requireLeague(String(req.body.league)) : activeLeagueOf(req.user.id);
+  if (!league) throw new HttpError(409, 'Join or start a league first: pods belong to a league.');
+  if (league.status !== 'active') throw new HttpError(409, `${league.name} has ended.`);
+  if (!req.user.isAdmin && !isMember(league.id, req.user.id)) throw new HttpError(403, `You're not in ${league.name}.`);
   const wanted = Array.isArray(req.body?.players) ? req.body.players : [];
   const ids = wanted.map(p => String(p.userId || '')).filter(Boolean);
-  if (ids.length < 2 || ids.length > MAX_POD) throw new HttpError(400, `A pod has 2 to ${MAX_POD} players.`);
+  if (ids.length < POD_MIN || ids.length > POD_MAX) throw new HttpError(400, `A pod has ${POD_MIN} to ${POD_MAX} players.`);
   if (new Set(ids).size !== ids.length) throw new HttpError(400, 'Each player can only be in the pod once.');
-  const busy = new Map(activePods().flatMap(pod => pod.players.map(p => [p.id, pod])));
+  const busy = new Map(activePods(league.id).flatMap(pod => pod.players.map(p => [p.id, pod])));
   const players = wanted.map((w, i) => {
     const u = getUser(String(w.userId));
     if (!u) throw new HttpError(400, `Player ${i + 1} is not a league member.`);
     if (u.is_admin) throw new HttpError(400, 'The admin account manages the league and does not play in pods.');
+    if (!isMember(league.id, u.id)) throw new HttpError(400, `${u.username} is not in ${league.name}.`);
     if (busy.has(u.id)) throw new HttpError(409, `${u.username} is already playing in ${busy.get(u.id).name}.`);
     const precon = String(w.precon ?? u.precon ?? '').trim().slice(0, 80);
     return { id: u.id, name: u.username, precon, awarded: 0, sacrificed: 0, packs: [] };
   });
   if (!req.user.isAdmin && !ids.includes(req.user.id)) throw new HttpError(403, 'Add yourself to the pod (only the admin can start pods for others).');
-  const n = kvGet('pod_counter', 0) + 1;
-  kvSet('pod_counter', n);
-  const pod = { id: id(10), name: `Pod ${n}`, status: 'playing', createdAt: now(), createdBy: req.user.id, winnerId: null, spin: null, players };
+  const key = `pod_counter:${league.id}`;
+  const n = kvGet(key, 0) + 1;
+  kvSet(key, n);
+  const pod = {
+    id: id(10), leagueId: league.id, rules: { ...league.rules }, name: `Pod ${n}`, status: 'playing', createdAt: now(), createdBy: req.user.id,
+    winnerId: null, spin: null, players, absentees: [],
+  };
+  logEvent(league.id, 'pod', req.user.id, `${pod.name} started: ${names(players.map(p => p.name))}.`);
   res.json({ pod: view(req, commit(pod)) });
 }));
 
@@ -251,11 +505,13 @@ app.post('/api/pods/:id/winner', wrap(async (req, res) => {
   if (pod.spin) throw new HttpError(409, 'The wheel has already been spun. Ask the admin to adjust packs instead.');
   if (pod.vote?.ballots.length) throw new HttpError(409, 'Voting has started, so the winner can no longer be changed.');
   const winner = findPlayer(pod, req.body?.playerId);
+  const rules = rulesOf(pod);
   pod.winnerId = winner.id;
   pod.status = 'awarded';
   pod.wonAt = now();
-  for (const p of pod.players) p.awarded = p.id === winner.id ? WINNER_PACKS : LOSER_PACKS;
+  for (const p of pod.players) p.awarded = p.id === winner.id ? rules.winnerPacks : rules.loserPacks;
   openVote(pod);
+  logEvent(pod.leagueId, 'win', req.user.id, `👑 ${winner.name} won ${pod.name}.`);
   res.json({ pod: view(req, commit(pod)) });
 }));
 
@@ -279,7 +535,7 @@ app.post('/api/pods/:id/award', wrap(async (req, res) => {
   res.json({ pod: view(req, commit(pod)) });
 }));
 
-// Cast (or change) your ballot for the current round.
+// Cast (or change) your ballot for the current round. Pod players only.
 app.post('/api/pods/:id/vote', wrap(async (req, res) => {
   const pod = requirePod(req.params.id);
   if (pod.vote?.status !== 'open') throw new HttpError(409, pod.vote ? 'The vote is already over.' : 'Crown the winner first, then vote.');
@@ -296,6 +552,9 @@ app.post('/api/pods/:id/vote', wrap(async (req, res) => {
   const round = v.round;
   closeRoundIfComplete(pod);
   const kind = v.status === 'done' ? 'decided' : v.round > round ? 'tied' : 'voted';
+  if (kind === 'decided') {
+    logEvent(pod.leagueId, 'vote', null, `🗳 ${findPlayer(pod, v.winnerId).name} won ${pod.name}'s bonus-pack vote${v.round > 1 ? ` after ${plural(v.round - 1, 're-vote')}` : ''}.`);
+  }
   res.json({ pod: view(req, commit(pod, 'state', { vote: kind })), result: kind });
 }));
 
@@ -310,14 +569,17 @@ app.post('/api/pods/:id/vote/skip', wrap(async (req, res) => {
 }));
 
 // The one spin per pod. Only the winner (or the admin) can pull the lever.
+// Every pod player gets their packs of the spun set, and every league member
+// who missed the pod gets absentPacks of it too.
 app.post('/api/pods/:id/spin', wrap(async (req, res) => {
   const pod = requirePod(req.params.id);
   if (pod.status !== 'awarded') throw new HttpError(409, 'Crown the winner first: the winner spins the wheel.');
   if (pod.spin) throw new HttpError(409, `This pod already spun ${pod.spin.set.name}. There is only one spin per pod.`);
   if (pod.vote?.status === 'open') throw new HttpError(409, 'Finish the bonus-pack vote first: the spin hands out everyone\'s packs.');
   if (!req.user.isAdmin && req.user.id !== pod.winnerId) throw new HttpError(403, `Only the winner, ${findPlayer(pod, pod.winnerId).name}, can spin.`);
+  const league = pod.leagueId ? getLeague(pod.leagueId) : null;
   const sets = await allSets();
-  const wheel = wheelFor(sets, getSettings());
+  const wheel = wheelFor(sets, settingsFor(league));
   if (!wheel.length) throw new HttpError(409, 'The wheel is empty. The admin needs to loosen the wheel filters.');
   const total = wheel.reduce((s, w) => s + w.weight, 0);
   let r = Math.random() * total, pick = wheel[wheel.length - 1];
@@ -325,6 +587,12 @@ app.post('/api/pods/:id/spin', wrap(async (req, res) => {
   const set = await setInfo(pick.code);
   pod.spin = { id: id(10), setCode: set.code, set, by: req.user.id, at: now(), offset: Math.random() };
   for (const p of pod.players) p.packs = Array.from({ length: p.awarded }, () => newPack(set));
+  const absent = rulesOf(pod).absentPacks;
+  pod.absentees = absent > 0 && league
+    ? leagueMembers(league.id).filter(m => !pod.players.some(p => p.id === m.id))
+      .map(m => ({ id: m.id, name: m.username, packs: Array.from({ length: absent }, () => newPack(set)) }))
+    : [];
+  logEvent(pod.leagueId, 'spin', req.user.id, `🎡 ${pod.name} spun ${set.name}.${pod.absentees.length ? ` ${names(pod.absentees.map(a => a.name))} missed it and get ${plural(absent, `${set.name} pack`)} each.` : ''}`);
   res.json({ pod: view(req, commit(pod, 'spin', { spinId: pod.spin.id })), spin: pod.spin });
 }));
 
@@ -337,7 +605,7 @@ app.post('/api/pods/:id/packs/:packId/sacrifice', wrap(async (req, res) => {
   const fodder = spunPacks(player).filter(k => k.id !== pack.id).at(-1);
   if (!fodder) throw new HttpError(409, `${player.name} needs another unopened ${pack.set.name} pack to sacrifice.`);
   player.packs.splice(player.packs.indexOf(fodder), 1);
-  player.sacrificed += 1;
+  player.sacrificed = (player.sacrificed || 0) + 1;
   pack.status = 'choosing';
   pack.source = 'sacrifice';
   pack.sacrificedAt = now();
@@ -358,7 +626,7 @@ app.post('/api/pods/:id/packs/:packId/choose', wrap(async (req, res) => {
 const opening = new Set();
 app.post('/api/pods/:id/packs/:packId/open', wrap(async (req, res) => {
   const { packId } = req.params;
-  let pod = requirePod(req.params.id);
+  let pod = requirePod(req.params.id, { opened: true });
   let { player, pack } = findPack(pod, packId);
   requireOwner(player, req.user);
   if (pack.status === 'opened') return res.json({ pod: view(req, pod), pack });
@@ -370,13 +638,16 @@ app.post('/api/pods/:id/packs/:packId/open', wrap(async (req, res) => {
     const set = sets.find(s => s.code === pack.set.code) || pack.set;
     const result = await openPack(set);
     // Re-load in case something else changed while Scryfall was answering.
-    pod = requirePod(req.params.id);
-    ({ pack } = findPack(pod, packId));
+    pod = requirePod(req.params.id, { opened: true });
+    ({ player, pack } = findPack(pod, packId));
     pack.cards = result.cards;
     pack.boosterType = result.boosterType;
     pack.generated = result.generated;
     pack.status = 'opened';
     pack.openedAt = now();
+    for (const c of result.cards.filter(c => c.rarity === 'mythic')) {
+      logEvent(pod.leagueId, 'pull', player.id, `✨ ${player.name} pulled ${c.name}${c.foil ? ' (foil)' : ''}, a mythic from ${set.name}.`);
+    }
     const saved = commit(pod);
     res.json({ pod: view(req, saved), pack: findPack(saved, packId).pack });
   } finally {
@@ -390,6 +661,7 @@ app.post('/api/pods/:id/finish', wrap(async (req, res) => {
   if (!pod.winnerId) throw new HttpError(409, 'Pick a winner before finishing the pod.');
   pod.status = 'done';
   pod.finishedAt = now();
+  logEvent(pod.leagueId, 'finish', req.user.id, `${pod.name} finished and was saved to History.`);
   res.json({ ok: true, pod: view(req, commit(pod)) });
 }));
 
@@ -398,6 +670,7 @@ app.post('/api/pods/:id/discard', wrap(async (req, res) => {
   requireMember(pod, req.user);
   pod.status = 'discarded';
   pod.finishedAt = now();
+  logEvent(pod.leagueId, 'discard', req.user.id, `${pod.name} was discarded.`);
   commit(pod);
   res.json({ ok: true });
 }));
@@ -409,7 +682,7 @@ app.delete('/api/pods/:id', wrap(async (req, res) => {
   const pod = loadPod(req.params.id);
   if (!pod) throw new HttpError(404, 'Pod not found');
   deletePod(pod.id);
-  broadcast('state', { podId: pod.id, deleted: true });
+  broadcast('state', { podId: pod.id, leagueId: pod.leagueId, deleted: true });
   res.json({ ok: true, deleted: { id: pod.id, name: pod.name } });
 }));
 
@@ -420,10 +693,10 @@ app.delete('/api/pods/:id/packs/:packId', wrap(async (req, res) => {
   if (!pod) throw new HttpError(404, 'Pod not found');
   const { player, pack } = findPack(pod, req.params.packId);
   player.packs.splice(player.packs.indexOf(pack), 1);
-  player.awarded = Math.max(0, player.awarded - 1);
+  if (player.awarded != null) player.awarded = Math.max(0, player.awarded - 1);
   pod.updatedAt = now();
   savePod(pod);
-  broadcast('state', { podId: pod.id });
+  broadcast('state', { podId: pod.id, leagueId: pod.leagueId });
   res.json({ ok: true, pod: view(req, loadPod(pod.id)), removed: { packId: pack.id, cards: pack.cards?.length || 0 } });
 }));
 
@@ -437,16 +710,22 @@ app.delete('/api/pool-cards/:cardId', wrap(async (req, res) => {
   res.json({ ok: true, removed: { id: card.id, name: card.name, podId: card.pod_id } });
 }));
 
-// Admin: clear league history (every finished and discarded pod, with their
-// packs and pool cards). Running pods are untouched.
+// Admin: clear a league's history (its finished and discarded pods, with
+// their packs and pool cards). Running pods are untouched.
 app.delete('/api/history', wrap(async (req, res) => {
   requireAdmin(req);
-  const n = deleteHistory();
-  broadcast('state');
+  const league = viewLeague(req);
+  if (!league) throw new HttpError(404, 'No league to clear.');
+  const n = deleteHistory(league.id);
+  logEvent(league.id, 'clear', req.user.id, `League history was cleared (${plural(n, 'pod')}).`);
+  broadcast('state', { leagueId: league.id });
   res.json({ ok: true, deletedPods: n });
 }));
 
-app.get('/api/history', (req, res) => res.json({ pods: finishedPods().map(p => view(req, p)) }));
+app.get('/api/history', wrap(async (req, res) => {
+  const league = viewLeague(req);
+  res.json({ leagueId: league?.id || null, pods: league ? finishedPods(league.id).map(p => view(req, p)) : [] });
+}));
 app.get('/api/pods/:id', (req, res) => {
   const pod = loadPod(req.params.id);
   if (!pod) return res.status(404).json({ error: 'Not found' });
@@ -454,33 +733,37 @@ app.get('/api/pods/:id', (req, res) => {
 });
 
 // ---------- pools ----------
-// A player's pool = their pool_cards in running or finished pods (discarded
-// or deleted pods don't count), grouped by the pod and pack each came from.
-// Their precon is separate and not listed. ?pod=<id> narrows to one pod.
-app.get('/api/pools', (req, res) => {
+// A player's pool in a league = their pool_cards from that league's running
+// or finished pods (discarded or deleted pods don't count), including packs
+// they got for pods they missed. Their precon is separate and not listed.
+// ?pod=<id> narrows to one pod.
+app.get('/api/pools', wrap(async (req, res) => {
+  const league = viewLeague(req);
+  if (!league) return res.json({ leagueId: null, pools: [] });
   const only = req.query.pod ? String(req.query.pod) : null;
   const hidden = new Set(listUsers().filter(u => u.is_admin).map(u => u.id));
-  const pools = new Map(leaguePlayers().map(u => [u.id, { userId: u.id, username: u.username, precon: u.precon || '', pods: [], packs: [] }]));
-  const ensure = (userId, name) => pools.get(userId) || pools.set(userId, { userId, username: name || 'former player', precon: '', pods: [], packs: [] }).get(userId);
-  for (const r of poolPods()) {
+  const pools = new Map(leagueMembers(league.id).map(m => [m.id, { userId: m.id, username: m.username, precon: m.precon, pods: [], packs: [] }]));
+  const ensure = (userId, name) => pools.get(userId) || pools.set(userId, { userId, username: getUser(userId)?.username || name || 'former player', precon: '', pods: [], packs: [] }).get(userId);
+  for (const r of poolPods(league.id)) {
     if ((only && r.id !== only) || hidden.has(r.user_id)) continue;
-    ensure(r.user_id).pods.push({ id: r.id, name: r.name, status: r.status, createdAt: r.created_at });
+    ensure(r.user_id).pods.push({ id: r.id, name: r.name, status: r.status, createdAt: r.created_at, absent: r.role === 'absent' });
   }
   const packs = new Map();
-  for (const r of poolCards()) {
+  for (const r of poolCards(league.id)) {
     if ((only && r.pod_id !== only) || hidden.has(r.user_id)) continue;
     let k = packs.get(r.pack_id);
     if (!k) {
-      k = { packId: r.pack_id, podId: r.pod_id, podName: r.pod_name, at: r.opened_at, set: setInfoFor(r.pack_set), source: r.source, cards: [] };
+      k = { packId: r.pack_id, podId: r.pod_id, podName: r.pod_name, at: r.opened_at, set: setInfoFor(r.pack_set), source: r.source, absent: r.role === 'absent', cards: [] };
       packs.set(r.pack_id, k);
       ensure(r.user_id).packs.push(k);
     }
     k.cards.push(r.card);
   }
-  res.json({ pools: [...pools.values()].sort((a, b) => a.username.localeCompare(b.username)) });
-});
+  res.json({ leagueId: league.id, pools: [...pools.values()].sort((a, b) => a.username.localeCompare(b.username)) });
+}));
 
 seedAdmin();
+migrateToLeagues(globalSettings());
 app.listen(PORT, () => {
   console.log(`Pre-Con Commander listening on :${PORT}`);
   allSets().then(s => console.log(`${s.length} booster sets available`)).catch(() => {});

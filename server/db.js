@@ -1,8 +1,12 @@
 // SQLite storage (Node's built-in node:sqlite — no native build step).
 //
 // League data lives in real tables:
-//   pods         one row per pod (status, winner, the pod's single spin)
-//   pod_players  who sat in each pod, their precon and pack counts
+//   leagues        a league: name, invite code, rules, its own wheel; active or ended
+//   league_members who is (or was) in each league; a player is in one active league
+//   league_events  the league's activity feed
+//   pods         one row per pod (league, status, winner, the pod's single spin)
+//   pod_players  who sat in each pod (role 'player') and the league members
+//                who missed it (role 'absent', they get packs of the spun set)
 //   pod_packs    every pack in a pod (spun set, sacrificed → chosen set, opened)
 //   pool_cards   every opened card, tied to its pod, pack and player: a
 //                player's pool is their pool_cards in pods that weren't discarded
@@ -136,6 +140,36 @@ db.exec(`
     PRIMARY KEY (pod_id, round, voter_id)
   );
 
+  CREATE TABLE IF NOT EXISTS leagues (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    code TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL CHECK (status IN ('active', 'ended')),
+    created_at TEXT NOT NULL,
+    created_by TEXT,
+    ended_at TEXT,
+    rules TEXT NOT NULL,
+    wheel TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS league_members (
+    league_id TEXT NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL,
+    joined_at TEXT NOT NULL,
+    left_at TEXT,
+    added_by TEXT,
+    PRIMARY KEY (league_id, user_id)
+  );
+  CREATE INDEX IF NOT EXISTS league_members_user ON league_members(user_id, left_at);
+  CREATE TABLE IF NOT EXISTS league_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    league_id TEXT NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
+    at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    actor_id TEXT,
+    text TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS league_events_league ON league_events(league_id, id);
+
   CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -151,10 +185,15 @@ db.exec(`
   );
 `);
 
-// Columns added after the pods table first shipped.
-for (const [col, def] of [['vote_status', 'TEXT'], ['vote_round', 'INTEGER'], ['vote_winner_id', 'TEXT'], ['vote_decided_at', 'TEXT']]) {
-  if (!db.prepare(`SELECT 1 FROM pragma_table_info('pods') WHERE name = ?`).get(col)) db.exec(`ALTER TABLE pods ADD COLUMN ${col} ${def}`);
+// Columns added after these tables first shipped.
+for (const [table, col, def] of [
+  ['pods', 'vote_status', 'TEXT'], ['pods', 'vote_round', 'INTEGER'], ['pods', 'vote_winner_id', 'TEXT'], ['pods', 'vote_decided_at', 'TEXT'],
+  ['pods', 'league_id', 'TEXT'], ['pods', 'rules', 'TEXT'],
+  ['pod_players', 'role', "TEXT NOT NULL DEFAULT 'player'"],
+]) {
+  if (!db.prepare(`SELECT 1 FROM pragma_table_info('${table}') WHERE name = ?`).get(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
 }
+db.exec('CREATE INDEX IF NOT EXISTS pods_league ON pods(league_id, status)');
 
 export function kvGet(key, fallback = null) {
   const row = db.prepare('SELECT value FROM kv WHERE key = ?').get(key);
@@ -165,18 +204,20 @@ export function kvSet(key, value) {
     .run(key, JSON.stringify(value));
 }
 
-function transaction(fn) {
+export function transaction(fn) {
   db.exec('BEGIN IMMEDIATE');
   try { const out = fn(); db.exec('COMMIT'); return out; } catch (err) { db.exec('ROLLBACK'); throw err; }
 }
 
 // ---------- pods ----------
 // The rest of the app works with a pod as one object:
-// { id, name, status, createdAt, createdBy, winnerId, wonAt, finishedAt, updatedAt,
+// { id, leagueId, name, status, createdAt, createdBy, winnerId, wonAt, finishedAt, updatedAt,
+//   rules: { winnerPacks, loserPacks, absentPacks, voteBonus } (the league's rules when the pod started),
 //   spin: { id, setCode, set, by, at, offset } | null,
 //   vote: { status: 'open'|'done'|'skipped', round, winnerId, decidedAt, ballots: [{ round, voterId, candidateId, at }] } | null,
 //   players: [{ id, name, precon, awarded, sacrificed,
-//               packs: [{ id, status, source, set, wheelSet, boosterType, generated, sacrificedAt, chosenAt, openedAt, cards }] }] }
+//               packs: [{ id, status, source, set, wheelSet, boosterType, generated, sacrificedAt, chosenAt, openedAt, cards }] }],
+//   absentees: [{ id, name, packs }] }   league members who missed the pod
 // savePod writes that object into the tables; loadPod reads it back.
 
 function putSet(set) {
@@ -196,6 +237,7 @@ export function savePod(pod) {
                   spin_by = excluded.spin_by, spin_at = excluded.spin_at, spin_offset = excluded.spin_offset`)
       .run(pod.id, pod.name, pod.status, pod.createdAt, pod.createdBy || null, pod.winnerId || null, pod.wonAt || null, pod.finishedAt || null,
         pod.updatedAt || null, pod.spin?.id || null, putSet(pod.spin?.set), pod.spin?.by || null, pod.spin?.at || null, pod.spin?.offset ?? null);
+    db.prepare('UPDATE pods SET league_id = ?, rules = ? WHERE id = ?').run(pod.leagueId || null, pod.rules ? JSON.stringify(pod.rules) : null, pod.id);
     const v = pod.vote;
     db.prepare('UPDATE pods SET vote_status = ?, vote_round = ?, vote_winner_id = ?, vote_decided_at = ? WHERE id = ?')
       .run(v?.status || null, v?.round ?? null, v?.winnerId || null, v?.decidedAt || null, pod.id);
@@ -203,9 +245,9 @@ export function savePod(pod) {
     const addBallot = db.prepare('INSERT INTO pod_votes (pod_id, round, voter_id, candidate_id, cast_at) VALUES (?, ?, ?, ?, ?)');
     for (const b of v?.ballots || []) addBallot.run(pod.id, b.round, b.voterId, b.candidateId, b.at);
 
-    const upPlayer = db.prepare(`INSERT INTO pod_players (pod_id, user_id, seat, name, precon, awarded, sacrificed) VALUES (?, ?, ?, ?, ?, ?, ?)
+    const upPlayer = db.prepare(`INSERT INTO pod_players (pod_id, user_id, seat, name, precon, awarded, sacrificed, role) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                                  ON CONFLICT(pod_id, user_id) DO UPDATE SET seat = excluded.seat, name = excluded.name, precon = excluded.precon,
-                                   awarded = excluded.awarded, sacrificed = excluded.sacrificed`);
+                                   awarded = excluded.awarded, sacrificed = excluded.sacrificed, role = excluded.role`);
     const upPack = db.prepare(`INSERT INTO pod_packs (id, pod_id, user_id, seq, status, source, set_code, wheel_set_code, booster_type, generated, sacrificed_at, chosen_at, opened_at)
                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                ON CONFLICT(id) DO UPDATE SET seq = excluded.seq, status = excluded.status, source = excluded.source, set_code = excluded.set_code,
@@ -215,8 +257,9 @@ export function savePod(pod) {
     const addCard = db.prepare(`INSERT INTO pool_cards (pod_id, pack_id, user_id, seq, name, set_code, number, rarity, type, foil, image, back, uri)
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const keepPacks = [];
-    pod.players.forEach((p, seat) => {
-      upPlayer.run(pod.id, p.id, seat, p.name, p.precon || '', p.awarded, p.sacrificed);
+    const people = [...pod.players.map(p => ({ ...p, role: 'player' })), ...(pod.absentees || []).map(p => ({ ...p, role: 'absent' }))];
+    people.forEach((p, seat) => {
+      upPlayer.run(pod.id, p.id, seat, p.name, p.precon || '', p.awarded || 0, p.sacrificed || 0, p.role);
       p.packs.forEach((k, seq) => {
         keepPacks.push(k.id);
         upPack.run(k.id, pod.id, p.id, seq, k.status, k.source, putSet(k.set), putSet(k.wheelSet), k.boosterType || null,
@@ -231,7 +274,7 @@ export function savePod(pod) {
     // Packs that left the pod (sacrificed, or removed by the admin).
     const placeholders = keepPacks.map(() => '?').join(',');
     db.prepare(`DELETE FROM pod_packs WHERE pod_id = ? ${keepPacks.length ? `AND id NOT IN (${placeholders})` : ''}`).run(pod.id, ...keepPacks);
-    const keepPlayers = pod.players.map(p => p.id);
+    const keepPlayers = people.map(p => p.id);
     db.prepare(`DELETE FROM pod_players WHERE pod_id = ? AND user_id NOT IN (${keepPlayers.map(() => '?').join(',')})`).run(pod.id, ...keepPlayers);
   });
 }
@@ -270,36 +313,59 @@ function assemble(rows) {
       cards: k.status === 'opened' ? cardsByPack.get(k.id) || [] : null,
     });
   }
-  const playersBy = new Map();
+  const playersBy = new Map(), absentBy = new Map();
   for (const p of players) {
+    const packs = packsBy.get(`${p.pod_id}|${p.user_id}`) || [];
+    if (p.role === 'absent') {
+      (absentBy.get(p.pod_id) || absentBy.set(p.pod_id, []).get(p.pod_id)).push({ id: p.user_id, name: p.name, packs });
+      continue;
+    }
     (playersBy.get(p.pod_id) || playersBy.set(p.pod_id, []).get(p.pod_id)).push({
-      id: p.user_id, name: p.name, precon: p.precon, awarded: p.awarded, sacrificed: p.sacrificed, packs: packsBy.get(`${p.pod_id}|${p.user_id}`) || [],
+      id: p.user_id, name: p.name, precon: p.precon, awarded: p.awarded, sacrificed: p.sacrificed, packs,
     });
   }
   return rows.map(r => ({
-    id: r.id, name: r.name, status: r.status, createdAt: r.created_at, createdBy: r.created_by, winnerId: r.winner_id,
+    id: r.id, leagueId: r.league_id || null, rules: r.rules ? JSON.parse(r.rules) : null,
+    name: r.name, status: r.status, createdAt: r.created_at, createdBy: r.created_by, winnerId: r.winner_id,
     wonAt: r.won_at || undefined, finishedAt: r.finished_at || undefined, updatedAt: r.updated_at || undefined,
     spin: r.spin_id ? { id: r.spin_id, setCode: r.spin_set_code, set: getSet(r.spin_set_code, sets), by: r.spin_by, at: r.spin_at, offset: r.spin_offset } : null,
     vote: r.vote_status ? { status: r.vote_status, round: r.vote_round, winnerId: r.vote_winner_id || null, decidedAt: r.vote_decided_at || undefined, ballots: ballotsBy.get(r.id) || [] } : null,
     players: playersBy.get(r.id) || [],
+    absentees: absentBy.get(r.id) || [],
   }));
 }
 
 export function loadPod(id) {
   return assemble(db.prepare('SELECT * FROM pods WHERE id = ?').all(id))[0] || null;
 }
-export function activePods() {
-  return assemble(db.prepare(`SELECT * FROM pods WHERE status IN ('playing','awarded') ORDER BY created_at`).all());
+// leagueId narrows to one league; leave it out for every league.
+const inLeague = leagueId => (leagueId ? ['AND league_id = ?', [leagueId]] : ['', []]);
+export function activePods(leagueId) {
+  const [where, args] = inLeague(leagueId);
+  return assemble(db.prepare(`SELECT * FROM pods WHERE status IN ('playing','awarded') ${where} ORDER BY created_at`).all(...args));
 }
-export function finishedPods() {
-  return assemble(db.prepare(`SELECT * FROM pods WHERE status = 'done' ORDER BY finished_at DESC`).all());
+export function finishedPods(leagueId) {
+  const [where, args] = inLeague(leagueId);
+  return assemble(db.prepare(`SELECT * FROM pods WHERE status = 'done' ${where} ORDER BY finished_at DESC`).all(...args));
+}
+// A player's unopened packs in a league, wherever they are: pods they played
+// (running or finished) and pods they missed.
+export function pendingPacks(userId, leagueId) {
+  return db.prepare(`
+    SELECT k.id AS pack_id, k.status, k.set_code, p.id AS pod_id, p.name AS pod_name, p.status AS pod_status, pp.role
+    FROM pod_packs k JOIN pods p ON p.id = k.pod_id
+    JOIN pod_players pp ON pp.pod_id = k.pod_id AND pp.user_id = k.user_id
+    WHERE k.user_id = ? AND p.league_id = ? AND k.status != 'opened' AND p.status IN ('playing', 'awarded', 'done')
+    ORDER BY p.created_at, k.seq`).all(userId, leagueId)
+    .map(r => ({ packId: r.pack_id, status: r.status, set: getSet(r.set_code, new Map()), podId: r.pod_id, podName: r.pod_name, podStatus: r.pod_status, absent: r.role === 'absent' }));
 }
 export function deletePod(id) {
   return db.prepare('DELETE FROM pods WHERE id = ?').run(id).changes > 0;
 }
 // Clearing league history removes every finished and discarded pod; running pods stay.
-export function deleteHistory() {
-  return db.prepare(`DELETE FROM pods WHERE status IN ('done', 'discarded')`).run().changes;
+export function deleteHistory(leagueId) {
+  const [where, args] = inLeague(leagueId);
+  return db.prepare(`DELETE FROM pods WHERE status IN ('done', 'discarded') ${where}`).run(...args).changes;
 }
 export function poolCard(id) {
   return db.prepare('SELECT c.*, p.name AS pod_name FROM pool_cards c JOIN pods p ON p.id = c.pod_id WHERE c.id = ?').get(id) || null;
@@ -311,22 +377,23 @@ export function deletePoolCard(id) {
 // ---------- pools ----------
 // Every opened card in a pod that counts (running or finished), with the pod
 // and pack it came from.
-export function poolCards() {
+export function poolCards(leagueId) {
   return db.prepare(`
-    SELECT c.*, k.set_code AS pack_set, k.source, k.opened_at, p.name AS pod_name, p.status AS pod_status
+    SELECT c.*, k.set_code AS pack_set, k.source, k.opened_at, p.name AS pod_name, p.status AS pod_status, pp.role
     FROM pool_cards c
     JOIN pod_packs k ON k.id = c.pack_id
     JOIN pods p ON p.id = c.pod_id
-    WHERE p.status IN ('playing', 'awarded', 'done')
-    ORDER BY c.user_id, k.opened_at, c.pack_id, c.seq`).all()
+    JOIN pod_players pp ON pp.pod_id = c.pod_id AND pp.user_id = c.user_id
+    WHERE p.status IN ('playing', 'awarded', 'done') AND p.league_id = ?
+    ORDER BY c.user_id, k.opened_at, c.pack_id, c.seq`).all(leagueId)
     .map(r => ({ ...r, card: cardOf(r) }));
 }
-export function poolPods() {
+export function poolPods(leagueId) {
   return db.prepare(`
-    SELECT pp.user_id, p.id, p.name, p.status, p.created_at
+    SELECT pp.user_id, pp.role, p.id, p.name, p.status, p.created_at
     FROM pod_players pp JOIN pods p ON p.id = pp.pod_id
-    WHERE p.status IN ('playing', 'awarded', 'done')
-    ORDER BY p.created_at`).all();
+    WHERE p.status IN ('playing', 'awarded', 'done') AND p.league_id = ?
+    ORDER BY p.created_at`).all(leagueId);
 }
 export const setInfoFor = code => getSet(code, new Map());
 

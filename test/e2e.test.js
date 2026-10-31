@@ -5,10 +5,11 @@
 //
 // It starts a second copy of the server on its own port with a throwaway
 // database in /tmp, so real league data and wheel settings are never touched,
-// then plays a full league night against live Scryfall: admin first login →
-// sign-ups → pod → crown winner → the pod's one spin (with live-sync event) →
-// open boosters → Sacrifice a Pack → choose sets → generated old + modern
-// boosters → pools → copy lists → admin-only wheel odds → finish → history.
+// then plays a full league season against live Scryfall: admin first login →
+// sign-ups → league + invite codes → pod → crown winner → bonus-pack vote →
+// the pod's one spin (live-sync event, packs for absent members) → open
+// boosters → Sacrifice a Pack → generated old + modern boosters → pools →
+// copy lists → standings + feed → wheel odds → finish → history → end league.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -60,7 +61,7 @@ const PW = 'league2026';
 const S = { u: {} };
 const anon = client();
 const admin = client();
-const nick = client(), mike = client(), joe = client(), dan = client(), eve = client();
+const nick = client(), mike = client(), joe = client(), dan = client(), eve = client(), fay = client(), gus = client();
 const player = (pod, who) => pod.players.find(p => p.id === S.u[who].id);
 
 before(async () => {
@@ -139,12 +140,6 @@ test('sign-up needs a username, an email and a simple-rules password', async () 
   assert.equal((await anon.post('/api/auth/signup', { username: 'nick', email: 'other@example.com', password: PW })).status, 409, 'usernames are unique (any case)');
   assert.equal((await anon.post('/api/auth/signup', { username: 'Nick2', email: 'NICK@example.com', password: PW })).status, 409, 'one account per email');
   await ok(nick.put('/api/auth/profile', { precon: 'Animated Army' }));
-  const { members } = await ok(nick.get('/api/members'));
-  assert.equal(members.length, 5, '5 players: more than one pod\'s worth');
-  assert.ok(!members.some(m => m.username === 'admin'), 'the admin account is not listed as a member');
-  assert.equal(JSON.stringify(members).includes('isAdmin'), false);
-  assert.equal(members.find(m => m.username === 'Nick').precon, 'Animated Army');
-  assert.equal(JSON.stringify(members).includes('@'), false, 'member list does not expose emails');
   // Logging in by email works too.
   await ok(client().post('/api/auth/login', { username: 'eve@example.com', password: PW }));
 });
@@ -164,8 +159,70 @@ test('password reset: admin link (no email configured) sets a new password', asy
   await ok(joe.post('/api/auth/login', { username: 'Joe', password: 'NewJoe2026' }));
 });
 
+test('starting a league brings in every player who is not in one', async () => {
+  const before = await ok(nick.get('/api/state'));
+  assert.equal(before.league, null, 'no league yet');
+  assert.equal((await nick.post('/api/pods', { players: ['Nick', 'Mike', 'Joe'].map(n => ({ userId: S.u[n].id })) })).status, 409, 'pods need a league');
+
+  const { league } = await ok(nick.post('/api/leagues', { name: 'Test League' }));
+  assert.equal(league.name, 'Test League');
+  assert.equal(league.status, 'active');
+  assert.match(league.code, /^[A-HJ-NP-Z2-9]{6}$/, 'a 6-character invite code');
+  assert.deepEqual(league.members.map(m => m.username).sort(), ['Dan', 'Eve', 'Joe', 'Mike', 'Nick'], 'every player, never the admin');
+  assert.deepEqual(league.rules, { winnerPacks: 3, loserPacks: 2, absentPacks: 1, voteBonus: 1 });
+  assert.deepEqual(league.limits, { min: 3, max: 16, podMin: 3, podMax: 4 });
+  S.league = league.id; S.code = league.code;
+
+  const { members } = await ok(mike.get('/api/members'));
+  assert.equal(members.length, 5);
+  assert.equal(JSON.stringify(members).includes('@'), false, 'member list does not expose emails');
+  assert.equal(members.find(m => m.username === 'Nick').precon, 'Animated Army');
+  assert.equal((await mike.post('/api/leagues', { name: 'Another' })).status, 409, 'one league at a time');
+});
+
+test('players join with the invite code; one league at a time', async () => {
+  for (const [name, c] of [['Fay', fay], ['Gus', gus]]) {
+    S.u[name] = (await ok(c.post('/api/auth/signup', { username: name, email: `${name.toLowerCase()}@example.com`, password: PW }))).user;
+  }
+  assert.equal((await fay.post('/api/leagues/join', { code: 'ZZZZZZ' })).status, 404, 'unknown code');
+  const { league } = await ok(fay.post('/api/leagues/join', { code: S.code.toLowerCase() }));
+  assert.equal(league.members.length, 6, 'codes are not case-sensitive');
+  assert.equal((await fay.post('/api/leagues/join', { code: S.code })).status, 409, 'already in it');
+  assert.equal((await admin.post('/api/leagues/join', { code: S.code })).status, 400, 'the admin does not join leagues');
+
+  // Gus starts his own league; nobody else is free, so it's just him.
+  const gusLeague = (await ok(gus.post('/api/leagues', { name: 'Gus League' }))).league;
+  assert.deepEqual(gusLeague.members.map(m => m.username), ['Gus']);
+  S.gusLeague = gusLeague.id;
+  assert.equal((await fay.post('/api/leagues/join', { code: gusLeague.code })).status, 409, 'Fay is already in Test League');
+  assert.equal((await gus.post('/api/pods', { players: ['Gus', 'Fay', 'Eve'].map(n => ({ userId: S.u[n].id })) })).status, 400, 'pods only take members of the league');
+  const peek = await ok(gus.get(`/api/leagues/${S.league}`));
+  assert.equal(peek.league.code, null, 'only members (and the admin) see the code');
+  assert.equal((await ok(eve.get('/api/leagues'))).leagues.length, 2);
+});
+
+test('the admin can add and remove league members', async () => {
+  assert.equal((await nick.del(`/api/leagues/${S.league}/members/${S.u.Fay.id}`)).status, 403);
+  await ok(admin.del(`/api/leagues/${S.league}/members/${S.u.Fay.id}`));
+  assert.equal((await ok(fay.get('/api/state'))).league, null, 'Fay is out');
+  const { players } = await ok(admin.get(`/api/leagues/${S.league}/candidates`));
+  assert.deepEqual(players.map(p => p.username), ['Fay'], 'free players can be added');
+  await ok(admin.post(`/api/leagues/${S.league}/members`, { userId: S.u.Fay.id }));
+  assert.equal((await admin.post(`/api/leagues/${S.league}/members`, { userId: S.u.Gus.id })).status, 409, 'Gus is in another league');
+  assert.equal((await ok(fay.get('/api/state'))).league.id, S.league);
+});
+
+test('each league has its own rules (admin only)', async () => {
+  assert.equal((await nick.put(`/api/leagues/${S.league}`, { rules: { winnerPacks: 9 } })).status, 403);
+  assert.equal((await admin.put(`/api/leagues/${S.league}`, { rules: { winnerPacks: 99 } })).status, 400);
+  const { league } = await ok(admin.put(`/api/leagues/${S.gusLeague}`, { rules: { winnerPacks: 4, absentPacks: 0 } }));
+  assert.equal(league.rules.winnerPacks, 4);
+  assert.equal((await ok(nick.get('/api/state'))).league.rules.winnerPacks, 3, 'other leagues keep theirs');
+});
+
 test('set list: every booster set from Scryfall, nothing else', async () => {
   const d = await ok(nick.get('/api/sets'));
+  assert.equal(d.leagueId, S.league, 'the wheel is the league\'s');
   S.sets = d.sets;
   const codes = new Set(d.sets.map(s => s.code));
   if (LIVE_SCRYFALL) assert.ok(d.sets.length > 100, `expected 100+ booster sets, got ${d.sets.length}`);
@@ -183,31 +240,35 @@ test('set list: every booster set from Scryfall, nothing else', async () => {
   assert.ok(d.sets.find(s => s.code === 'blb').realPack, 'BLB uses the real booster data');
 });
 
-test('only the admin can edit All Sets / the wheel', async () => {
-  assert.equal((await nick.put('/api/settings', { excluded: ['blb'] })).status, 403);
+test('only the admin can edit a league\'s wheel; each league has its own', async () => {
+  assert.equal((await nick.put('/api/settings', { league: S.league, excluded: ['blb'] })).status, 403);
   assert.equal((await nick.put('/api/settings', { reset: true })).status, 403);
-  assert.equal((await ok(nick.get('/api/sets'))).settings.excluded.length, 0, 'nothing changed');
+  await ok(admin.put('/api/settings', { league: S.gusLeague, excluded: ['blb'] }));
+  assert.equal((await ok(gus.get('/api/sets'))).settings.excluded.length, 1, "Gus League's wheel changed");
+  assert.equal((await ok(nick.get('/api/sets'))).settings.excluded.length, 0, "Test League's wheel did not");
 });
 
-test('pods hold 2 to 4 league members', async () => {
+test('pods hold 3 to 4 league members', async () => {
   const ids = names => names.map(n => ({ userId: S.u[n].id }));
-  assert.equal((await nick.post('/api/pods', { players: ids(['Nick']) })).status, 400);
+  assert.equal((await nick.post('/api/pods', { players: ids(['Nick', 'Mike']) })).status, 400, 'at least 3 per pod');
   assert.equal((await nick.post('/api/pods', { players: ids(['Nick', 'Mike', 'Joe', 'Dan', 'Eve']) })).status, 400, 'max 4 per pod');
-  assert.equal((await nick.post('/api/pods', { players: [{ userId: S.u.Nick.id }, { userId: 'ghost' }] })).status, 400);
-  assert.equal((await eve.post('/api/pods', { players: ids(['Nick', 'Mike']) })).status, 403, 'players add themselves');
+  assert.equal((await nick.post('/api/pods', { players: [...ids(['Nick', 'Mike']), { userId: 'ghost' }] })).status, 400);
+  assert.equal((await nick.post('/api/pods', { players: ids(['Nick', 'Mike', 'Gus']) })).status, 400, 'Gus is not in the league');
+  assert.equal((await eve.post('/api/pods', { players: ids(['Nick', 'Mike', 'Joe']) })).status, 403, 'players add themselves');
   const adminId = (await ok(admin.get('/api/auth/me'))).user.id;
-  assert.equal((await admin.post('/api/pods', { players: [{ userId: adminId }, { userId: S.u.Eve.id }] })).status, 400, 'the admin account does not play in pods');
+  assert.equal((await admin.post('/api/pods', { league: S.league, players: [{ userId: adminId }, ...ids(['Eve', 'Fay'])] })).status, 400, 'the admin account does not play in pods');
   const { pod } = await ok(nick.post('/api/pods', { players: [...ids(['Nick']), { userId: S.u.Mike.id, precon: 'Death Toll' }, ...ids(['Joe', 'Dan'])] }));
   assert.equal(pod.status, 'playing');
   assert.equal(pod.name, 'Pod 1');
+  assert.equal(pod.leagueId, S.league);
   assert.deepEqual(pod.players.map(p => [p.name, p.precon]), [['Nick', 'Animated Army'], ['Mike', 'Death Toll'], ['Joe', ''], ['Dan', '']]);
-  assert.equal((await eve.post('/api/pods', { players: ids(['Eve', 'Nick']) })).status, 409, 'Nick is already in a pod');
+  assert.equal((await eve.post('/api/pods', { players: ids(['Eve', 'Fay', 'Nick']) })).status, 409, 'Nick is already in a pod');
   S.pod = pod;
 });
 
 test('no spin before the winner is crowned; outsiders can\'t crown', async () => {
   assert.equal((await nick.post(`/api/pods/${S.pod.id}/spin`)).status, 409);
-  assert.equal((await eve.post(`/api/pods/${S.pod.id}/winner`, { playerId: S.u.Nick.id })).status, 403);
+  assert.equal((await eve.post(`/api/pods/${S.pod.id}/winner`, { playerId: S.u.Nick.id })).status, 403, 'league members outside the pod cannot crown');
 });
 
 test('winner gets 3 packs, everyone else gets 2', async () => {
@@ -216,15 +277,15 @@ test('winner gets 3 packs, everyone else gets 2', async () => {
   assert.deepEqual(pod.players.map(p => [p.name, p.awarded]), [['Nick', 3], ['Mike', 2], ['Joe', 2], ['Dan', 2]]);
   assert.equal(pod.vote.status, 'open', 'crowning the winner opens the bonus-pack vote');
   assert.equal(pod.vote.current.round, 1);
-  assert.equal(pod.vote.current.candidates.length, 4);
+  assert.equal(pod.vote.current.candidates.length, 4, 'only the pod\'s players are candidates');
 });
 
-test('the pod votes for a bonus pack: no self-votes, ties go to a re-vote', async () => {
+test('the pod votes for a bonus pack: pod players only, no self-votes, ties go to a re-vote', async () => {
   const url = `/api/pods/${S.pod.id}/vote`;
   const vote = (c, who) => c.post(url, { candidateId: S.u[who].id });
   assert.equal((await nick.post(`/api/pods/${S.pod.id}/spin`)).status, 409, 'no spin until the vote is decided');
   assert.equal((await vote(nick, 'Nick')).status, 400, "you can't vote for yourself");
-  assert.equal((await vote(eve, 'Nick')).status, 403, 'only pod players vote');
+  assert.equal((await vote(eve, 'Nick')).status, 403, 'league members outside the pod do not vote');
   assert.equal((await nick.post(url, { candidateId: S.u.Eve.id })).status, 400, 'only pod players can be voted for');
 
   // Round 1: 2–2 tie between Nick and Mike (Joe changes his mind once).
@@ -262,7 +323,7 @@ test('the pod votes for a bonus pack: no self-votes, ties go to a re-vote', asyn
   S.pod = r.pod;
 });
 
-test('only the winner spins, once, and it is pushed live to other devices', async () => {
+test('only the winner spins, once; league members who missed it get a pack of the spun set', async () => {
   assert.equal((await mike.post(`/api/pods/${S.pod.id}/spin`)).status, 403, 'only the winner spins');
   // Listen like a second phone would.
   const ctrl = new AbortController();
@@ -283,9 +344,9 @@ test('only the winner spins, once, and it is pushed live to other devices', asyn
   // Keep the wheel to real-booster sets for this spin so the pack checks
   // below don't depend on which of ~180 sets comes up.
   const REAL = ['dom', 'war', 'eld', 'neo'];
-  await ok(admin.put('/api/settings', { excluded: S.sets.map(s => s.code).filter(c => !REAL.includes(c)) }));
+  await ok(admin.put('/api/settings', { league: S.league, excluded: S.sets.map(s => s.code).filter(c => !REAL.includes(c)) }));
   const { pod, spin } = await ok(nick.post(`/api/pods/${S.pod.id}/spin`));
-  await ok(admin.put('/api/settings', { reset: true }));
+  await ok(admin.put('/api/settings', { league: S.league, reset: true }));
   const live = await Promise.race([gotSpin, new Promise(r => setTimeout(() => r(false), 5000))]);
   ctrl.abort();
   assert.ok(live, 'spin event reached the other device');
@@ -294,8 +355,16 @@ test('only the winner spins, once, and it is pushed live to other devices', asyn
     assert.equal(p.packs.length, p.awarded, `${p.name} has all their packs`);
     assert.ok(p.packs.every(k => k.set.code === spin.setCode && k.status === 'ready' && k.source === 'wheel'), `${p.name}'s packs are all the spun set`);
   }
+  assert.deepEqual(pod.absentees.map(a => a.name).sort(), ['Eve', 'Fay'], 'every league member not in the pod (never other leagues)');
+  for (const a of pod.absentees) {
+    assert.equal(a.packs.length, 1, `${a.name} gets one pack for the missed pod`);
+    assert.equal(a.packs[0].set.code, spin.setCode, 'by default it is the spun set');
+  }
   const again = await nick.post(`/api/pods/${S.pod.id}/spin`);
   assert.equal(again.status, 409, 'there is only one spin per pod');
+  const fayState = await ok(fay.get('/api/state'));
+  assert.equal(fayState.pending.length, 1, 'Fay sees the pack waiting for her');
+  assert.equal(fayState.pending[0].absent, true);
   S.pod = pod; S.spin = spin;
 });
 
@@ -316,6 +385,15 @@ test('a spun pack opens as that set\'s regular booster (never Collector)', async
   const again = await nick.post(`/api/pods/${S.pod.id}/packs/${k.id}/open`);
   assert.deepEqual(again.json.pack.cards, pack.cards, 're-opening returns the same cards');
   S.nickCards = pack.cards;
+});
+
+test('an absent player opens their own pack (and can\'t sacrifice a single pack)', async () => {
+  const evePack = S.pod.absentees.find(a => a.name === 'Eve').packs[0];
+  assert.equal((await mike.post(`/api/pods/${S.pod.id}/packs/${evePack.id}/open`)).status, 403, 'not Mike\'s pack');
+  assert.equal((await eve.post(`/api/pods/${S.pod.id}/packs/${evePack.id}/sacrifice`)).status, 409, 'nothing to give up');
+  const { pack } = await ok(eve.post(`/api/pods/${S.pod.id}/packs/${evePack.id}/open`));
+  assert.equal(pack.status, 'opened');
+  assert.equal(pack.set.code, S.spin.setCode);
 });
 
 test('card images load from Scryfall', { skip: !LIVE_SCRYFALL && 'mock Scryfall' }, async () => {
@@ -392,7 +470,7 @@ test('generated booster for a modern set (Magic 2010): land slot + rare/mythic',
   assert.ok(count(pack.cards, c => c.rarity === 'uncommon') >= 3);
 });
 
-test('pools track each player\'s opened cards at all times', async () => {
+test('pools track each player\'s opened cards in the league, missed pods included', async () => {
   const { pools } = await ok(eve.get('/api/pools'));
   const pool = name => pools.find(p => p.username === name);
   const { pod } = await ok(nick.get(`/api/pods/${S.pod.id}`));
@@ -403,10 +481,14 @@ test('pools track each player\'s opened cards at all times', async () => {
     assert.equal(pool(name).packs.flatMap(k => k.cards).length, opened.flatMap(k => k.cards).length);
   }
   assert.equal(pool('Nick').precon, 'Animated Army', 'the precon is shown but not listed as cards');
-  assert.equal(pool('Eve').packs.length, 0, 'Eve has not played yet');
+  assert.equal(pool('Eve').packs.length, 1, "Eve's pack for the pod she missed");
+  assert.equal(pool('Eve').packs[0].absent, true);
+  assert.equal(pool('Fay').packs.length, 0, 'Fay has not opened hers yet');
   assert.equal(pool('admin'), undefined, 'the admin account is not listed in Pools');
-  assert.equal(pool('Eve').pods.length, 0);
+  assert.equal(pool('Gus'), undefined, 'other leagues are not listed');
   assert.deepEqual(pool('Nick').pods.map(x => x.id), [S.pod.id], 'pools know which pod each player played');
+  assert.equal(pool('Eve').pods[0].absent, true);
+  assert.equal((await ok(gus.get('/api/pools'))).pools.every(p => !p.packs.length), true, "Gus League's pools are separate");
 });
 
 test('copied lists match the Moxfield and Archidekt import formats', async () => {
@@ -448,13 +530,32 @@ test('finishing saves the pod to history (and its pool stays)', async () => {
   assert.ok(pools.find(p => p.username === 'Mike').packs.length >= 1, 'finished pods stay in the pools');
 });
 
-test('2-player pods skip the vote; the admin can skip a stuck one', async () => {
-  const two = (await ok(eve.post('/api/pods', { players: [{ userId: S.u.Eve.id }, { userId: S.u.Joe.id }] }))).pod;
-  const crowned = (await ok(eve.post(`/api/pods/${two.id}/winner`, { playerId: S.u.Eve.id }))).pod;
-  assert.equal(crowned.vote.status, 'skipped', 'two players could only ever tie');
-  assert.deepEqual(crowned.players.map(p => p.awarded), [3, 2], 'no bonus pack');
-  await ok(eve.post(`/api/pods/${two.id}/discard`));
+test('a missed pod\'s pack can still be opened after the pod is finished', async () => {
+  const st = await ok(fay.get('/api/state'));
+  assert.equal(st.openPods.length, 1, 'the finished pod stays reachable for Fay');
+  const k = st.pending[0];
+  const { pack } = await ok(fay.post(`/api/pods/${k.podId}/packs/${k.packId}/open`));
+  assert.equal(pack.status, 'opened');
+  assert.equal((await ok(fay.get('/api/state'))).pending.length, 0);
+  assert.equal((await ok(fay.get('/api/pools'))).pools.find(p => p.username === 'Fay').packs.length, 1);
+});
 
+test('league standings and activity feed', async () => {
+  const { standings, events } = await ok(eve.get(`/api/leagues/${S.league}`));
+  const row = name => standings.find(s => s.name === name);
+  assert.equal(standings[0].name, 'Nick', 'the winner leads');
+  assert.deepEqual([row('Nick').pods, row('Nick').wins], [1, 1]);
+  assert.equal(row('Mike').voteWins, 1);
+  assert.equal(row('Eve').missed, 1);
+  assert.equal(row('Fay').missed, 1);
+  assert.equal(row('Eve').packs, 1, 'missed-pod packs count as opened packs');
+  const text = events.map(e => e.text).join('\n');
+  for (const bit of ['started Test League', 'joined with the invite code', 'Pod 1 started', 'won Pod 1', "won Pod 1's bonus-pack vote", 'Pod 1 spun', 'Eve and Fay missed it', 'Pod 1 finished']) {
+    assert.ok(text.includes(bit), `feed mentions "${bit}"`);
+  }
+});
+
+test('the admin can skip a stuck vote; a league can turn the vote off', async () => {
   const three = (await ok(eve.post('/api/pods', { players: ['Eve', 'Joe', 'Dan'].map(n => ({ userId: S.u[n].id })) }))).pod;
   await ok(eve.post(`/api/pods/${three.id}/winner`, { playerId: S.u.Eve.id }));
   await ok(eve.post(`/api/pods/${three.id}/vote`, { candidateId: S.u.Joe.id }));
@@ -464,20 +565,30 @@ test('2-player pods skip the vote; the admin can skip a stuck one', async () => 
   assert.deepEqual(skipped.players.map(p => p.awarded), [3, 2, 2]);
   await ok(eve.post(`/api/pods/${three.id}/spin`));
   await ok(eve.post(`/api/pods/${three.id}/discard`));
+
+  await ok(admin.put(`/api/leagues/${S.league}`, { rules: { voteBonus: 0 } }));
+  const off = (await ok(eve.post('/api/pods', { players: ['Eve', 'Joe', 'Dan'].map(n => ({ userId: S.u[n].id })) }))).pod;
+  assert.equal((await ok(eve.post(`/api/pods/${off.id}/winner`, { playerId: S.u.Eve.id }))).pod.vote.status, 'skipped', 'vote bonus 0 = no vote');
+  await ok(eve.post(`/api/pods/${off.id}/discard`));
+  await ok(admin.put(`/api/leagues/${S.league}`, { rules: { voteBonus: 1 } }));
 });
 
-test('pods, players, packs and pool cards are stored as tables', async () => {
+test('pods, players, packs, pool cards and leagues are stored as tables', async () => {
+  const { pod: live } = await ok(nick.get(`/api/pods/${S.pod.id}`));
+  const openedPacks = [...live.players, ...live.absentees].flatMap(p => p.packs).filter(k => k.status === 'opened');
   const db = new DatabaseSync(path.join(DATA_DIR, 'app.db'), { readOnly: true });
   try {
     const pod = db.prepare('SELECT * FROM pods WHERE id = ?').get(S.pod.id);
     assert.equal(pod.status, 'done');
+    assert.equal(pod.league_id, S.league);
     assert.equal(pod.winner_id, S.u.Nick.id);
     assert.equal(pod.spin_set_code, S.spin.setCode);
-    assert.equal(db.prepare('SELECT count(*) n FROM pod_players WHERE pod_id = ?').get(S.pod.id).n, 4);
-    const opened = S.pod.players.flatMap(p => p.packs).filter(k => k.status === 'opened');
-    assert.equal(db.prepare(`SELECT count(*) n FROM pod_packs WHERE pod_id = ? AND status = 'opened'`).get(S.pod.id).n, opened.length);
+    const roles = db.prepare('SELECT role, count(*) n FROM pod_players WHERE pod_id = ? GROUP BY role ORDER BY role').all(S.pod.id);
+    assert.deepEqual(roles.map(r => [r.role, r.n]), [['absent', 2], ['player', 4]]);
+    const opened = db.prepare(`SELECT count(*) n FROM pod_packs WHERE pod_id = ? AND status = 'opened'`).get(S.pod.id).n;
     const cards = db.prepare('SELECT * FROM pool_cards WHERE pod_id = ?').all(S.pod.id);
-    assert.equal(cards.length, opened.flatMap(k => k.cards).length, 'every opened card is a pool_cards row');
+    assert.equal(opened, openedPacks.length, 'opened packs of players and absent members');
+    assert.equal(cards.length, openedPacks.flatMap(k => k.cards).length, 'every opened card is a pool_cards row');
     assert.ok(cards.every(c => c.pack_id && c.user_id && c.name && c.set_code && c.number && c.rarity), 'cards keep pod, pack and player ids');
     const mikes = db.prepare('SELECT count(*) n FROM pool_cards WHERE pod_id = ? AND user_id = ?').get(S.pod.id, S.u.Mike.id).n;
     assert.equal(mikes, 14, "Mike's BLB Play Booster is in his pool for this pod");
@@ -485,6 +596,8 @@ test('pods, players, packs and pool cards are stored as tables', async () => {
     assert.equal(pod.vote_winner_id, S.u.Mike.id);
     const ballots = db.prepare('SELECT round, count(*) n FROM pod_votes WHERE pod_id = ? GROUP BY round ORDER BY round').all(S.pod.id);
     assert.deepEqual(ballots.map(b => [b.round, b.n]), [[1, 4], [2, 4]], 'every ballot of both rounds is a pod_votes row');
+    assert.equal(db.prepare('SELECT count(*) n FROM league_members WHERE league_id = ? AND left_at IS NULL').get(S.league).n, 6);
+    assert.ok(db.prepare('SELECT count(*) n FROM league_events WHERE league_id = ?').get(S.league).n >= 8);
   } finally { db.close(); }
 });
 
@@ -500,29 +613,32 @@ test('pools can be narrowed to one pod', async () => {
 test('wheel odds follow per-set weights and exclusions (admin)', async () => {
   const keep = ['blb', 'lea'];
   const excluded = S.sets.map(s => s.code).filter(c => !keep.includes(c));
-  const set = await ok(admin.put('/api/settings', { excluded, weights: { blb: 3 } }));
+  const set = await ok(admin.put('/api/settings', { league: S.league, excluded, weights: { blb: 3 } }));
   assert.equal(set.settings.weights.blb, 3);
   const d = await ok(eve.get('/api/sets'));
   assert.deepEqual(d.wheel.map(w => w.code).sort(), keep.sort());
   assert.ok(Math.abs(d.sets.find(s => s.code === 'blb').chance - 0.75) < 1e-9, 'weight 3 vs 1 → 75%');
 
-  // One spin per pod, so spin N throwaway pods (admin + Eve) and discard them.
+  // One spin per pod, so spin N throwaway pods and discard them (vote and
+  // absent packs off for speed).
+  await ok(admin.put(`/api/leagues/${S.league}`, { rules: { voteBonus: 0, absentPacks: 0 } }));
   const N = 120;
   const hits = { blb: 0, lea: 0 };
   for (let i = 0; i < N; i++) {
-    const { pod } = await ok(admin.post('/api/pods', { players: [{ userId: S.u.Eve.id }, { userId: S.u.Joe.id }] }));
+    const { pod } = await ok(admin.post('/api/pods', { league: S.league, players: ['Eve', 'Joe', 'Dan'].map(n => ({ userId: S.u[n].id })) }));
     await ok(eve.post(`/api/pods/${pod.id}/winner`, { playerId: S.u.Eve.id }));
     hits[(await ok(eve.post(`/api/pods/${pod.id}/spin`))).spin.setCode]++;
     await ok(eve.post(`/api/pods/${pod.id}/discard`));
   }
+  await ok(admin.put(`/api/leagues/${S.league}`, { rules: { voteBonus: 1, absentPacks: 1 } }));
   assert.equal(hits.blb + hits.lea, N, 'only sets on the wheel come up');
   assert.ok(hits.blb / N > 0.6 && hits.blb / N < 0.9, `blb came up ${hits.blb}/${N}, expected ~75%`);
 
-  const filtered = await ok(admin.put('/api/settings', { excluded: [], weights: {}, minYear: 2024, maxYear: 2100 }));
+  const filtered = await ok(admin.put('/api/settings', { league: S.league, excluded: [], weights: {}, minYear: 2024, maxYear: 2100 }));
   assert.equal(filtered.settings.minYear, 2024);
   const d2 = await ok(eve.get('/api/sets'));
   assert.ok(d2.wheel.every(w => d2.sets.find(s => s.code === w.code).year >= 2024), 'year filter applies');
-  await ok(admin.put('/api/settings', { reset: true }));
+  await ok(admin.put('/api/settings', { league: S.league, reset: true }));
   assert.equal((await ok(eve.get('/api/sets'))).wheel.length, S.sets.length, 'reset restores the full wheel');
 });
 
@@ -530,7 +646,7 @@ test('discarded pods are not in history or pools', async () => {
   const { pods } = await ok(eve.get('/api/history'));
   assert.equal(pods.length, 1);
   const { pools } = await ok(eve.get('/api/pools'));
-  assert.equal(pools.find(p => p.username === 'Eve').packs.length, 0);
+  assert.equal(pools.find(p => p.username === 'Eve').packs.length, 1, 'only her missed-pod pack from Pod 1');
 });
 
 test('admin can delete a single pulled card and a whole pack', async () => {
@@ -567,20 +683,27 @@ test('admin can delete a single pulled card and a whole pack', async () => {
   ({ pod: S.pod } = await ok(eve.get(`/api/pods/${S.pod.id}`)));
 });
 
-test('only the admin can delete pods; history and pools follow', async () => {
-  // A running pod with an opened pack, plus the finished Pod 1.
-  const { pod } = await ok(eve.post('/api/pods', { players: [{ userId: S.u.Eve.id }, { userId: S.u.Joe.id }] }));
-  await ok(eve.post(`/api/pods/${pod.id}/winner`, { playerId: S.u.Eve.id }));
+// A pod of three that's crowned, voted (or skipped), spun and has one pack opened.
+async function quickPod(trio, { finish = false } = {}) {
+  const { pod } = await ok(eve.post('/api/pods', { players: trio.map(n => ({ userId: S.u[n].id })) }));
+  await ok(eve.post(`/api/pods/${pod.id}/winner`, { playerId: S.u[trio[0]].id }));
+  await ok(admin.post(`/api/pods/${pod.id}/vote/skip`));
   const spun = (await ok(eve.post(`/api/pods/${pod.id}/spin`))).pod;
   await ok(eve.post(`/api/pods/${pod.id}/packs/${spun.players[0].packs[0].id}/open`));
-  assert.ok((await ok(eve.get('/api/pools'))).pools.find(p => p.username === 'Eve').packs.length === 1);
+  if (finish) await ok(eve.post(`/api/pods/${pod.id}/finish`));
+  return pod;
+}
+
+test('only the admin can delete pods; history and pools follow', async () => {
+  const pod = await quickPod(['Eve', 'Joe', 'Dan']);
+  assert.ok((await ok(eve.get('/api/pools'))).pools.find(p => p.username === 'Eve').packs.length === 2);
 
   assert.equal((await eve.del(`/api/pods/${pod.id}`)).status, 403, 'players cannot delete');
   assert.equal((await admin.del('/api/pods/nope')).status, 404);
 
   await ok(admin.del(`/api/pods/${pod.id}`));
   assert.equal((await ok(eve.get('/api/state'))).pods.length, 0, 'running pod is gone');
-  assert.equal((await ok(eve.get('/api/pools'))).pools.find(p => p.username === 'Eve').packs.length, 0, 'its cards left the pool');
+  assert.equal((await ok(eve.get('/api/pools'))).pools.find(p => p.username === 'Eve').packs.length, 1, 'its cards left the pool');
 
   await ok(admin.del(`/api/pods/${S.pod.id}`));
   assert.equal((await ok(eve.get('/api/history'))).pods.length, 0, 'finished pod left History');
@@ -595,22 +718,14 @@ test('only the admin can delete pods; history and pools follow', async () => {
   } finally { db.close(); }
 });
 
-test('admin can clear league history; running pods stay', async () => {
-  const pod = async (a, b, finish) => {
-    const { pod } = await ok(eve.post('/api/pods', { players: [{ userId: S.u[a].id }, { userId: S.u[b].id }] }));
-    await ok(eve.post(`/api/pods/${pod.id}/winner`, { playerId: S.u[a].id }));
-    const spun = (await ok(eve.post(`/api/pods/${pod.id}/spin`))).pod;
-    await ok(eve.post(`/api/pods/${pod.id}/packs/${spun.players[0].packs[0].id}/open`));
-    if (finish) await ok(eve.post(`/api/pods/${pod.id}/finish`));
-    return pod;
-  };
-  await pod('Eve', 'Joe', true);
-  await pod('Eve', 'Mike', true);
-  const running = await pod('Eve', 'Dan', false);
+test('admin can clear a league\'s history; running pods stay', async () => {
+  await quickPod(['Eve', 'Joe', 'Dan'], { finish: true });
+  await quickPod(['Eve', 'Mike', 'Fay'], { finish: true });
+  const running = await quickPod(['Eve', 'Joe', 'Dan']);
   assert.equal((await ok(eve.get('/api/history'))).pods.length, 2);
 
   assert.equal((await eve.del('/api/history')).status, 403, 'players cannot clear history');
-  const r = await ok(admin.del('/api/history'));
+  const r = await ok(admin.del(`/api/history?league=${S.league}`));
   assert.ok(r.deletedPods >= 2, 'finished (and discarded) pods were deleted');
   assert.equal((await ok(eve.get('/api/history'))).pods.length, 0, 'History is empty');
   const st = await ok(eve.get('/api/state'));
@@ -619,8 +734,29 @@ test('admin can clear league history; running pods stay', async () => {
   assert.ok(evePool.packs.length === 1 && evePool.packs.every(k => k.podId === running.id), 'pools keep only the running pod\'s cards');
   const db = new DatabaseSync(path.join(DATA_DIR, 'app.db'), { readOnly: true });
   try {
-    assert.equal(db.prepare(`SELECT count(*) n FROM pods WHERE status IN ('done','discarded')`).get().n, 0, 'the 120 discarded wheel-test pods are gone too');
+    assert.equal(db.prepare(`SELECT count(*) n FROM pods WHERE status IN ('done','discarded') AND league_id = ?`).get(S.league).n, 0, 'the discarded wheel-test pods are gone too');
   } finally { db.close(); }
+  await ok(eve.post(`/api/pods/${running.id}/discard`));
+});
+
+test('ending a league archives it and frees its players; deleting removes it', async () => {
+  const { pod } = await ok(nick.post('/api/pods', { players: ['Nick', 'Mike', 'Joe'].map(n => ({ userId: S.u[n].id })) }));
+  assert.equal((await nick.post(`/api/leagues/${S.league}/end`)).status, 403);
+  assert.equal((await admin.post(`/api/leagues/${S.league}/end`)).status, 409, 'running pods must be finished first');
+  assert.equal((await nick.post(`/api/leagues/${S.league}/leave`)).status, 409, "can't leave mid-pod");
+  await ok(nick.post(`/api/pods/${pod.id}/discard`));
+  await ok(admin.post(`/api/leagues/${S.league}/end`));
+  const st = await ok(nick.get('/api/state'));
+  assert.equal(st.myLeagueId, null, 'Nick is free to join another league');
+  assert.equal((await ok(nick.get(`/api/leagues/${S.league}`))).league.status, 'ended', 'the league stays as an archive');
+  assert.equal((await nick.post('/api/pods', { league: S.league, players: ['Nick', 'Mike', 'Joe'].map(n => ({ userId: S.u[n].id })) })).status, 409, 'no new pods');
+  const { league } = await ok(fay.post('/api/leagues', { name: 'Season 2' }));
+  assert.equal(league.members.length, 6, 'a new league can sweep in everyone who is free (Gus is still in his)');
+
+  assert.equal((await gus.del(`/api/leagues/${S.gusLeague}`)).status, 403);
+  await ok(admin.del(`/api/leagues/${S.gusLeague}`));
+  assert.equal((await gus.get(`/api/leagues/${S.gusLeague}`)).status, 404);
+  assert.equal((await ok(gus.get('/api/state'))).myLeagueId, null, 'Gus is free');
 });
 
 test('logging out ends the session', async () => {
