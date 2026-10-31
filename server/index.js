@@ -35,6 +35,9 @@ const POD_MIN = 3;
 const POD_MAX = 4;
 
 const app = express();
+app.disable('x-powered-by');
+// Behind a reverse proxy / tunnel on the same host or private network: trust its
+// X-Forwarded-* headers (HTTPS detection for secure cookies, client IPs).
 app.set('trust proxy', 'loopback, uniquelocal');
 app.use(express.json({ limit: '200kb' }));
 
@@ -56,9 +59,11 @@ app.use(express.static(PUBLIC, { extensions: ['html'], maxAge: 0 }));
 const id = (n = 8) => crypto.randomBytes(n).toString('base64url').slice(0, n);
 const now = () => new Date().toISOString();
 class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
+// Expected errors (HttpError and friends carry a status) are shown to the
+// player; anything unexpected is logged and answered with a generic message.
 const wrap = fn => (req, res) => Promise.resolve(fn(req, res)).catch(err => {
   if (!err.status) console.error(err);
-  res.status(err.status || 500).json({ error: err.message || 'Something went wrong' });
+  res.status(err.status || 500).json({ error: err.status ? err.message : 'Something went wrong. Try again in a moment.' });
 });
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 const names = list => list.length < 2 ? list.join('') : `${list.slice(0, -1).join(', ')} and ${list.at(-1)}`;

@@ -4,7 +4,7 @@
 import { cacheGetMany, cachePut, poolGet, poolPut, kvGet, kvSet } from './db.js';
 
 const BASE = process.env.SCRYFALL_BASE || 'https://api.scryfall.com';
-const HEADERS = { 'User-Agent': 'PreconCommander/1.0 (precon-commander.paintballz.us)', Accept: 'application/json' };
+const HEADERS = { 'User-Agent': process.env.SCRYFALL_USER_AGENT || 'PreconCommander/1.0 (+https://github.com/PaintBallz/precon-commander)', Accept: 'application/json' };
 
 let chain = Promise.resolve();
 function sfFetch(url, opts = {}) {
@@ -103,7 +103,24 @@ export async function getSetPool(code) {
 }
 
 // Look up exact printings by set + collector number (75 per request).
+// Looks cards up by set + collector number. The bundled print sheets number
+// the faces of double-faced / split / adventure cards "123a"; Scryfall knows
+// them as "123", so a miss with a letter suffix is retried without it and
+// cached under the sheet's number too.
 export async function lookupCards(idents) {
+  const found = await lookupExact(idents);
+  const suffixed = idents.filter(i => !found.has(`${i.set}/${i.number}`) && /^\d+[a-z]$/.test(i.number));
+  if (suffixed.length) {
+    const plain = await lookupExact(suffixed.map(i => ({ set: i.set, number: i.number.slice(0, -1) })));
+    for (const i of suffixed) {
+      const s = plain.get(`${i.set}/${i.number.slice(0, -1)}`);
+      if (s) { cachePut(`${i.set}/${i.number}`, s); found.set(`${i.set}/${i.number}`, s); }
+    }
+  }
+  return found;
+}
+
+async function lookupExact(idents) {
   const keys = idents.map(i => `${i.set}/${i.number}`);
   const found = cacheGetMany(keys);
   const missing = idents.filter((i, n) => !found.has(keys[n]));

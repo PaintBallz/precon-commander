@@ -503,6 +503,22 @@ test('generated booster for a modern set (Magic 2010): land slot + rare/mythic',
   assert.ok(count(pack.cards, c => c.rarity === 'uncommon') >= 3);
 });
 
+test('double-faced cards from real boosters resolve to Scryfall numbers and images', { skip: !LIVE_SCRYFALL && 'mock Scryfall' }, async () => {
+  // Midnight Hunt draft boosters always hold a double-faced card, which the
+  // print sheets number "42a"; Scryfall calls it "42".
+  let { pod } = await ok(admin.post(`/api/pods/${S.pod.id}/award`, { playerId: S.u.Dan.id, delta: 1 }));
+  const k = player(pod, 'Dan').packs.find(x => x.status === 'ready');
+  await ok(dan.post(`/api/pods/${S.pod.id}/packs/${k.id}/sacrifice`));
+  await ok(dan.post(`/api/pods/${S.pod.id}/packs/${k.id}/choose`, { setCode: 'mid' }));
+  const { pack } = await ok(dan.post(`/api/pods/${S.pod.id}/packs/${k.id}/open`));
+  assert.equal(pack.boosterType, 'Draft Booster');
+  assert.ok(pack.cards.some(c => c.back), 'the pack has a double-faced card');
+  for (const c of pack.cards) {
+    assert.doesNotMatch(c.number, /^\d+[a-z]$/, `${c.name} uses Scryfall's collector number`);
+    assert.match(c.image, /^https:\/\/cards\.scryfall\.io\//, `${c.name} has a real image`);
+  }
+});
+
 test('pools track each player\'s opened cards in the league, missed pods included', async () => {
   const { pools } = await ok(eve.get('/api/pools'));
   const pool = name => pools.find(p => p.username === name);

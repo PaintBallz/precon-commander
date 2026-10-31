@@ -2,7 +2,21 @@
   "name": "pre-con-commander",
   "version": "1.0.0",
   "private": true,
-  "description": "Commander game-night pack wheel + booster opener",
+  "description": "Commander league companion: leagues, pods, a bonus-pack vote, one wheel spin per pod, a booster opener and per-player card pools.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PaintBallz/precon-commander.git"
+  },
+  "keywords": [
+    "mtg",
+    "magic-the-gathering",
+    "commander",
+    "edh",
+    "booster",
+    "league",
+    "scryfall"
+  ],
   "type": "module",
   "main": "server/index.js",
   "scripts": {

@@ -7,7 +7,11 @@ import { sendMail, mailEnabled } from './mail.js';
 const COOKIE = 'pcc_sid';
 const SESSION_DAYS = 30;
 const RESET_MINUTES = 60;
-const PUBLIC_URL = (process.env.PUBLIC_URL || 'https://precon-commander.paintballz.us').replace(/\/$/, '');
+// The site's public address, used in password-reset links. Set PUBLIC_URL in
+// production; it is never taken from the request (a forged Host header would
+// otherwise point reset links somewhere else).
+const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${process.env.PORT || 3000}`).replace(/\/$/, '');
+if (!process.env.PUBLIC_URL) console.warn(`PUBLIC_URL is not set; password-reset links will point at ${PUBLIC_URL}`);
 
 class AuthError extends Error { constructor(status, msg, extra = {}) { super(msg); this.status = status; Object.assign(this, extra); } }
 
@@ -103,11 +107,16 @@ function sessionUser(req) {
 // ---------- login throttling ----------
 const failures = new Map();   // key -> [timestamps]
 const WINDOW = 15 * 60e3, MAX_FAILS = 10;
-const clientIp = req => req.get('cf-connecting-ip') || req.ip;
-function throttled(key) {
-  const list = (failures.get(key) || []).filter(t => t > Date.now() - WINDOW);
+// New accounts per IP: a handful per hour is plenty for a friend group.
+const SIGNUP_WINDOW = 60 * 60e3, MAX_SIGNUPS = 10;
+// Behind a local proxy (e.g. cloudflared) the real client IP comes from
+// CF-Connecting-IP; a request straight from the internet can't set it.
+const PRIVATE_PEER = /^(::ffff:)?(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)|^::1$|^f[cd]/i;
+const clientIp = req => (PRIVATE_PEER.test(req.socket.remoteAddress || '') && req.get('cf-connecting-ip')) || req.ip;
+function throttled(key, windowMs = WINDOW, max = MAX_FAILS) {
+  const list = (failures.get(key) || []).filter(t => t > Date.now() - windowMs);
   failures.set(key, list);
-  return list.length >= MAX_FAILS;
+  return list.length >= max;
 }
 const noteFailure = key => failures.set(key, [...(failures.get(key) || []), Date.now()]);
 
@@ -136,6 +145,8 @@ export function authRoutes(app, wrap) {
   });
 
   app.post('/api/auth/signup', wrap(async (req, res) => {
+    const key = `signup|${clientIp(req)}`;
+    if (throttled(key, SIGNUP_WINDOW, MAX_SIGNUPS)) throw new AuthError(429, 'Too many new accounts from here. Try again later.');
     const username = String(req.body?.username || '').trim();
     const email = String(req.body?.email || '').trim().toLowerCase();
     const password = req.body?.password;
@@ -145,6 +156,7 @@ export function authRoutes(app, wrap) {
     const id = crypto.randomUUID();
     db.prepare('INSERT INTO users (id, username, email, pass_hash, is_admin, must_change, created_at) VALUES (?, ?, ?, ?, 0, 0, ?)')
       .run(id, username, email, hashPassword(password), now());
+    noteFailure(key);
     startSession(req, res, id);
     res.json({ user: publicUser(getUser(id)) });
   }));

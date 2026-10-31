@@ -1,133 +1,192 @@
 # Pre-Con Commander
 
-Commander league companion. Players have accounts and belong to a **league** (3–16 players,
-one league at a time). Each league plays **pods**: games of 3–4 of its players, each on a
-precon. When a pod ends, the winner gets **3 packs**, everyone else gets **2**, the pod votes
-someone a **+1 bonus pack**, and the winner spins a wheel of every Magic set that was sold in
-boosters **once**: every pack is that set. League members who **missed** the pod get **1 pack**
-of the spun set too. Every opened card goes into the player's **pool** for that league, the
-cards they may use on top of their precon.
+A web app for running a **Commander league** where everyone starts on a preconstructed deck
+and earns booster packs by playing. Players join a **league**, play **pods** of 3–4, vote one
+player a bonus pack, spin a wheel of every Magic set ever sold in boosters, and rip the packs
+open. Every card they pull goes into their **pool**: the cards they may add to their precon.
 
-Live at **https://precon-commander.paintballz.us** (docker-sites stack, Cloudflare Tunnel).
-Local: http://127.0.0.1:8101
+Built for a group of friends at one table. Runs as a single Node process with SQLite, works on
+phones, and every phone sees spins, votes and packs live.
 
-## Leagues
+## Features
 
-- **League tab**: any player who isn't in a league can start one. By default it sweeps in
-  every player who isn't in a league yet (up to 16). Others join with the league's 6-letter
-  **invite code**, or the admin adds them. Players can leave between pods.
-- Shows the league's **standings** (pods, wins, win %, bonus votes won, pods missed, packs,
-  rares, mythics), **players**, **rules** and an **activity feed** (pods, winners, votes,
-  spins, mythic pulls, joins).
-- **Per-league rules** (admin): winner packs, everyone-else packs, packs for a missed pod,
-  vote bonus (0 turns absent packs or the vote off). A pod keeps the rules it started with.
-- **Per-league wheel** (admin, All Sets tab): each league has its own set list and odds.
-- **Seasons**: the admin can **end** a league. It becomes a read-only archive (standings,
-  history, pools) and its players can join or start another. The admin can also delete a
-  league with everything in it.
-- A header picker switches between leagues (the admin's view, or your past leagues).
+- **Leagues** of 3–16 players. Anyone can start one (it can sweep in everyone who isn't in a
+  league yet); others join with a 6-letter **invite code**. One league at a time per player.
+- **Pods** of 3–4 league players, each on their precon. Several pods can run at once.
+- **Bonus-pack vote**: when a pod ends, its players vote (never for themselves) to give one
+  player an extra pack. Ballots are secret until everyone has voted, and a tie triggers a
+  re-vote between just the tied players until one leads.
+- **One spin per pod**: the winner spins a weighted wheel of every booster set. Every pack in
+  the pod is that set: by default 3 for the winner and 2 for everyone else, plus the vote bonus.
+- **Sacrifice a Pack**: give up one of your spun-set packs to make another one any set you like.
+- **Missed a pod?** Every league member who wasn't in it gets 1 pack of the spun set too.
+- **Booster opener**: rip-open animation, rares revealed last, card zoom with double-faced flip.
+  27 sets use real print-sheet data; every other set gets a generated pack from Scryfall's
+  booster cards (with era-correct slots). Never a Collector Booster, and no prices anywhere.
+- **Pools**: each player's pulls in a league, grouped, searchable, filterable by pod.
+- **Copy for Moxfield or Archidekt**: one-tap deck-list export in either site's import format,
+  foils included (`1 Name (SET) 123 *F*` / `1x Name (set) 123 *F*`).
+- **League tab**: standings, players, rules and an activity feed (winners, votes, spins, mythic
+  pulls). Leagues can be ended into a read-only archive (seasons).
+- **Accounts**: username + email + password sign-up, password change, reset by email (SMTP) or
+  by an admin-made link.
 
-## How a pod works
+## Roles
 
-1. **Log in / sign up**: username, email (for password recovery) and a password of at least
-   8 characters with a letter and a number. Set your precon on the **Account** page.
-2. **Pods tab**: start a pod with 3 to 4 players from your league, then crown the winner when
-   the game ends. Several pods can run at once.
-3. **Bonus-pack vote** (Pods tab): every player votes for someone else (never themselves) to
-   get **+1 pack**. Ballots are secret until everyone has voted. If the most votes are tied,
-   everyone re-votes between just the tied players, until one player has the most. Only the
-   pod's players vote (not the rest of the league). The admin can skip a stuck vote.
-4. **Wheel tab**: once the vote is decided, the winner spins once for the whole pod. Every phone
-   watches the spin live. Every league member who isn't in the pod gets 1 pack of the spun
-   set; the Pods tab shows them a "packs waiting for you" list, and those packs can be opened
-   even after the pod is finished.
-5. Each player then either **opens** their packs of the spun set (its regular booster, never
-   a Collector Booster) or uses **Sacrifice a Pack**: give up one spun-set pack to make
-   another pack any set they choose (on **All Sets**).
-6. **Packs tab**: rip packs open, then **Copy pack list** or **Copy all pulls**. A
-   **Copy for: Moxfield | Archidekt** switch (remembered per device) picks the import format:
-   - Moxfield: `1 Card Name (SET) 123`, foils `1 Card Name (SET) 123 *F*`
-   - Archidekt: `1x Card Name (set) 123`, foils `1x Card Name (set) 123 *F*`
+| Can… | Player | League admin | Site admin |
+| --- | :---: | :---: | :---: |
+| Start or join a league (by code), leave it | ✓ | ✓ | starts only |
+| Play pods, vote, spin (as winner), open and sacrifice their own packs | ✓ | ✓ | — |
+| Change their league's rules (pack counts, missed-pod packs, vote bonus) | | ✓ | ✓ |
+| Kick players from their league | | ✓ | ✓ |
+| Add players to a league, rename it, new invite code, end or delete it | | | ✓ |
+| Edit a league's wheel (sets and odds) | | | ✓ |
+| Adjust or delete packs, cards, pods and history; skip a stuck vote | | | ✓ |
+| Make password-reset links | | | ✓ |
 
-   Double-faced cards keep their full `Front // Back` name. The same switch is on Pools and
-   History.
-7. **Finish pod** saves it to **History** (standings, packs, pulls).
+The **league admin** is whoever started the league, for as long as they're in it. The **site
+admin** is the built-in `admin` account; it manages everything but doesn't play, so it never
+appears in player lists. A kicked player can't use the invite code to come back; only the site
+admin can re-add them.
 
-**Pools tab**: each player's cards from every running or finished pod (discarded pods don't
-count), grouped with counts, searchable, and copyable as one deck list.
+## Quick start
 
-**Admin delete** (all permanent):
-- **A pod** (running, finished or discarded) from the Pods tab or History; its packs, pulls
-  and pool cards go with it.
-- **The whole league history**: History → *Clear league history* (type `DELETE` to confirm)
-  removes every finished and discarded pod; running pods stay.
-- **One pack**: *Delete pack* in the Packs tab, or ✕ on a pack in History or Pools; its pulls
-  leave the player's pool.
-- **One pulled card**: open the card and choose *Remove*; that single copy leaves the pool.
+### Docker
 
-**All Sets tab**: every booster set and its chance on the wheel. Only the admin can turn
-sets on or off, change their weights (2 = twice as likely) or change the year/type filters.
+```bash
+docker build -t pre-con-commander .
+docker run -d --name pre-con-commander -p 3000:3000 \
+  -v "$PWD/data:/app/data" \
+  -e PUBLIC_URL=http://localhost:3000 \
+  pre-con-commander
+```
 
-## Accounts
+Or with Compose:
 
-- On first start the app creates an **admin** account with the password `changeme`, which
-  must be changed on first login.
-- Players change their password on the Account page. Forgotten passwords: with SMTP
-  configured (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM`) the app emails
-  a one-hour reset link; without it, the admin creates a reset link on the Account page.
-- The admin can also add or remove packs for a player in a pod.
+```yaml
+services:
+  pre-con-commander:
+    build: .
+    restart: unless-stopped
+    ports: ["127.0.0.1:3000:3000"]
+    volumes: ["./data:/app/data"]
+    environment:
+      PUBLIC_URL: https://commander.example.com
+```
 
-## Packs
+### Without Docker
 
-- 27 sets use real print-sheet booster data copied from mtg-pack-opener
-  (Play Booster > Draft Booster > Set Booster; Collector Boosters are excluded).
-- Every other set gets a generated booster from Scryfall's booster cards:
-  10 commons + 3 uncommons + 1 rare (1-in-8 mythic) + basic land
-  (pre-Shards of Alara: 11 commons, no land slot), with a ~1-in-6 foil from Urza's Legacy on.
-- Set list and card pools come from Scryfall and are cached in `data/app.db`
-  (set list refreshes daily, card pools every two weeks).
+Node **22.13+** (it uses the built-in `node:sqlite`, so there's nothing native to compile):
 
-## Data
+```bash
+npm ci
+npm start            # http://localhost:3000
+```
 
-Everything is saved in SQLite at `data/app.db`. League data lives in tables:
+### First login
+
+Open the site and log in as **`admin`** with the password **`changeme`**. You'll be made to
+pick a new password before anything else, so do this before sharing the address. Then have your
+players sign up, and one of them starts a league on the **League** tab.
+
+## Configuration
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `PORT` | `3000` | HTTP port. |
+| `DATA_DIR` | `./data` | Where the SQLite database (`app.db`) lives. |
+| `PUBLIC_URL` | `http://localhost:$PORT` | The site's public address, used in password-reset links. Set it in production. |
+| `SMTP_HOST`, `SMTP_PORT` (`587`), `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` | unset | Turns on password-reset emails. Without them, "Forgot password" tells players to ask the admin, who makes a reset link on the Account page. |
+| `SCRYFALL_USER_AGENT` | `PreconCommander/1.0 (+repo URL)` | User-Agent for Scryfall API calls. Put your own contact or site in it. |
+| `SCRYFALL_BASE` | `https://api.scryfall.com` | Scryfall API base URL (point it at a mock for testing). |
+
+### Running behind a reverse proxy or tunnel
+
+- Serve it over **HTTPS**; session cookies are marked `Secure` when the proxy says the request
+  was HTTPS (`X-Forwarded-Proto`). Proxies on the same host or a private network are trusted.
+- Live updates use Server-Sent Events (`/api/events`); make sure the proxy doesn't buffer them.
+- The page links `app.js` and `styles.css` with a content hash (`?v=…`), so CDNs that cache
+  scripts aggressively (Cloudflare does, for hours) never serve a stale script after an update.
+
+## Data and backups
+
+Everything is in one SQLite file, `data/app.db`:
 
 | Table | One row per |
 | --- | --- |
-| `pods` | pod: status, winner, the pod's one spin |
-| `pod_players` | player in a pod (role `player`), or a league member who missed it (role `absent`) |
-| `pod_packs` | pack: spun or chosen set, sacrificed / chosen / opened |
-| `pool_cards` | opened card, tied to its pod, pack and player (pools are built from this) |
-| `booster_sets` | set referenced by a pack (name, symbol, release date) |
+| `users`, `sessions`, `reset_tokens` | account, login, password-reset link |
 | `leagues` | league: name, invite code, status, rules, wheel |
-| `league_members` | player in a league (joined / left) |
-| `league_events` | the league's activity feed |
+| `league_members` | player in a league (joined, left, kicked) |
+| `league_events` | activity-feed entry |
+| `pods` | pod: league, status, winner, its one spin, vote result |
+| `pod_players` | player in a pod (`player`), or a league member who missed it (`absent`) |
+| `pod_packs` | pack: spun or chosen set, sacrificed / chosen / opened |
 | `pod_votes` | ballot in a pod's bonus-pack vote (round, voter, candidate) |
-| `users`, `sessions`, `reset_tokens` | accounts and logins |
+| `pool_cards` | opened card, tied to its pod, pack and player: pools are built from this |
+| `booster_sets` | set referenced by a pack (name, symbol, release date) |
 
-Deleting a pod cascades to its players, packs and pool cards. Databases from before the
-tables existed are migrated on startup, and the old JSON rows are kept in `pods_legacy_json`.
+Deleting a pod or league cascades to everything in it. Back up while it's running with
+`sqlite3 data/app.db ".backup app.db.bak"` (or Node's `VACUUM INTO`). Older databases are
+migrated automatically on startup.
 
-## Running
+## How packs are built
 
-    docker build -t pre-con-commander .
-    docker run -d -p 127.0.0.1:8101:3000 -v ./data:/app/data pre-con-commander
+- **Real booster data** for 27 sets (Play Booster, else Draft Booster, else Set Booster):
+  print-sheet weights bundled in `packs/`.
+- **Every other set** gets a generated booster from Scryfall's booster cards: 10 commons,
+  3 uncommons, 1 rare (1-in-8 mythic) and a basic land; before Shards of Alara, 11 commons and
+  no land slot; from Urza's Legacy on, about 1 in 6 packs has a foil.
+- **The wheel** holds every released, non-digital expansion, core, masters and draft-innovation
+  set with 40+ cards. Each league's wheel can filter by year and type, drop sets, or weight
+  them (2 = twice as likely).
+- Scryfall's set list is cached for a day and card pools for two weeks, in the database.
 
-Dev without Docker (Node 22.13+): `npm install && npm start` → http://localhost:3000
+## Tests
 
-## End-to-end test (runs inside the container)
+An end-to-end suite plays a full league season against live Scryfall, on its own port with a
+throwaway database. It covers accounts, leagues, invite codes, roles, pods, votes and ties,
+spins, missed-pod packs, real and generated boosters, pools, exports, admin tools and ending a
+league:
 
-    docker compose exec pre-con-commander npm run e2e          # site already running
-    docker compose run --rm pre-con-commander npm run e2e      # or a one-off container
+```bash
+npm run e2e                                   # locally
+docker exec pre-con-commander npm run e2e     # inside the running container
+```
 
-The test starts its own copy of the server on port 3999 with a throwaway database in
-/tmp, so real accounts, pods, history and wheel settings are never touched. It plays a full
-league night against live Scryfall: admin first login (forced password change) → sign-ups
-and password rules → admin reset link → admin-only wheel settings → pod of 4 → crown winner
-(3/2/2/2) → the pod's one spin (and the live-sync event a second phone would get) → open a
-real-data booster → Sacrifice a Pack → choose sets → generated Alpha (11C/3U/1R, no land)
-and Magic 2010 (land slot) boosters → pools → deck-list copy format → finish → History →
-wheel weights/exclusions/year filter (120 throwaway pods). Takes under a minute; it fails
-loudly if Scryfall can't be reached from the container.
+## Project layout
 
-Env: `PORT` (3000), `DATA_DIR` (./data), `PUBLIC_URL` (for reset links), the SMTP settings
-above, `SCRYFALL_BASE` (override for testing).
+```
+server/
+  index.js     API, pod and league rules, live updates (SSE)
+  leagues.js   leagues, members, invite codes, activity feed
+  auth.js      accounts, sessions, password resets, rate limits
+  db.js        SQLite schema and pod storage
+  packs.js     booster generation
+  scryfall.js  rate-limited, cached Scryfall client
+  mail.js      optional SMTP for reset emails
+public/        the app: plain ES modules, no build step
+packs/         real booster print-sheet data
+test/          end-to-end suite
+```
+
+## Security notes
+
+- Passwords are hashed with scrypt; sessions are random tokens in `HttpOnly`, `SameSite=Lax`
+  cookies; the API only accepts JSON, which blocks cross-site form posts.
+- Logins, password-reset requests and sign-ups are rate-limited per IP.
+- Password-reset links expire after an hour, work once, and sign out the account's other
+  sessions. Reset links always use `PUBLIC_URL`, never the request's Host header.
+- The default admin password must be changed on first login.
+
+## Credits and legal
+
+Pre-Con Commander is unofficial Fan Content permitted under the
+[Fan Content Policy](https://company.wizards.com/en/legal/fancontentpolicy). Not
+approved/endorsed by Wizards. Portions of the materials used are property of Wizards of the
+Coast. ©Wizards of the Coast LLC.
+
+Card data and images come from [Scryfall](https://scryfall.com) (not affiliated). Please follow
+the [Scryfall API guidelines](https://scryfall.com/docs/api) if you run your own copy. The
+real-booster print sheets come from the author's earlier pack-opener project.
+
+Released under the [MIT License](LICENSE).

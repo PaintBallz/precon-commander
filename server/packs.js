@@ -1,5 +1,5 @@
 // Booster generation.
-//  - Sets with real booster data (copied from mtg-pack-opener) use those exact
+//  - Sets with real booster data (bundled in packs/, from the author's mtg-pack-opener project) use those exact
 //    print sheets and slot odds — Play Booster where it exists, else Draft,
 //    else Set Booster. Collector Boosters are never used.
 //  - Every other set gets a generated "regular booster" from its Scryfall pool.
@@ -70,15 +70,17 @@ async function openRealPack(code) {
   const looked = await lookupCards(picks);
   const cards = picks.map(p => {
     const s = looked.get(`${p.set}/${p.number}`);
+    // Scryfall's collector number (sheets say "123a" for some card faces).
+    const number = s?.number || p.number.replace(/^(\d+)[a-z]$/, '$1');
     return {
       name: s?.name || p.name,
       set: p.set,
-      number: p.number,
+      number,
       rarity: s?.rarity || guessRarity(p.slot),
       type: s?.type || '',
-      image: s?.image || fallbackImage(p.set, p.number),
+      image: s?.image || fallbackImage(p.set, number),
       back: s?.back || null,
-      uri: s?.uri || `https://scryfall.com/card/${p.set}/${p.number}`,
+      uri: s?.uri || `https://scryfall.com/card/${p.set}/${number}`,
       foil: p.foil,
     };
   });

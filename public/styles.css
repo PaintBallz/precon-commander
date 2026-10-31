@@ -357,3 +357,6 @@ label.check { display: flex; align-items: center; gap: 8px; font-weight: 500; co
 .absent-line { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .absent-line .chip { text-decoration: none; }
 tr.dim td { color: var(--dim); }
+
+.legal { max-width: 1240px; margin: 0 auto; padding: 0 20px 28px; font-size: .72rem; color: var(--dim); text-align: center; }
+.legal a { color: var(--muted); }
