@@ -1,0 +1,110 @@
+{
+ "afr": {
+  "name": "Adventures in the Forgotten Realms",
+  "released": "2021-07-23"
+ },
+ "blb": {
+  "name": "Bloomburrow",
+  "released": "2024-08-02"
+ },
+ "bro": {
+  "name": "The Brothers' War",
+  "released": "2022-11-18"
+ },
+ "dmu": {
+  "name": "Dominaria United",
+  "released": "2022-09-09"
+ },
+ "dom": {
+  "name": "Dominaria",
+  "released": "2018-04-27"
+ },
+ "dsk": {
+  "name": "Duskmourn: House of Horror",
+  "released": "2024-09-27"
+ },
+ "eld": {
+  "name": "Throne of Eldraine",
+  "released": "2019-10-04"
+ },
+ "grn": {
+  "name": "Guilds of Ravnica",
+  "released": "2018-10-05"
+ },
+ "iko": {
+  "name": "Ikoria: Lair of Behemoths",
+  "released": "2020-04-24"
+ },
+ "khm": {
+  "name": "Kaldheim",
+  "released": "2021-02-05"
+ },
+ "lci": {
+  "name": "The Lost Caverns of Ixalan",
+  "released": "2023-11-17"
+ },
+ "ltr": {
+  "name": "The Lord of the Rings: Tales of Middle-earth",
+  "released": "2023-06-23"
+ },
+ "mh3": {
+  "name": "Modern Horizons 3",
+  "released": "2024-06-14"
+ },
+ "mid": {
+  "name": "Innistrad: Midnight Hunt",
+  "released": "2021-09-24"
+ },
+ "mkm": {
+  "name": "Murders at Karlov Manor",
+  "released": "2024-02-09"
+ },
+ "mom": {
+  "name": "March of the Machine",
+  "released": "2023-04-21"
+ },
+ "neo": {
+  "name": "Kamigawa: Neon Dynasty",
+  "released": "2022-02-18"
+ },
+ "one": {
+  "name": "Phyrexia: All Will Be One",
+  "released": "2023-02-10"
+ },
+ "otj": {
+  "name": "Outlaws of Thunder Junction",
+  "released": "2024-04-19"
+ },
+ "rna": {
+  "name": "Ravnica Allegiance",
+  "released": "2019-01-25"
+ },
+ "snc": {
+  "name": "Streets of New Capenna",
+  "released": "2022-04-29"
+ },
+ "stx": {
+  "name": "Strixhaven: School of Mages",
+  "released": "2021-04-23"
+ },
+ "thb": {
+  "name": "Theros Beyond Death",
+  "released": "2020-01-24"
+ },
+ "vow": {
+  "name": "Innistrad: Crimson Vow",
+  "released": "2021-11-19"
+ },
+ "war": {
+  "name": "War of the Spark",
+  "released": "2019-05-03"
+ },
+ "woe": {
+  "name": "Wilds of Eldraine",
+  "released": "2023-09-08"
+ },
+ "znr": {
+  "name": "Zendikar Rising",
+  "released": "2020-09-25"
+ }
+}

@@ -1,0 +1,130 @@
+// Scryfall access: set list, per-set card pools, and card lookups by set/number.
+// Scryfall asks for <=10 req/s, a User-Agent and an Accept header, so every
+// request goes through one queue spaced 110 ms apart.
+import { cacheGetMany, cachePut, poolGet, poolPut, kvGet, kvSet } from './db.js';
+
+const BASE = process.env.SCRYFALL_BASE || 'https://api.scryfall.com';
+const HEADERS = { 'User-Agent': 'PreconCommander/1.0 (precon-commander.paintballz.us)', Accept: 'application/json' };
+
+let chain = Promise.resolve();
+function sfFetch(url, opts = {}) {
+  const run = chain.then(async () => {
+    const res = await fetch(url.startsWith('http') ? url : BASE + url, { ...opts, headers: { ...HEADERS, ...(opts.headers || {}) } });
+    await new Promise(r => setTimeout(r, 110));
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`Scryfall ${res.status} for ${url}`);
+    return res.json();
+  });
+  chain = run.catch(() => {});
+  return run;
+}
+
+// Set types that were sold in regular boosters.
+export const BOOSTER_SET_TYPES = ['expansion', 'core', 'masters', 'draft_innovation'];
+
+export function slimCard(c) {
+  const face0 = c.card_faces?.[0];
+  const face1 = c.card_faces?.[1];
+  return {
+    name: c.name,
+    set: c.set,
+    number: c.collector_number,
+    rarity: c.rarity,
+    type: c.type_line || face0?.type_line || '',
+    image: c.image_uris?.normal || face0?.image_uris?.normal || null,
+    back: !c.image_uris && face1?.image_uris?.normal ? face1.image_uris.normal : null,
+    uri: c.scryfall_uri,
+  };
+}
+
+export function fallbackImage(set, number) {
+  return `https://api.scryfall.com/cards/${encodeURIComponent(set)}/${encodeURIComponent(number)}?format=image&version=normal`;
+}
+
+const SETS_TTL_MS = 24 * 3600 * 1000;
+
+// All booster sets, newest first. Cached in the DB and refreshed daily; if
+// Scryfall is unreachable the last good copy (or the local pack list) is used.
+export async function getBoosterSets(localPackSets) {
+  const cached = kvGet('scryfall_sets');
+  if (cached && Date.now() - cached.fetchedAt < SETS_TTL_MS) return cached.sets;
+  try {
+    const json = await sfFetch('/sets');
+    const today = new Date().toISOString().slice(0, 10);
+    const sets = json.data
+      .filter(s => BOOSTER_SET_TYPES.includes(s.set_type) && !s.digital && s.released_at && s.released_at <= today && s.card_count >= 40)
+      .map(s => ({
+        code: s.code,
+        name: s.name,
+        type: s.set_type,
+        released: s.released_at,
+        year: Number(s.released_at.slice(0, 4)),
+        cardCount: s.card_count,
+        icon: s.icon_svg_uri,
+      }))
+      .sort((a, b) => b.released.localeCompare(a.released));
+    kvSet('scryfall_sets', { fetchedAt: Date.now(), sets });
+    return sets;
+  } catch (err) {
+    console.warn('Could not refresh set list from Scryfall:', err.message);
+    if (cached) return cached.sets;
+    return localPackSets;
+  }
+}
+
+const POOL_TTL_MS = 14 * 24 * 3600 * 1000;
+
+// Every card from a set that appears in its boosters (falls back to the whole
+// set when Scryfall has no booster flags for it).
+export async function getSetPool(code) {
+  const cached = poolGet(code);
+  if (cached && Date.now() - Date.parse(cached.fetchedAt) < POOL_TTL_MS && cached.cards.length) return cached.cards;
+  async function search(q) {
+    const cards = [];
+    let url = `/cards/search?q=${encodeURIComponent(q)}&unique=prints&order=set&include_extras=false`;
+    while (url) {
+      const page = await sfFetch(url);
+      if (!page) break;
+      for (const c of page.data) cards.push(slimCard(c));
+      url = page.has_more ? page.next_page : null;
+    }
+    return cards;
+  }
+  try {
+    let cards = await search(`e:${code} is:booster -is:digital`);
+    if (cards.length < 20) cards = await search(`e:${code} -is:digital`);
+    if (cards.length) poolPut(code, cards);
+    for (const c of cards) cachePut(`${c.set}/${c.number}`, c);
+    return cards;
+  } catch (err) {
+    if (cached) return cached.cards;
+    throw err;
+  }
+}
+
+// Look up exact printings by set + collector number (75 per request).
+export async function lookupCards(idents) {
+  const keys = idents.map(i => `${i.set}/${i.number}`);
+  const found = cacheGetMany(keys);
+  const missing = idents.filter((i, n) => !found.has(keys[n]));
+  const unique = [...new Map(missing.map(i => [`${i.set}/${i.number}`, i])).values()];
+  for (let i = 0; i < unique.length; i += 75) {
+    const batch = unique.slice(i, i + 75);
+    try {
+      const json = await sfFetch('/cards/collection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ identifiers: batch.map(b => ({ set: b.set, collector_number: b.number })) }),
+      });
+      for (const c of json?.data || []) {
+        const s = slimCard(c);
+        const key = `${s.set}/${s.number}`;
+        cachePut(key, s);
+        found.set(key, s);
+      }
+    } catch (err) {
+      console.warn('Card lookup failed:', err.message);
+    }
+  }
+  return found;
+}

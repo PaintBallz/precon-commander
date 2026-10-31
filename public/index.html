@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0d0f14" />
+  <title>Pre-Con Commander</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="#game">
+      <img src="/favicon.svg" alt="" width="30" height="30" />
+      <span>Pre-Con <b>Commander</b></span>
+    </a>
+    <nav class="tabs" id="tabs">
+      <a href="#game" data-tab="game">Game</a>
+      <a href="#wheel" data-tab="wheel">Wheel</a>
+      <a href="#packs" data-tab="packs">Packs</a>
+      <a href="#sets" data-tab="sets">All Sets</a>
+      <a href="#history" data-tab="history">History</a>
+    </nav>
+    <div class="top-tools">
+      <label class="me" title="Which player is using this device">
+        <span>I am</span>
+        <select id="meSelect"><option value="">—</option></select>
+      </label>
+      <button class="icon-btn" id="soundBtn" title="Wheel sound" aria-label="Toggle wheel sound">🔊</button>
+      <span class="live" id="liveDot" title="Live sync"></span>
+    </div>
+  </header>
+
+  <main id="view" class="view"></main>
+
+  <div id="modal" class="modal" hidden></div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
