@@ -398,6 +398,43 @@ function wirePods(view) {
   });
 }
 
+// Big, irreversible admin actions ask for a typed word instead of one click.
+function typedConfirm(title, body, word, okLabel) {
+  return new Promise(resolve => {
+    const m = $('#modal');
+    m.innerHTML = `<div class="box"><div class="dialog">
+      <h2>${title}</h2><p class="muted">${body}</p>
+      <label class="small muted">Type <b>${word}</b> to confirm<input id="typed" autocomplete="off" style="width:100%;margin-top:6px"></label>
+      <div class="row" style="justify-content:flex-end;margin-top:14px">
+        <button class="btn ghost" data-r="0">Cancel</button>
+        <button class="btn danger" data-r="1" disabled>${okLabel}</button>
+      </div></div></div>`;
+    m.hidden = false;
+    const ok = $('[data-r="1"]', m);
+    $('#typed', m).oninput = e => { ok.disabled = e.target.value.trim() !== word; };
+    $('#typed', m).focus();
+    const done = v => { m.hidden = true; m.innerHTML = ''; resolve(v); };
+    $$('[data-r]', m).forEach(b => b.onclick = () => done(b.dataset.r === '1'));
+    m.onclick = e => { if (e.target === m) done(false); };
+  });
+}
+async function afterAdminDelete(msg) {
+  S.history = null; S.pools = null;
+  await loadState();
+  render();
+  toast(msg, 'good');
+}
+async function deletePackFlow(podId, pack, owner) {
+  const n = pack.cards?.length || 0;
+  if (!await confirmBox(`Delete ${esc(owner.name)}'s ${esc(pack.set?.name || '')} pack?`,
+    `The pack is removed from the pod${n ? ` and its <b>${n} cards</b> leave ${esc(owner.name)}'s pool` : ''}. It can't be undone.`, '🗑 Delete pack', true)) return;
+  try { await del(`/pods/${podId}/packs/${pack.id}`); await afterAdminDelete('Pack deleted.'); } catch (err) { fail(err); }
+}
+async function deleteCardFlow(c) {
+  if (!await confirmBox(`Remove ${esc(c.name)}?`, `One copy of <b>${esc(c.name)}</b>${c.foil ? ' (foil)' : ''} is removed from the player's pool and from its pack's pulls. It can't be undone.`, '🗑 Remove card', true)) return;
+  try { await del(`/pool-cards/${c.id}`); $('#modal').hidden = true; await afterAdminDelete(`${esc(c.name)} removed.`); } catch (err) { fail(err); }
+}
+
 // Admin: permanently delete a pod and everything in it (packs, pulls, pool cards).
 async function deletePodFlow(pod) {
   const cards = pod.players.reduce((s, p) => s + p.packs.reduce((t, k) => t + (k.cards?.length || 0), 0), 0);
@@ -836,9 +873,11 @@ function renderPackView(el, pack, owner, pod) {
       <div style="text-align:center">
         ${mine ? `<button class="btn gold big" id="openBtn">Open ${owner.id === S.me.id ? 'your' : `${esc(owner.name)}'s`} pack</button>` : `<p class="muted">Only ${esc(owner.name)} can open this pack.</p>`}
         ${canSac ? `<div style="margin-top:12px"><button class="btn danger" id="sacBtn">🔥 Sacrifice a Pack</button><div class="sac-note">Give up another ${esc(pack.set.name)} pack and make this one any set.</div></div>` : ''}
+        ${isAdmin() ? `<div style="margin-top:12px"><button class="btn danger sm" id="delPack">🗑 Delete pack (admin)</button></div>` : ''}
         ${meta && !meta.realPack ? `<p class="small dim" style="margin-top:10px">Generated from this set's booster cards: commons, uncommons, a rare (sometimes mythic), and the odd foil.</p>` : ''}
       </div>`;
     $('#sacBtn', el)?.addEventListener('click', () => sacrifice(pod, owner, pack.id));
+    $('#delPack', el)?.addEventListener('click', () => deletePackFlow(pod.id, pack, owner));
     $('#openBtn', el)?.addEventListener('click', async () => {
       const btn = $('#openBtn', el), bo = $('#booster', el);
       btn.disabled = true; btn.textContent = 'Opening…';
@@ -869,12 +908,14 @@ function renderPackView(el, pack, owner, pod) {
       <div class="row">
         ${animate ? `<button class="btn sm" id="revealAll">Reveal all</button>` : ''}
         <button class="btn gold" id="copyPack">📋 Copy pack list</button>
+        ${isAdmin() ? `<button class="btn danger sm" id="delPack" title="Admin: delete this pack and its pulls">🗑 Delete pack</button>` : ''}
       </div>
     </div>
     ${hits.length ? `<div class="row" style="margin-bottom:12px">${hits.map(c => `<span class="chip ${c.rarity === 'mythic' ? 'gold' : ''}">${c.rarity === 'mythic' ? '★' : '◆'} ${esc(c.name)}${c.foil ? ' (foil)' : ''}</span>`).join('')}</div>` : ''}
     <div class="cards" id="cards">${cards.map((c, i) => cardHtml(c, i, animate)).join('')}</div>
     <details style="margin-top:16px"><summary class="muted small" style="cursor:pointer">Show list text</summary><pre class="list">${esc(listText(cards))}</pre></details>`;
   $('#copyPack', el).onclick = () => copyText(listText(cards), `${pack.set.name} pack`);
+  $('#delPack', el)?.addEventListener('click', () => deletePackFlow(pod.id, pack, owner));
   $$('.mcard', el).forEach(m => m.onclick = () => {
     if (m.classList.contains('down')) { m.classList.remove('down'); return; }
     cardModal(cards[Number(m.dataset.i)]);
@@ -904,11 +945,13 @@ function cardModal(c) {
         ${c.back ? `<button class="btn sm" id="flipBtn">↻ Flip</button>` : ''}
         <a class="btn sm" href="${esc(c.uri)}" target="_blank" rel="noopener">Scryfall ↗</a>
         <button class="btn sm" id="copyOne">📋 Copy</button>
+        ${isAdmin() && c.id ? `<button class="btn sm danger" id="delOne">🗑 Remove</button>` : ''}
         <button class="btn sm ghost" id="closeM">Close</button>
       </div></div>`;
     $('#flipBtn', m)?.addEventListener('click', e => { e.stopPropagation(); showBack = !showBack; paint(); });
     $('#copyOne', m).onclick = e => { e.stopPropagation(); copyText(`1 ${cardLine(c)}`, c.name); };
     $('#closeM', m).onclick = () => { m.hidden = true; };
+    $('#delOne', m)?.addEventListener('click', e => { e.stopPropagation(); deleteCardFlow(c); });
   };
   paint();
   m.hidden = false;
@@ -967,10 +1010,16 @@ async function renderPools(view) {
     </div>
     <div class="cards" id="poolCards"></div>
     <details class="panel" style="margin-top:18px"><summary class="muted" style="cursor:pointer">Packs in this pool (${packs.length})</summary>
-      <div class="row" style="margin-top:10px">${packs.map(k => `<span class="chip">${icon(k.set)}${esc(k.set.name)}${k.source === 'sacrifice' ? ' 🔥' : ''} <span class="dim">· ${esc(k.podName)}</span></span>`).join('')}</div>
+      <div class="row" style="margin-top:10px">${packs.map(k => `<span class="chip">${icon(k.set)}${esc(k.set.name)}${k.source === 'sacrifice' ? ' 🔥' : ''} <span class="dim">· ${esc(k.podName)} · ${k.cards.length}</span>${isAdmin() ? `<button class="chip-x" data-delpack="${k.podId}:${k.packId}" title="Admin: delete this pack and its pulls">✕</button>` : ''}</span>`).join('')}</div>
+      ${isAdmin() ? '<p class="small dim" style="margin:10px 0 0">Admin: ✕ deletes a whole pack; open a card and use 🗑 Remove to delete a single copy.</p>' : ''}
     </details>` : `<div class="empty"><p>${pool.userId === S.me.id ? 'Your' : `${esc(pool.username)}'s`} pool is empty. Cards show up here as soon as packs are opened.</p></div>`}`;
   $('#copyPool', view)?.addEventListener('click', () => copyText(listText(cards), `${pool.username}'s pool${podName ? ` from ${podName}` : ''} (${cards.length} cards)`));
   $('#pp', view)?.addEventListener('change', e => { poolFilter.pod = e.target.value; renderPools(view); });
+  $$('[data-delpack]', view).forEach(b => b.onclick = () => {
+    const [podId, packId] = b.dataset.delpack.split(':');
+    const k = packs.find(x => x.packId === packId);
+    deletePackFlow(podId, { id: packId, set: k.set, cards: k.cards }, { name: pool.username });
+  });
   if (!cards.length) return;
   const paint = () => {
     const q = poolFilter.q.trim().toLowerCase();
@@ -1108,7 +1157,8 @@ async function renderHistory(view) {
   }
   const table = [...stats.values()].sort((a, b) => b.wins - a.wins || b.wins / b.games - a.wins / a.games);
   view.innerHTML = `
-    <div class="hero"><div><h1>League History</h1><p>${plural(pods.length, 'pod')} played.</p></div></div>
+    <div class="hero"><div><h1>League History</h1><p>${plural(pods.length, 'pod')} played.</p></div>
+      ${isAdmin() ? `<div class="row"><button class="btn danger" id="clearHist">🗑 Clear league history</button></div>` : ''}</div>
     <div class="panel" style="margin-bottom:22px;overflow-x:auto">
       <h2>Standings</h2>
       <table class="standings"><thead><tr><th>Player</th><th class="num">Pods</th><th class="num">Wins</th><th class="num">Win %</th><th class="num">Packs</th><th class="num">Sacrificed</th><th class="num">Rares</th><th class="num">Mythics</th></tr></thead>
@@ -1125,13 +1175,24 @@ async function renderHistory(view) {
         return `<div class="hplayer">
           <div class="spread"><div><b>${g.winnerId === p.id ? '👑 ' : ''}${esc(p.name)}</b> ${p.precon ? `<span class="muted small">· ${esc(p.precon)}</span>` : ''}</div>
           ${pulls.length ? `<button class="btn sm" data-copy="${g.id}:${p.id}">📋 Copy ${pulls.length} pulls</button>` : ''}</div>
-          <div class="row small muted" style="margin-top:6px">${p.packs.map(k => `<span class="chip">${k.status === 'choosing' ? '' : icon(k.set)}${k.status === 'choosing' ? 'unchosen' : esc(k.set.name)}${k.source === 'sacrifice' ? ' 🔥' : ''}${k.status !== 'opened' ? ' (unopened)' : ''}</span>`).join('') || 'No packs'}${p.sacrificed ? `<span class="chip">🔥 ${p.sacrificed} sacrificed</span>` : ''}</div>
+          <div class="row small muted" style="margin-top:6px">${p.packs.map(k => `<span class="chip">${k.status === 'choosing' ? '' : icon(k.set)}${k.status === 'choosing' ? 'unchosen' : esc(k.set.name)}${k.source === 'sacrifice' ? ' 🔥' : ''}${k.status !== 'opened' ? ' (unopened)' : ` · ${k.cards.length}`}${isAdmin() ? `<button class="chip-x" data-delpack="${g.id}:${p.id}:${k.id}" title="Admin: delete this pack and its pulls">✕</button>` : ''}</span>`).join('') || 'No packs'}${p.sacrificed ? `<span class="chip">🔥 ${p.sacrificed} sacrificed</span>` : ''}</div>
           ${hits.length ? `<div class="mini-cards">${hits.map(c => `<img src="${esc(c.image)}" alt="${esc(c.name)}" title="${esc(c.name)}" loading="lazy" data-card="${g.id}:${p.id}:${esc(c.set)}/${esc(c.number)}">`).join('')}</div>` : ''}
         </div>`;
       }).join('')}</div></details>`;
     }).join('')}</div>`;
   const lookup = key => { const [gid, pid] = key.split(':'); const g = pods.find(x => x.id === gid); return g?.players.find(p => p.id === pid); };
   $$('[data-hdel]', view).forEach(b => b.onclick = () => deletePodFlow(pods.find(x => x.id === b.dataset.hdel)));
+  $$('[data-delpack]', view).forEach(b => b.onclick = e => {
+    e.preventDefault(); e.stopPropagation();
+    const [gid, pid, kid] = b.dataset.delpack.split(':');
+    const owner = lookup(`${gid}:${pid}`);
+    deletePackFlow(gid, owner.packs.find(k => k.id === kid), owner);
+  });
+  $('#clearHist', view)?.addEventListener('click', async () => {
+    const cards = pods.reduce((s, g) => s + g.players.reduce((t, p) => t + p.packs.reduce((u, k) => u + (k.cards?.length || 0), 0), 0), 0);
+    if (!await typedConfirm('Clear league history?', `This permanently deletes all <b>${plural(pods.length, 'finished pod')}</b> (and any discarded ones), the standings built from them, and their <b>${cards} cards</b> from everyone's pools. Running pods are not touched.`, 'DELETE', '🗑 Clear history')) return;
+    try { const r = await del('/history'); await afterAdminDelete(`League history cleared (${plural(r.deletedPods, 'pod')} deleted).`); } catch (err) { fail(err); }
+  });
   $$('[data-copy]', view).forEach(b => b.onclick = () => {
     const p = lookup(b.dataset.copy);
     const pulls = p.packs.filter(k => k.status === 'opened').flatMap(k => k.cards);

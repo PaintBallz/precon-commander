@@ -223,7 +223,7 @@ function getSet(code, cache) {
   }
   return cache.get(code);
 }
-const cardOf = c => ({ name: c.name, set: c.set_code, number: c.number, rarity: c.rarity, type: c.type || '', image: c.image, back: c.back || null, uri: c.uri, foil: !!c.foil });
+const cardOf = c => ({ id: c.id, name: c.name, set: c.set_code, number: c.number, rarity: c.rarity, type: c.type || '', image: c.image, back: c.back || null, uri: c.uri, foil: !!c.foil });
 
 function assemble(rows) {
   if (!rows.length) return [];
@@ -270,6 +270,16 @@ export function finishedPods() {
 }
 export function deletePod(id) {
   return db.prepare('DELETE FROM pods WHERE id = ?').run(id).changes > 0;
+}
+// Clearing league history removes every finished and discarded pod; running pods stay.
+export function deleteHistory() {
+  return db.prepare(`DELETE FROM pods WHERE status IN ('done', 'discarded')`).run().changes;
+}
+export function poolCard(id) {
+  return db.prepare('SELECT c.*, p.name AS pod_name FROM pool_cards c JOIN pods p ON p.id = c.pod_id WHERE c.id = ?').get(id) || null;
+}
+export function deletePoolCard(id) {
+  return db.prepare('DELETE FROM pool_cards WHERE id = ?').run(id).changes > 0;
 }
 
 // ---------- pools ----------

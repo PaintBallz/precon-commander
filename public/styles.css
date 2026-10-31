@@ -320,3 +320,5 @@ form label input { color: var(--text); font-weight: 400; }
 /* ---------- pools ---------- */
 .pool-head { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 16px; }
 .mcard .qty { position: absolute; right: 6px; top: 6px; z-index: 2; font-weight: 800; font-size: .8rem; padding: 2px 7px; border-radius: 999px; background: var(--gold); color: #1a1408; box-shadow: 0 2px 6px rgba(0,0,0,.5); }
+.chip-x { border: 0; background: transparent; color: var(--dim); cursor: pointer; padding: 0 0 0 4px; font-size: .8rem; line-height: 1; }
+.chip-x:hover { color: var(--danger); }

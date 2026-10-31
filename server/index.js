@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { savePod, loadPod, activePods, finishedPods, deletePod, poolCards, poolPods, setInfoFor, kvGet, kvSet } from './db.js';
+import { savePod, loadPod, activePods, finishedPods, deletePod, deleteHistory, poolCard, deletePoolCard, poolCards, poolPods, setInfoFor, kvGet, kvSet } from './db.js';
 import { getBoosterSets, BOOSTER_SET_TYPES } from './scryfall.js';
 import { openPack, hasRealPack, realPackKind, localPackSets } from './packs.js';
 import { requireAuth, requireAdmin, authRoutes, seedAdmin, listUsers, getUser } from './auth.js';
@@ -158,7 +158,8 @@ async function setInfo(code) {
   return { code: s.code, name: s.name, icon: s.icon, released: s.released, type: s.type };
 }
 const newPack = set => ({ id: id(10), status: 'ready', source: 'wheel', set, wheelSet: set, cards: null });
-function commit(pod, kind = 'state', data = {}) { pod.updatedAt = now(); savePod(pod); broadcast(kind, { podId: pod.id, ...data }); return pod; }
+// Save, tell every phone, and hand back the pod as stored (so cards carry their ids).
+function commit(pod, kind = 'state', data = {}) { pod.updatedAt = now(); savePod(pod); broadcast(kind, { podId: pod.id, ...data }); return loadPod(pod.id); }
 
 app.get('/api/state', (req, res) => {
   res.json({ version, me: req.user, pods: activePods(), members: members() });
@@ -283,7 +284,8 @@ app.post('/api/pods/:id/packs/:packId/open', wrap(async (req, res) => {
     pack.generated = result.generated;
     pack.status = 'opened';
     pack.openedAt = now();
-    res.json({ pod: commit(pod), pack });
+    const saved = commit(pod);
+    res.json({ pod: saved, pack: findPack(saved, packId).pack });
   } finally {
     opening.delete(packId);
   }
@@ -316,6 +318,39 @@ app.delete('/api/pods/:id', wrap(async (req, res) => {
   deletePod(pod.id);
   broadcast('state', { podId: pod.id, deleted: true });
   res.json({ ok: true, deleted: { id: pod.id, name: pod.name } });
+}));
+
+// Admin: remove one pack from any pod (its pulls leave the pool with it).
+app.delete('/api/pods/:id/packs/:packId', wrap(async (req, res) => {
+  requireAdmin(req);
+  const pod = loadPod(req.params.id);
+  if (!pod) throw new HttpError(404, 'Pod not found');
+  const { player, pack } = findPack(pod, req.params.packId);
+  player.packs.splice(player.packs.indexOf(pack), 1);
+  player.awarded = Math.max(0, player.awarded - 1);
+  pod.updatedAt = now();
+  savePod(pod);
+  broadcast('state', { podId: pod.id });
+  res.json({ ok: true, pod: loadPod(pod.id), removed: { packId: pack.id, cards: pack.cards?.length || 0 } });
+}));
+
+// Admin: remove a single pulled card from a player's pool.
+app.delete('/api/pool-cards/:cardId', wrap(async (req, res) => {
+  requireAdmin(req);
+  const card = poolCard(Number(req.params.cardId));
+  if (!card) throw new HttpError(404, 'Card not found');
+  deletePoolCard(card.id);
+  broadcast('state', { podId: card.pod_id });
+  res.json({ ok: true, removed: { id: card.id, name: card.name, podId: card.pod_id } });
+}));
+
+// Admin: clear league history (every finished and discarded pod, with their
+// packs and pool cards). Running pods are untouched.
+app.delete('/api/history', wrap(async (req, res) => {
+  requireAdmin(req);
+  const n = deleteHistory();
+  broadcast('state');
+  res.json({ ok: true, deletedPods: n });
 }));
 
 app.get('/api/history', (req, res) => res.json({ pods: finishedPods() }));

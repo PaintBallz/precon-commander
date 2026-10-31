@@ -26,8 +26,14 @@ Local: http://127.0.0.1:8101
 **Pools tab**: each player's cards from every running or finished pod (discarded pods don't
 count), grouped with counts, searchable, and copyable as one deck list.
 
-**Admin delete**: the admin can permanently delete any pod (running, finished or discarded)
-from the Pods tab or from History. Its packs, pulls and pool cards are deleted with it.
+**Admin delete** (all permanent):
+- **A pod** (running, finished or discarded) from the Pods tab or History; its packs, pulls
+  and pool cards go with it.
+- **The whole league history**: History → *Clear league history* (type `DELETE` to confirm)
+  removes every finished and discarded pod; running pods stay.
+- **One pack**: *Delete pack* in the Packs tab, or ✕ on a pack in History or Pools; its pulls
+  leave the player's pool.
+- **One pulled card**: open the card and choose *Remove*; that single copy leaves the pool.
 
 **All Sets tab**: every booster set and its chance on the wheel. Only the admin can turn
 sets on or off, change their weights (2 = twice as likely) or change the year/type filters.

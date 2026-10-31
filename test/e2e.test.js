@@ -230,11 +230,16 @@ test('only the winner spins, once, and it is pushed live to other devices', asyn
   })();
   await new Promise(r => setTimeout(r, 200));
 
+  // Keep the wheel to real-booster sets for this spin so the pack checks
+  // below don't depend on which of ~180 sets comes up.
+  const REAL = ['dom', 'war', 'eld', 'neo'];
+  await ok(admin.put('/api/settings', { excluded: S.sets.map(s => s.code).filter(c => !REAL.includes(c)) }));
   const { pod, spin } = await ok(nick.post(`/api/pods/${S.pod.id}/spin`));
+  await ok(admin.put('/api/settings', { reset: true }));
   const live = await Promise.race([gotSpin, new Promise(r => setTimeout(() => r(false), 5000))]);
   ctrl.abort();
   assert.ok(live, 'spin event reached the other device');
-  assert.ok(S.sets.some(s => s.code === spin.setCode), 'landed on a set from the list');
+  assert.ok(REAL.includes(spin.setCode), 'landed on a set that is on the wheel');
   for (const p of pod.players) {
     assert.equal(p.packs.length, p.awarded, `${p.name} has all their packs`);
     assert.ok(p.packs.every(k => k.set.code === spin.setCode && k.status === 'ready' && k.source === 'wheel'), `${p.name}'s packs are all the spun set`);
@@ -441,6 +446,40 @@ test('discarded pods are not in history or pools', async () => {
   assert.equal(pools.find(p => p.username === 'Eve').packs.length, 0);
 });
 
+test('admin can delete a single pulled card and a whole pack', async () => {
+  const poolOf = async name => (await ok(eve.get(`/api/pools?pod=${S.pod.id}`))).pools.find(p => p.username === name);
+  const histPod = async () => (await ok(eve.get('/api/history'))).pods.find(g => g.id === S.pod.id);
+
+  // One card out of Mike's BLB pack.
+  const mikePack = player(await histPod(), 'Mike').packs.find(k => k.status === 'opened');
+  const card = mikePack.cards[0];
+  assert.ok(Number.isInteger(card.id), 'pulled cards carry their pool_cards id');
+  assert.equal((await mike.del(`/api/pool-cards/${card.id}`)).status, 403, 'players cannot delete pulls');
+  assert.equal((await admin.del('/api/pool-cards/999999')).status, 404);
+  const before = (await poolOf('Mike')).packs.flatMap(k => k.cards).length;
+  const r = await ok(admin.del(`/api/pool-cards/${card.id}`));
+  assert.equal(r.removed.name, card.name);
+  assert.equal((await poolOf('Mike')).packs.flatMap(k => k.cards).length, before - 1, 'the card left Mike\'s pool');
+  const after = player(await histPod(), 'Mike').packs.find(k => k.id === mikePack.id);
+  assert.equal(after.cards.length, mikePack.cards.length - 1, 'and the pack\'s pulls in History');
+  assert.ok(!after.cards.some(c => c.id === card.id));
+
+  // Joe's whole Alpha pack.
+  const joePacks = player(await histPod(), 'Joe').packs;
+  const alpha = joePacks.find(k => k.set.code === 'lea');
+  assert.equal((await joe.del(`/api/pods/${S.pod.id}/packs/${alpha.id}`)).status, 403, 'players cannot delete packs');
+  assert.equal((await admin.del(`/api/pods/${S.pod.id}/packs/nope`)).status, 404);
+  await ok(admin.del(`/api/pods/${S.pod.id}/packs/${alpha.id}`));
+  assert.equal(player(await histPod(), 'Joe').packs.length, joePacks.length - 1, 'pack is gone from History');
+  assert.ok(!(await poolOf('Joe')).packs.some(k => k.packId === alpha.id), 'and from Joe\'s pool');
+  const db = new DatabaseSync(path.join(DATA_DIR, 'app.db'), { readOnly: true });
+  try {
+    assert.equal(db.prepare('SELECT count(*) n FROM pool_cards WHERE pack_id = ?').get(alpha.id).n, 0, 'its pool_cards rows were deleted');
+    assert.equal(db.prepare('SELECT count(*) n FROM pod_packs WHERE id = ?').get(alpha.id).n, 0);
+  } finally { db.close(); }
+  ({ pod: S.pod } = await ok(eve.get(`/api/pods/${S.pod.id}`)));
+});
+
 test('only the admin can delete pods; history and pools follow', async () => {
   // A running pod with an opened pack, plus the finished Pod 1.
   const { pod } = await ok(eve.post('/api/pods', { players: [{ userId: S.u.Eve.id }, { userId: S.u.Joe.id }] }));
@@ -466,6 +505,34 @@ test('only the admin can delete pods; history and pools follow', async () => {
       const n = db.prepare(`SELECT count(*) n FROM ${t} WHERE pod_id IN (?, ?)`).get(pod.id, S.pod.id).n;
       assert.equal(n, 0, `${t} rows were deleted with their pod`);
     }
+  } finally { db.close(); }
+});
+
+test('admin can clear league history; running pods stay', async () => {
+  const pod = async (a, b, finish) => {
+    const { pod } = await ok(eve.post('/api/pods', { players: [{ userId: S.u[a].id }, { userId: S.u[b].id }] }));
+    await ok(eve.post(`/api/pods/${pod.id}/winner`, { playerId: S.u[a].id }));
+    const spun = (await ok(eve.post(`/api/pods/${pod.id}/spin`))).pod;
+    await ok(eve.post(`/api/pods/${pod.id}/packs/${spun.players[0].packs[0].id}/open`));
+    if (finish) await ok(eve.post(`/api/pods/${pod.id}/finish`));
+    return pod;
+  };
+  await pod('Eve', 'Joe', true);
+  await pod('Eve', 'Mike', true);
+  const running = await pod('Eve', 'Dan', false);
+  assert.equal((await ok(eve.get('/api/history'))).pods.length, 2);
+
+  assert.equal((await eve.del('/api/history')).status, 403, 'players cannot clear history');
+  const r = await ok(admin.del('/api/history'));
+  assert.ok(r.deletedPods >= 2, 'finished (and discarded) pods were deleted');
+  assert.equal((await ok(eve.get('/api/history'))).pods.length, 0, 'History is empty');
+  const st = await ok(eve.get('/api/state'));
+  assert.deepEqual(st.pods.map(p => p.id), [running.id], 'the running pod is untouched');
+  const evePool = (await ok(eve.get('/api/pools'))).pools.find(p => p.username === 'Eve');
+  assert.ok(evePool.packs.length === 1 && evePool.packs.every(k => k.podId === running.id), 'pools keep only the running pod\'s cards');
+  const db = new DatabaseSync(path.join(DATA_DIR, 'app.db'), { readOnly: true });
+  try {
+    assert.equal(db.prepare(`SELECT count(*) n FROM pods WHERE status IN ('done','discarded')`).get().n, 0, 'the 120 discarded wheel-test pods are gone too');
   } finally { db.close(); }
 });
 
