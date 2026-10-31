@@ -61,13 +61,17 @@ export const isMember = (leagueId, userId) =>
   !!db.prepare('SELECT 1 FROM league_members WHERE league_id = ? AND user_id = ? AND left_at IS NULL').get(leagueId, userId);
 
 export function addMember(leagueId, userId, addedBy) {
-  db.prepare(`INSERT INTO league_members (league_id, user_id, joined_at, left_at, added_by) VALUES (?, ?, ?, NULL, ?)
-              ON CONFLICT(league_id, user_id) DO UPDATE SET joined_at = excluded.joined_at, left_at = NULL, added_by = excluded.added_by`)
+  db.prepare(`INSERT INTO league_members (league_id, user_id, joined_at, left_at, added_by, kicked) VALUES (?, ?, ?, NULL, ?, 0)
+              ON CONFLICT(league_id, user_id) DO UPDATE SET joined_at = excluded.joined_at, left_at = NULL, added_by = excluded.added_by, kicked = 0`)
     .run(leagueId, userId, now(), addedBy || null);
 }
-export function removeMember(leagueId, userId) {
-  db.prepare('UPDATE league_members SET left_at = ? WHERE league_id = ? AND user_id = ? AND left_at IS NULL').run(now(), leagueId, userId);
+// kicked: the player was removed (not a leave), so the invite code no longer
+// lets them back in; only the site admin can re-add them.
+export function removeMember(leagueId, userId, { kicked = false } = {}) {
+  db.prepare('UPDATE league_members SET left_at = ?, kicked = ? WHERE league_id = ? AND user_id = ? AND left_at IS NULL').run(now(), kicked ? 1 : 0, leagueId, userId);
 }
+export const wasKicked = (leagueId, userId) =>
+  !!db.prepare('SELECT 1 FROM league_members WHERE league_id = ? AND user_id = ? AND kicked = 1').get(leagueId, userId);
 
 export function createLeague({ name, createdBy, wheel, rules = DEFAULT_RULES }) {
   const id = crypto.randomUUID();

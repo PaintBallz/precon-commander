@@ -190,6 +190,7 @@ for (const [table, col, def] of [
   ['pods', 'vote_status', 'TEXT'], ['pods', 'vote_round', 'INTEGER'], ['pods', 'vote_winner_id', 'TEXT'], ['pods', 'vote_decided_at', 'TEXT'],
   ['pods', 'league_id', 'TEXT'], ['pods', 'rules', 'TEXT'],
   ['pod_players', 'role', "TEXT NOT NULL DEFAULT 'player'"],
+  ['league_members', 'kicked', 'INTEGER NOT NULL DEFAULT 0'],
 ]) {
   if (!db.prepare(`SELECT 1 FROM pragma_table_info('${table}') WHERE name = ?`).get(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
 }

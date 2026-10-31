@@ -424,7 +424,7 @@ async function renderLeague(view) {
   view.innerHTML = `
     <div class="hero">
       <div><h1>${esc(league.name)}</h1>
-        <p>${active ? `Started ${fmtDate(league.createdAt)}${league.createdBy ? ` by ${esc(league.createdBy)}` : ''}.` : `Ended ${fmtDate(league.endedAt)}. Its standings, history and pools stay here as an archive.`}
+        <p>${active ? `Started ${fmtDate(league.createdAt)}${league.createdBy ? ` by ${esc(league.createdBy)}` : ''}.${league.leagueAdmin ? ` League admin: <b>${esc(league.leagueAdmin.username)}</b>.` : ''}` : `Ended ${fmtDate(league.endedAt)}. Its standings, history and pools stay here as an archive.`}
         ${plural(league.members.length, 'player')} of ${lim.max}.</p></div>
       <div class="row">
         ${league.code && active ? `<div class="code-box" title="Friends join with this code on the League tab"><span class="small muted">Invite code</span><b>${esc(league.code)}</b><button class="btn sm" id="copyCode">📋 Copy</button></div>` : ''}
@@ -442,14 +442,14 @@ async function renderLeague(view) {
       </section>
       <section class="panel">
         <div class="spread"><h2 style="margin:0">Players</h2><span class="small muted">${league.members.length}/${lim.max}</span></div>
-        <div class="member-list">${league.members.map(m => `<div class="member"><div><b>${esc(m.username)}</b>${m.id === S.me.id ? ' <span class="dim small">(you)</span>' : ''}<div class="small muted">${esc(m.precon) || 'No precon set'}</div></div>
-          ${isAdmin() && active ? `<button class="btn ghost sm" data-rmm="${m.id}" data-name="${esc(m.username)}" title="Remove from the league">✕</button>` : ''}</div>`).join('') || '<p class="muted">Nobody yet.</p>'}</div>
+        <div class="member-list">${league.members.map(m => `<div class="member"><div><b>${esc(m.username)}</b>${m.leagueAdmin ? ' <span class="chip gold" title="Started the league: can change its rules and kick players">League admin</span>' : ''}${m.id === S.me.id ? ' <span class="dim small">(you)</span>' : ''}<div class="small muted">${esc(m.precon) || 'No precon set'}</div></div>
+          ${league.canManage && active && m.id !== S.me.id ? `<button class="btn ghost sm" data-rmm="${m.id}" data-name="${esc(m.username)}" title="Kick from the league">✕</button>` : ''}</div>`).join('') || '<p class="muted">Nobody yet.</p>'}</div>
         ${isAdmin() && active ? `<div class="row" style="margin-top:10px">${candidates.length ? `<select class="input" id="addMember"><option value="">Add a player…</option>${candidates.map(c => `<option value="${c.id}">${esc(c.username)}</option>`).join('')}</select><button class="btn sm" id="addMemberBtn">Add</button>` : '<span class="small muted">Every player is already in a league.</span>'}</div>` : ''}
       </section>
       <section class="panel">
         <h2>Rules</h2>
-        ${isAdmin() ? `<form id="rulesForm" class="grid" style="gap:10px">
-          <label>League name<input name="name" value="${esc(league.name)}" maxlength="40"></label>
+        ${league.canManage && active ? `<form id="rulesForm" class="grid" style="gap:10px">
+          ${isAdmin() ? `<label>League name<input name="name" value="${esc(league.name)}" maxlength="40"></label>` : '<p class="small muted" style="margin:0">You started this league, so you set its rules.</p>'}
           <div class="rules-grid">
             <label>Winner packs<input type="number" name="winnerPacks" min="0" max="10" value="${r.winnerPacks}"></label>
             <label>Everyone else<input type="number" name="loserPacks" min="0" max="10" value="${r.loserPacks}"></label>
@@ -487,7 +487,7 @@ async function renderLeague(view) {
     try { await post(`/leagues/${league.id}/leave`); S.viewLeague = null; await refreshLeague(); } catch (err) { fail(err); }
   });
   $$('[data-rmm]', view).forEach(b => b.onclick = async () => {
-    if (!await confirmBox(`Remove ${esc(b.dataset.name)}?`, `${esc(b.dataset.name)} leaves ${esc(league.name)}. Their past pods and pool stay in its history.`, 'Remove', true)) return;
+    if (!await confirmBox(`Kick ${esc(b.dataset.name)}?`, `${esc(b.dataset.name)} is removed from ${esc(league.name)}. Their past pods and pool stay in its history. The invite code won't let them back in; only the site admin can re-add them.`, 'Kick', true)) return;
     try { await del(`/leagues/${league.id}/members/${b.dataset.rmm}`); await refreshLeague(); } catch (err) { fail(err); }
   });
   $('#addMemberBtn', view)?.addEventListener('click', async () => {
@@ -499,7 +499,7 @@ async function renderLeague(view) {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.target));
     const rules = Object.fromEntries(['winnerPacks', 'loserPacks', 'absentPacks', 'voteBonus'].map(k => [k, Number(f[k])]));
-    try { await api(`/leagues/${league.id}`, { method: 'PUT', body: { name: f.name, rules } }); toast('Rules saved.', 'good'); await refreshLeague(); } catch (err) { fail(err); }
+    try { await api(`/leagues/${league.id}`, { method: 'PUT', body: { ...(f.name != null ? { name: f.name } : {}), rules } }); toast('Rules saved.', 'good'); await refreshLeague(); } catch (err) { fail(err); }
   });
   $('#newCode', view)?.addEventListener('click', async () => {
     if (!await confirmBox('New invite code?', 'The old code stops working.', 'New code')) return;

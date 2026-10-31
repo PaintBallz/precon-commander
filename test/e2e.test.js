@@ -201,10 +201,11 @@ test('players join with the invite code; one league at a time', async () => {
   assert.equal((await ok(eve.get('/api/leagues'))).leagues.length, 2);
 });
 
-test('the admin can add and remove league members', async () => {
-  assert.equal((await nick.del(`/api/leagues/${S.league}/members/${S.u.Fay.id}`)).status, 403);
+test('the site admin can add and remove league members', async () => {
+  assert.equal((await mike.del(`/api/leagues/${S.league}/members/${S.u.Fay.id}`)).status, 403, 'players cannot kick');
   await ok(admin.del(`/api/leagues/${S.league}/members/${S.u.Fay.id}`));
   assert.equal((await ok(fay.get('/api/state'))).league, null, 'Fay is out');
+  assert.equal((await fay.post('/api/leagues/join', { code: S.code })).status, 403, 'a kicked player cannot rejoin with the code');
   const { players } = await ok(admin.get(`/api/leagues/${S.league}/candidates`));
   assert.deepEqual(players.map(p => p.username), ['Fay'], 'free players can be added');
   await ok(admin.post(`/api/leagues/${S.league}/members`, { userId: S.u.Fay.id }));
@@ -212,11 +213,43 @@ test('the admin can add and remove league members', async () => {
   assert.equal((await ok(fay.get('/api/state'))).league.id, S.league);
 });
 
-test('each league has its own rules (admin only)', async () => {
-  assert.equal((await nick.put(`/api/leagues/${S.league}`, { rules: { winnerPacks: 9 } })).status, 403);
-  assert.equal((await admin.put(`/api/leagues/${S.league}`, { rules: { winnerPacks: 99 } })).status, 400);
-  const { league } = await ok(admin.put(`/api/leagues/${S.gusLeague}`, { rules: { winnerPacks: 4, absentPacks: 0 } }));
+test('whoever starts a league is its league admin: rules and kicking, nothing else', async () => {
+  const nickView = (await ok(nick.get('/api/state'))).league;
+  assert.equal(nickView.leagueAdmin.username, 'Nick');
+  assert.equal(nickView.canManage, true);
+  assert.equal(nickView.members.find(m => m.username === 'Nick').leagueAdmin, true);
+  assert.equal((await ok(mike.get('/api/state'))).league.canManage, false);
+
+  // Rules: yes (with the same limits as the site admin).
+  assert.equal((await mike.put(`/api/leagues/${S.league}`, { rules: { winnerPacks: 9 } })).status, 403, 'other players cannot');
+  assert.equal((await nick.put(`/api/leagues/${S.league}`, { rules: { winnerPacks: 99 } })).status, 400);
+  const { league } = await ok(nick.put(`/api/leagues/${S.league}`, { rules: { winnerPacks: 4 } }));
   assert.equal(league.rules.winnerPacks, 4);
+  assert.ok((await ok(eve.get(`/api/leagues/${S.league}`))).events.some(e => e.text.startsWith('Nick (league admin) changed the rules')));
+  await ok(nick.put(`/api/leagues/${S.league}`, { rules: { winnerPacks: 3 } }));
+  assert.equal((await nick.put(`/api/leagues/${S.gusLeague}`, { rules: { winnerPacks: 9 } })).status, 403, 'only their own league');
+
+  // Kicking: yes, but not themselves, and the kicked player can't use the code to come back.
+  assert.equal((await nick.del(`/api/leagues/${S.league}/members/${S.u.Nick.id}`)).status, 400);
+  await ok(nick.del(`/api/leagues/${S.league}/members/${S.u.Fay.id}`));
+  assert.equal((await fay.post('/api/leagues/join', { code: S.code })).status, 403);
+  await ok(admin.post(`/api/leagues/${S.league}/members`, { userId: S.u.Fay.id }));
+
+  // Everything else stays with the site admin.
+  assert.equal((await nick.put(`/api/leagues/${S.league}`, { name: 'Nick Rules' })).status, 403, 'no renaming');
+  assert.equal((await nick.post(`/api/leagues/${S.league}/code`)).status, 403, 'no new invite code');
+  assert.equal((await nick.post(`/api/leagues/${S.league}/members`, { userId: S.u.Gus.id })).status, 403, 'no adding players');
+  assert.equal((await nick.get(`/api/leagues/${S.league}/candidates`)).status, 403);
+  assert.equal((await nick.put('/api/settings', { league: S.league, excluded: ['blb'] })).status, 403, 'no wheel edits');
+  assert.equal((await nick.post(`/api/leagues/${S.league}/end`)).status, 403, 'no ending');
+  assert.equal((await nick.del(`/api/leagues/${S.league}`)).status, 403, 'no deleting');
+  assert.equal((await nick.post(`/api/pods/${'x'}/vote/skip`)).status, 403, 'no admin pod tools');
+});
+
+test('each league has its own rules', async () => {
+  assert.equal((await admin.put(`/api/leagues/${S.league}`, { rules: { winnerPacks: 99 } })).status, 400);
+  const { league } = await ok(gus.put(`/api/leagues/${S.gusLeague}`, { rules: { winnerPacks: 4, absentPacks: 0 } }));
+  assert.equal(league.rules.winnerPacks, 4, "Gus sets his own league's rules");
   assert.equal((await ok(nick.get('/api/state'))).league.rules.winnerPacks, 3, 'other leagues keep theirs');
 });
 

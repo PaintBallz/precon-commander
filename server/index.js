@@ -22,7 +22,7 @@ import {
 } from './db.js';
 import {
   LEAGUE_MIN, LEAGUE_MAX, DEFAULT_RULES, RULE_LIMITS, getLeague, leagueByCode, listLeagues, activeLeagueOf,
-  leagueMembers, isMember, addMember, removeMember, createLeague, updateLeague, newLeagueCode, endLeague, deleteLeague,
+  leagueMembers, isMember, addMember, removeMember, wasKicked, createLeague, updateLeague, newLeagueCode, endLeague, deleteLeague,
   logEvent, leagueEvents, migrateToLeagues,
 } from './leagues.js';
 import { getBoosterSets, BOOSTER_SET_TYPES } from './scryfall.js';
@@ -164,14 +164,28 @@ app.put('/api/settings', wrap(async (req, res) => {
 
 // ---------- leagues ----------
 const creatorName = l => (l.createdBy && getUser(l.createdBy)?.username) || null;
+// The player who started a league is its league admin while they're still in
+// it. Their only extra powers: changing the league rules and kicking players.
+// Everything else (wheel, adding players, invite codes, ending, deleting)
+// stays with the site admin.
+const leagueAdminId = l => (l.createdBy && isMember(l.id, l.createdBy) ? l.createdBy : null);
+const isLeagueAdmin = (req, l) => !req.user.isAdmin && leagueAdminId(l) === req.user.id;
+function requireLeagueAdmin(req, l) {
+  if (req.user.isAdmin) return;
+  if (!isLeagueAdmin(req, l)) throw new HttpError(403, `Only ${l.name}'s league admin (who started it) or the site admin can do that.`);
+  if (l.status !== 'active') throw new HttpError(409, `${l.name} has ended.`);
+}
 // Everything a phone gets about a league. Only members and the admin see the
 // invite code. Admin accounts are never listed (they don't play).
 function leagueView(req, l) {
   if (!l) return null;
   const member = isMember(l.id, req.user.id);
-  const members = leagueMembers(l.id);
+  const adminId = leagueAdminId(l);
+  const members = leagueMembers(l.id).map(m => ({ ...m, leagueAdmin: m.id === adminId }));
   return {
     id: l.id, name: l.name, status: l.status, createdAt: l.createdAt, endedAt: l.endedAt, createdBy: creatorName(l),
+    leagueAdmin: adminId ? { id: adminId, username: getUser(adminId)?.username } : null,
+    canManage: req.user.isAdmin || isLeagueAdmin(req, l),
     code: member || req.user.isAdmin ? l.code : null, rules: l.rules, members, isMember: member,
     limits: { min: LEAGUE_MIN, max: LEAGUE_MAX, podMin: POD_MIN, podMax: POD_MAX },
   };
@@ -250,6 +264,7 @@ app.post('/api/leagues/join', wrap(async (req, res) => {
   const league = leagueByCode(req.body?.code || '');
   if (!league) throw new HttpError(404, 'No league has that code. Check it and try again.');
   joinCheck(league, req.user);
+  if (wasKicked(league.id, req.user.id)) throw new HttpError(403, `You were removed from ${league.name}. Ask the site admin to add you back.`);
   addMember(league.id, req.user.id, req.user.id);
   logEvent(league.id, 'join', req.user.id, `${req.user.username} joined with the invite code.`);
   broadcast('state', { leagueId: league.id });
@@ -269,7 +284,7 @@ app.post('/api/leagues/:id/leave', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
-// Admin: add or remove members by hand.
+// Site admin: add members by hand.
 app.post('/api/leagues/:id/members', wrap(async (req, res) => {
   requireAdmin(req);
   const league = requireLeague(req.params.id);
@@ -277,19 +292,22 @@ app.post('/api/leagues/:id/members', wrap(async (req, res) => {
   if (!u || u.is_admin) throw new HttpError(400, 'Pick a player account.');
   joinCheck(league, { id: u.id, username: u.username });
   addMember(league.id, u.id, req.user.id);
-  logEvent(league.id, 'join', req.user.id, `${u.username} was added to the league by the admin.`);
+  logEvent(league.id, 'join', req.user.id, `${u.username} was added to the league by the site admin.`);
   broadcast('state', { leagueId: league.id });
   res.json({ league: leagueView(req, league) });
 }));
+// Kick a player: the league admin or the site admin.
 app.delete('/api/leagues/:id/members/:userId', wrap(async (req, res) => {
-  requireAdmin(req);
   const league = requireLeague(req.params.id);
+  requireLeagueAdmin(req, league);
   const u = getUser(req.params.userId);
   if (!u || !isMember(league.id, u.id)) throw new HttpError(404, 'That player is not in this league.');
+  if (u.id === req.user.id) throw new HttpError(400, 'Use "Leave league" to leave it yourself.');
   const pod = runningPodOf(league.id, u.id);
   if (pod) throw new HttpError(409, `${u.username} is playing in ${pod.name}. Finish or discard it first.`);
-  removeMember(league.id, u.id);
-  logEvent(league.id, 'leave', req.user.id, `${u.username} was removed from the league by the admin.`);
+  removeMember(league.id, u.id, { kicked: true });
+  const by = req.user.isAdmin ? 'the site admin' : `${req.user.username} (league admin)`;
+  logEvent(league.id, 'leave', req.user.id, `${u.username} was removed from the league by ${by}.`);
   broadcast('state', { leagueId: league.id });
   res.json({ league: leagueView(req, league) });
 }));
@@ -300,13 +318,15 @@ app.get('/api/leagues/:id/candidates', wrap(async (req, res) => {
   res.json({ players: listUsers().filter(u => !u.is_admin && !activeLeagueOf(u.id)).map(u => ({ id: u.id, username: u.username })) });
 }));
 
-// Admin: rename, change the rules, new invite code, end or delete.
+// Rules: the league admin or the site admin. Renaming, new invite codes,
+// ending and deleting: the site admin only.
 app.put('/api/leagues/:id', wrap(async (req, res) => {
-  requireAdmin(req);
   const league = requireLeague(req.params.id);
+  requireLeagueAdmin(req, league);
   const b = req.body || {};
   const changes = {};
-  if (b.name != null) {
+  if (b.name != null && String(b.name).trim() !== league.name) {
+    requireAdmin(req);
     changes.name = String(b.name).trim().slice(0, 40);
     if (!changes.name) throw new HttpError(400, 'Give the league a name.');
   }
@@ -323,7 +343,8 @@ app.put('/api/leagues/:id', wrap(async (req, res) => {
   const updated = updateLeague(league.id, changes);
   if (changes.rules) {
     const r = changes.rules;
-    logEvent(league.id, 'rules', req.user.id, `Rules changed: winner ${r.winnerPacks}, others ${r.loserPacks}, absent ${r.absentPacks}, vote bonus ${r.voteBonus} pack(s). Running pods keep the rules they started with.`);
+    const by = req.user.isAdmin ? 'The site admin' : `${req.user.username} (league admin)`;
+    logEvent(league.id, 'rules', req.user.id, `${by} changed the rules: winner ${r.winnerPacks}, others ${r.loserPacks}, absent ${r.absentPacks}, vote bonus ${r.voteBonus} pack(s). Running pods keep the rules they started with.`);
   }
   broadcast('state', { leagueId: league.id });
   res.json({ league: leagueView(req, updated) });
