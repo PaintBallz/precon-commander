@@ -125,7 +125,10 @@ app.put('/api/settings', wrap(async (req, res) => {
 }));
 
 // ---------- league members ----------
-const members = () => listUsers().map(u => ({ id: u.id, username: u.username, precon: u.precon || '', isAdmin: !!u.is_admin }));
+// Admin accounts manage the league; they don't play, so they're left out of
+// every list players see (members, pools).
+const leaguePlayers = () => listUsers().filter(u => !u.is_admin);
+const members = () => leaguePlayers().map(u => ({ id: u.id, username: u.username, precon: u.precon || '' }));
 app.get('/api/members', (req, res) => res.json({ members: members() }));
 
 // ---------- pods ----------
@@ -230,6 +233,7 @@ app.post('/api/pods', wrap(async (req, res) => {
   const players = wanted.map((w, i) => {
     const u = getUser(String(w.userId));
     if (!u) throw new HttpError(400, `Player ${i + 1} is not a league member.`);
+    if (u.is_admin) throw new HttpError(400, 'The admin account manages the league and does not play in pods.');
     if (busy.has(u.id)) throw new HttpError(409, `${u.username} is already playing in ${busy.get(u.id).name}.`);
     const precon = String(w.precon ?? u.precon ?? '').trim().slice(0, 80);
     return { id: u.id, name: u.username, precon, awarded: 0, sacrificed: 0, packs: [] };
@@ -455,15 +459,16 @@ app.get('/api/pods/:id', (req, res) => {
 // Their precon is separate and not listed. ?pod=<id> narrows to one pod.
 app.get('/api/pools', (req, res) => {
   const only = req.query.pod ? String(req.query.pod) : null;
-  const pools = new Map(listUsers().map(u => [u.id, { userId: u.id, username: u.username, precon: u.precon || '', pods: [], packs: [] }]));
+  const hidden = new Set(listUsers().filter(u => u.is_admin).map(u => u.id));
+  const pools = new Map(leaguePlayers().map(u => [u.id, { userId: u.id, username: u.username, precon: u.precon || '', pods: [], packs: [] }]));
   const ensure = (userId, name) => pools.get(userId) || pools.set(userId, { userId, username: name || 'former player', precon: '', pods: [], packs: [] }).get(userId);
   for (const r of poolPods()) {
-    if (only && r.id !== only) continue;
+    if ((only && r.id !== only) || hidden.has(r.user_id)) continue;
     ensure(r.user_id).pods.push({ id: r.id, name: r.name, status: r.status, createdAt: r.created_at });
   }
   const packs = new Map();
   for (const r of poolCards()) {
-    if (only && r.pod_id !== only) continue;
+    if ((only && r.pod_id !== only) || hidden.has(r.user_id)) continue;
     let k = packs.get(r.pack_id);
     if (!k) {
       k = { packId: r.pack_id, podId: r.pod_id, podName: r.pod_name, at: r.opened_at, set: setInfoFor(r.pack_set), source: r.source, cards: [] };

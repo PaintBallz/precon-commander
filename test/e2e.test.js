@@ -140,7 +140,9 @@ test('sign-up needs a username, an email and a simple-rules password', async () 
   assert.equal((await anon.post('/api/auth/signup', { username: 'Nick2', email: 'NICK@example.com', password: PW })).status, 409, 'one account per email');
   await ok(nick.put('/api/auth/profile', { precon: 'Animated Army' }));
   const { members } = await ok(nick.get('/api/members'));
-  assert.equal(members.length, 6, 'admin + 5 players: more than one pod\'s worth');
+  assert.equal(members.length, 5, '5 players: more than one pod\'s worth');
+  assert.ok(!members.some(m => m.username === 'admin'), 'the admin account is not listed as a member');
+  assert.equal(JSON.stringify(members).includes('isAdmin'), false);
   assert.equal(members.find(m => m.username === 'Nick').precon, 'Animated Army');
   assert.equal(JSON.stringify(members).includes('@'), false, 'member list does not expose emails');
   // Logging in by email works too.
@@ -193,6 +195,8 @@ test('pods hold 2 to 4 league members', async () => {
   assert.equal((await nick.post('/api/pods', { players: ids(['Nick', 'Mike', 'Joe', 'Dan', 'Eve']) })).status, 400, 'max 4 per pod');
   assert.equal((await nick.post('/api/pods', { players: [{ userId: S.u.Nick.id }, { userId: 'ghost' }] })).status, 400);
   assert.equal((await eve.post('/api/pods', { players: ids(['Nick', 'Mike']) })).status, 403, 'players add themselves');
+  const adminId = (await ok(admin.get('/api/auth/me'))).user.id;
+  assert.equal((await admin.post('/api/pods', { players: [{ userId: adminId }, { userId: S.u.Eve.id }] })).status, 400, 'the admin account does not play in pods');
   const { pod } = await ok(nick.post('/api/pods', { players: [...ids(['Nick']), { userId: S.u.Mike.id, precon: 'Death Toll' }, ...ids(['Joe', 'Dan'])] }));
   assert.equal(pod.status, 'playing');
   assert.equal(pod.name, 'Pod 1');
@@ -400,6 +404,7 @@ test('pools track each player\'s opened cards at all times', async () => {
   }
   assert.equal(pool('Nick').precon, 'Animated Army', 'the precon is shown but not listed as cards');
   assert.equal(pool('Eve').packs.length, 0, 'Eve has not played yet');
+  assert.equal(pool('admin'), undefined, 'the admin account is not listed in Pools');
   assert.equal(pool('Eve').pods.length, 0);
   assert.deepEqual(pool('Nick').pods.map(x => x.id), [S.pod.id], 'pools know which pod each player played');
 });
@@ -491,7 +496,7 @@ test('wheel odds follow per-set weights and exclusions (admin)', async () => {
   const N = 120;
   const hits = { blb: 0, lea: 0 };
   for (let i = 0; i < N; i++) {
-    const { pod } = await ok(admin.post('/api/pods', { players: [{ userId: S.u.Eve.id }, { userId: (await ok(admin.get('/api/auth/me'))).user.id }] }));
+    const { pod } = await ok(admin.post('/api/pods', { players: [{ userId: S.u.Eve.id }, { userId: S.u.Joe.id }] }));
     await ok(eve.post(`/api/pods/${pod.id}/winner`, { playerId: S.u.Eve.id }));
     hits[(await ok(eve.post(`/api/pods/${pod.id}/spin`))).spin.setCode]++;
     await ok(eve.post(`/api/pods/${pod.id}/discard`));

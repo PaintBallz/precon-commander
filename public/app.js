@@ -366,7 +366,8 @@ function wirePods(view) {
       $('.rm', d).onclick = () => { if (rows.children.length > 2) { d.remove(); $$('.num', rows).forEach((e, i) => e.textContent = i + 1); } };
       rows.append(d);
     };
-    addRow(S.me.id); addRow();
+    // The admin doesn't play, so their form starts empty.
+    if (isAdmin()) { addRow(); addRow(); } else { addRow(S.me.id); addRow(); }
     $('#addP', form).onclick = () => rows.children.length < 4 ? addRow() : toast('A pod has at most 4 players.', 'err');
     form.onsubmit = async e => {
       e.preventDefault();
