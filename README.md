@@ -1,25 +1,42 @@
 # Pre-Con Commander
 
-Commander game-night companion: four players each start with one precon. When the
-game ends, the winner gets **3 packs** and everyone else gets **2**. Each pack is
-spun from a wheel of every Magic set that was sold in boosters.
+Commander league companion. Everyone in the league has an account and starts with one
+precon. Games are **pods** of 2 to 4 players. When a pod ends, the winner gets **3 packs**
+and everyone else gets **2**, and the winner spins a wheel of every Magic set that was sold
+in boosters **once**: every pack in the pod is that set. Every opened card goes into the
+player's **pool**, the cards they may use on top of their precon.
 
 Live at **https://precon-commander.paintballz.us** (docker-sites stack, Cloudflare Tunnel).
 Local: http://127.0.0.1:8101
 
-## How a game night works
+## How a pod works
 
-1. **Game tab**: enter the players (and their precons), then crown the winner when the game ends.
-2. **Wheel tab**: spin for each pack. Every phone on the site watches the same spin live.
-   - **Open Booster** goes straight to that set's regular booster (never a Collector Booster).
-   - **Sacrifice a Pack** gives up this spin *plus one more* of your remaining packs, then
-     opens **All Sets** so you can pick any set you want.
-3. **Packs tab**: rip packs open, then **Copy pack list** or **Copy all pulls**. Lists use
+1. **Log in / sign up**: username, email (for password recovery) and a password of at least
+   8 characters with a letter and a number. Set your precon on the **Account** page.
+2. **Pods tab**: start a pod with 2 to 4 league members, then crown the winner when the game
+   ends. Several pods can run at once.
+3. **Wheel tab**: the winner spins once for the whole pod. Every phone watches the spin live.
+4. Each player then either **opens** their packs of the spun set (its regular booster, never
+   a Collector Booster) or uses **Sacrifice a Pack**: give up one spun-set pack to make
+   another pack any set they choose (on **All Sets**).
+5. **Packs tab**: rip packs open, then **Copy pack list** or **Copy all pulls**. Lists use
    the Moxfield/Archidekt format: `1 Card Name (SET) 123`.
-4. **Finish game night** saves everything to **History** (standings, packs, pulls).
+6. **Finish pod** saves it to **History** (standings, packs, pulls).
 
-**All Sets tab**: turn sets on or off the wheel and give each set a weight (2 = twice as
-likely). Year range and set-type filters are under *Wheel settings* on the Wheel tab.
+**Pools tab**: each player's cards from every running or finished pod (discarded pods don't
+count), grouped with counts, searchable, and copyable as one deck list.
+
+**All Sets tab**: every booster set and its chance on the wheel. Only the admin can turn
+sets on or off, change their weights (2 = twice as likely) or change the year/type filters.
+
+## Accounts
+
+- On first start the app creates an **admin** account with the password `changeme`, which
+  must be changed on first login.
+- Players change their password on the Account page. Forgotten passwords: with SMTP
+  configured (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM`) the app emails
+  a one-hour reset link; without it, the admin creates a reset link on the Account page.
+- The admin can also add or remove packs for a player in a pod.
 
 ## Packs
 
@@ -44,11 +61,14 @@ Dev without Docker (Node 22.13+): `npm install && npm start` → http://localhos
     docker compose run --rm pre-con-commander npm run e2e      # or a one-off container
 
 The test starts its own copy of the server on port 3999 with a throwaway database in
-/tmp, so real games, history and wheel settings are never touched. It plays a full game
-night against live Scryfall: create game → crown winner (3/2/2/2) → spin (and checks the
-live-sync event a second phone would get) → open a real-data booster → Sacrifice a Pack →
-choose sets → generated Alpha (11C/3U/1R, no land) and Magic 2010 (land slot) boosters →
-deck-list copy format → wheel weights/exclusions/year filter (120 spins) → finish → History.
-Takes about a minute; it fails loudly if Scryfall can't be reached from the container.
+/tmp, so real accounts, pods, history and wheel settings are never touched. It plays a full
+league night against live Scryfall: admin first login (forced password change) → sign-ups
+and password rules → admin reset link → admin-only wheel settings → pod of 4 → crown winner
+(3/2/2/2) → the pod's one spin (and the live-sync event a second phone would get) → open a
+real-data booster → Sacrifice a Pack → choose sets → generated Alpha (11C/3U/1R, no land)
+and Magic 2010 (land slot) boosters → pools → deck-list copy format → finish → History →
+wheel weights/exclusions/year filter (120 throwaway pods). Takes under a minute; it fails
+loudly if Scryfall can't be reached from the container.
 
-Env: `PORT` (3000), `DATA_DIR` (./data), `SCRYFALL_BASE` (override for testing).
+Env: `PORT` (3000), `DATA_DIR` (./data), `PUBLIC_URL` (for reset links), the SMTP settings
+above, `SCRYFALL_BASE` (override for testing).
