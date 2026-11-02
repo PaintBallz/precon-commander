@@ -539,7 +539,7 @@ app.post('/api/pods/:id/winner', wrap(async (req, res) => {
   pod.wonAt = now();
   for (const p of pod.players) p.awarded = p.id === winner.id ? rules.winnerPacks : rules.loserPacks;
   openVote(pod);
-  logEvent(pod.leagueId, 'win', req.user.id, `👑 ${winner.name} won ${pod.name}.`);
+  logEvent(pod.leagueId, 'win', req.user.id, `${winner.name} won ${pod.name}.`);
   res.json({ pod: view(req, commit(pod)) });
 }));
 
@@ -581,7 +581,7 @@ app.post('/api/pods/:id/vote', wrap(async (req, res) => {
   closeRoundIfComplete(pod);
   const kind = v.status === 'done' ? 'decided' : v.round > round ? 'tied' : 'voted';
   if (kind === 'decided') {
-    logEvent(pod.leagueId, 'vote', null, `🗳 ${findPlayer(pod, v.winnerId).name} won ${pod.name}'s bonus-pack vote${v.round > 1 ? ` after ${plural(v.round - 1, 're-vote')}` : ''}.`);
+    logEvent(pod.leagueId, 'vote', null, `${findPlayer(pod, v.winnerId).name} won ${pod.name}'s bonus-pack vote${v.round > 1 ? ` after ${plural(v.round - 1, 're-vote')}` : ''}.`);
   }
   res.json({ pod: view(req, commit(pod, 'state', { vote: kind })), result: kind });
 }));
@@ -620,7 +620,7 @@ app.post('/api/pods/:id/spin', wrap(async (req, res) => {
     ? leagueMembers(league.id).filter(m => !pod.players.some(p => p.id === m.id))
       .map(m => ({ id: m.id, name: m.username, packs: Array.from({ length: absent }, () => newPack(set)) }))
     : [];
-  logEvent(pod.leagueId, 'spin', req.user.id, `🎡 ${pod.name} spun ${set.name}.${pod.absentees.length ? ` ${names(pod.absentees.map(a => a.name))} missed it and get ${plural(absent, `${set.name} pack`)} each.` : ''}`);
+  logEvent(pod.leagueId, 'spin', req.user.id, `${pod.name} spun ${set.name}.${pod.absentees.length ? ` ${names(pod.absentees.map(a => a.name))} missed it and get ${plural(absent, `${set.name} pack`)} each.` : ''}`);
   res.json({ pod: view(req, commit(pod, 'spin', { spinId: pod.spin.id })), spin: pod.spin });
 }));
 
@@ -674,7 +674,7 @@ app.post('/api/pods/:id/packs/:packId/open', wrap(async (req, res) => {
     pack.status = 'opened';
     pack.openedAt = now();
     for (const c of result.cards.filter(c => c.rarity === 'mythic')) {
-      logEvent(pod.leagueId, 'pull', player.id, `✨ ${player.name} pulled ${c.name}${c.foil ? ' (foil)' : ''}, a mythic from ${set.name}.`);
+      logEvent(pod.leagueId, 'pull', player.id, `${player.name} pulled ${c.name}${c.foil ? ' (foil)' : ''}, a mythic from ${set.name}.`);
     }
     const saved = commit(pod);
     res.json({ pod: view(req, saved), pack: findPack(saved, packId).pack });

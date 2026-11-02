@@ -71,6 +71,8 @@ function toast(msg, kind = '') {
 }
 const fail = err => toast(esc(err.message || err), 'err');
 const isAdmin = () => !!S.me?.isAdmin;
+// Line icons from the sprite in index.html: ${I.crown}, ${I.trash}, …
+const I = new Proxy({}, { get: (_, n) => `<svg class="i i-${String(n)}" aria-hidden="true"><use href="#i-${String(n)}"/></svg>` });
 const podById = id => S.pods.find(p => p.id === id) || S.openPods.find(p => p.id === id);
 const myPod = () => S.pods.find(p => p.players.some(x => x.id === S.me?.id));
 function currentPod() {
@@ -100,28 +102,28 @@ function paintLeaguePicker() {
 $('#leagueSel').addEventListener('change', e => showLeague(e.target.value).catch(fail));
 
 function paintMe() {
-  const fb = isAdmin() && S.feedbackNew ? `<span class="chip st-new" title="${plural(S.feedbackNew, 'new suggestion')}">💡${S.feedbackNew}</span>` : '';
+  const fb = isAdmin() && S.feedbackNew ? `<span class="chip st-new" title="${plural(S.feedbackNew, 'new suggestion')}">${I.bulb}${S.feedbackNew}</span>` : '';
   $('#meBtn').innerHTML = S.me ? `${isAdmin() ? '<span class="chip gold">admin</span>' : ''}${fb}<span>${esc(S.me.username)}</span>` : '';
   const inApp = !!S.me && !S.me.mustChange;
   $('#fbBtn').hidden = !inApp; $('#fbOr').hidden = !inApp;
 }
 const soundBtn = $('#soundBtn');
-const paintSound = () => { soundBtn.textContent = S.sound ? '🔊' : '🔇'; };
+const paintSound = () => { soundBtn.innerHTML = S.sound ? I.sound : I.mute; };
 paintSound();
 soundBtn.addEventListener('click', () => { S.sound = !S.sound; store.set('sound', S.sound); paintSound(); });
 $('#discordBtn').addEventListener('click', async () => {
-  try { await navigator.clipboard.writeText('paintballz'); toast('📋 Discord username copied: paintballz', 'good'); }
+  try { await navigator.clipboard.writeText('paintballz'); toast(`${I.copy} Discord username copied: paintballz`, 'good'); }
   catch { toast('My Discord username is paintballz'); }
 });
 
 // ---------------- feedback ----------------
-const FB_KINDS = { idea: '💡 Feature idea', bug: '🐞 Bug', other: '💬 Other' };
+const FB_KINDS = { idea: `${I.bulb} Feature idea`, bug: `${I.bug} Bug`, other: `${I.chat} Other` };
 const FB_STATUS = { new: 'New', planned: 'Planned', done: 'Done', declined: 'Declined' };
 const fbChip = st => `<span class="chip st-${st}">${FB_STATUS[st] || esc(st)}</span>`;
 $('#fbBtn').addEventListener('click', () => {
   const m = $('#modal');
   m.innerHTML = `<div class="box"><div class="dialog">
-    <h2>💡 Suggest a feature</h2>
+    <h2>${I.bulb} Suggest a feature</h2>
     <p class="muted small">Ideas, bugs, anything that would make the league better. Only the site admin sees it, and you can follow it on your Account page.</p>
     <form id="fbForm" class="grid">
       <div class="fb-filter">${Object.entries(FB_KINDS).map(([k, l], i) => `<label class="chip"><input type="radio" name="kind" value="${k}" ${i ? '' : 'checked'}> ${l}</label>`).join('')}</div>
@@ -141,7 +143,7 @@ $('#fbBtn').addEventListener('click', () => {
     try {
       await post('/feedback', Object.fromEntries(new FormData(e.target)));
       m.hidden = true;
-      toast('💡 Thanks! Your suggestion was sent.', 'good');
+      toast(`${I.bulb} Thanks! Your suggestion was sent.`, 'good');
       if (S.route === 'account') render();
     } catch (err) { fail(err); }
   };
@@ -166,7 +168,7 @@ async function renderFeedback(box) {
   } else {
     const total = Object.values(d.counts).reduce((a, b) => a + b, 0);
     box.innerHTML = `<div class="panel" style="margin-top:18px">
-      <h2>💡 Feedback inbox</h2>
+      <h2>${I.bulb} Feedback inbox</h2>
       <div class="fb-filter">${[['new', 'New'], ['planned', 'Planned'], ['done', 'Done'], ['declined', 'Declined'], ['', 'All']].map(([k, l]) =>
         `<button class="btn sm ghost ${filter === k ? 'sel' : ''}" data-fbf="${k}">${l} · ${k ? d.counts[k] : total}</button>`).join('')}</div>
       ${d.items.length ? `<div class="fb-list">${d.items.map(it => `<div class="fb-item" data-fb="${it.id}">
@@ -222,7 +224,7 @@ async function copyText(text, what = 'List') {
     document.body.append(ta); ta.select();
     document.execCommand('copy'); ta.remove();
   }
-  toast(`📋 ${esc(what)} copied for ${siteName()}. Paste it into ${siteName()}'s import box.`, 'good');
+  toast(`${I.copy} ${esc(what)} copied for ${siteName()}. Paste it into ${siteName()}'s import box.`, 'good');
 }
 
 // ---------------- routing ----------------
@@ -441,9 +443,9 @@ async function renderAccount(view) {
       m.innerHTML = `<div class="box"><div class="dialog"><h2>Reset link for ${esc(b.dataset.name)}</h2>
         <p class="muted">Send this to ${esc(b.dataset.name)}. It works once, for ${r.minutes} minutes.</p>
         <pre class="list" style="white-space:pre-wrap;word-break:break-all">${esc(r.link)}</pre>
-        <div class="row" style="justify-content:flex-end"><button class="btn gold" id="cpy">📋 Copy link</button><button class="btn ghost" id="cls">Close</button></div></div></div>`;
+        <div class="row" style="justify-content:flex-end"><button class="btn gold" id="cpy">${I.copy} Copy link</button><button class="btn ghost" id="cls">Close</button></div></div></div>`;
       m.hidden = false;
-      $('#cpy', m).onclick = async () => { await navigator.clipboard.writeText(r.link).catch(() => {}); toast('📋 Reset link copied', 'good'); };
+      $('#cpy', m).onclick = async () => { await navigator.clipboard.writeText(r.link).catch(() => {}); toast(`${I.copy} Reset link copied`, 'good'); };
       $('#cls', m).onclick = () => { m.hidden = true; };
     } catch (err) { fail(err); }
   });
@@ -451,6 +453,8 @@ async function renderAccount(view) {
 
 // =============== LEAGUE TAB ===============
 const LIMITS = { min: 3, max: 16, podMin: 3, podMax: 4 };
+const FEED_ICONS = { win: 'crown', vote: 'vote', spin: 'wheel', pull: 'spark', clear: 'trash', end: 'flag', league: 'flag', join: 'user', leave: 'x', pod: 'play', rules: 'sliders', discard: 'x', finish: 'check' };
+const LEADING_EMOJI = /^\p{Extended_Pictographic}\uFE0F?\s*/u;
 const fmtWhen = iso => new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 async function refreshLeague() { S.leagueDetail = null; S.history = null; S.pools = null; await Promise.all([loadState(), loadSets()]); render(); }
 
@@ -479,7 +483,7 @@ function wireJoinCreate(view) {
     e.preventDefault();
     try {
       const r = await post('/leagues/join', { code: new FormData(e.target).get('code').trim().toUpperCase() });
-      toast(`Welcome to ${esc(r.league.name)}! 🎉`, 'good');
+      toast(`Welcome to ${esc(r.league.name)}!`, 'good');
       await showLeague(r.league.id);
     } catch (err) { fail(err); }
   });
@@ -520,7 +524,7 @@ async function renderLeague(view) {
         <p>${active ? `Started ${fmtDate(league.createdAt)}${league.createdBy ? ` by ${esc(league.createdBy)}` : ''}.${league.leagueAdmin ? ` League admin: <b>${esc(league.leagueAdmin.username)}</b>.` : ''}` : `Ended ${fmtDate(league.endedAt)}. Its standings, history and pools stay here as an archive.`}
         ${plural(league.members.length, 'player')} of ${lim.max}.</p></div>
       <div class="row">
-        ${league.code && active ? `<div class="code-box" title="Friends join with this code on the League tab"><span class="small muted">Invite code</span><b>${esc(league.code)}</b><button class="btn sm" id="copyCode">📋 Copy</button></div>` : ''}
+        ${league.code && active ? `<div class="code-box" title="Friends join with this code on the League tab"><span class="small muted">Invite code</span><b>${esc(league.code)}</b><button class="btn sm" id="copyCode">${I.copy} Copy</button></div>` : ''}
         ${league.isMember && active ? `<button class="btn danger sm" id="leaveL">Leave league</button>` : ''}
       </div>
     </div>
@@ -529,8 +533,8 @@ async function renderLeague(view) {
     <div class="league-grid">
       <section class="panel" style="overflow-x:auto">
         <h2>Standings</h2>
-        ${standings.some(s => s.pods || s.missed) ? `<table class="standings"><thead><tr><th>Player</th><th class="num">Pods</th><th class="num">Wins</th><th class="num">Win %</th><th class="num" title="Bonus-pack votes won">🗳</th><th class="num" title="Pods missed (absent packs)">Missed</th><th class="num">Packs</th><th class="num">Rares</th><th class="num">Mythics</th></tr></thead>
-          <tbody>${standings.map((s, i) => `<tr class="${s.active ? '' : 'dim'}"><td>${i === 0 && s.wins ? '👑 ' : ''}<b>${esc(s.name)}</b>${s.active ? '' : ' <span class="small">(left)</span>'}</td><td class="num">${s.pods}</td><td class="num">${s.wins}</td><td class="num">${s.pods ? Math.round(s.wins / s.pods * 100) + '%' : '—'}</td><td class="num">${s.voteWins}</td><td class="num">${s.missed}</td><td class="num">${s.packs}</td><td class="num">${s.rares}</td><td class="num">${s.mythics}</td></tr>`).join('')}</tbody></table>`
+        ${standings.some(s => s.pods || s.missed) ? `<table class="standings"><thead><tr><th>Player</th><th class="num">Pods</th><th class="num">Wins</th><th class="num">Win %</th><th class="num" title="Bonus-pack votes won">${I.vote}</th><th class="num" title="Pods missed (absent packs)">Missed</th><th class="num">Packs</th><th class="num">Rares</th><th class="num">Mythics</th></tr></thead>
+          <tbody>${standings.map((s, i) => `<tr class="${s.active ? '' : 'dim'}"><td>${i === 0 && s.wins ? `${I.crown} ` : ''}<b>${esc(s.name)}</b>${s.active ? '' : ' <span class="small">(left)</span>'}</td><td class="num">${s.pods}</td><td class="num">${s.wins}</td><td class="num">${s.pods ? Math.round(s.wins / s.pods * 100) + '%' : '—'}</td><td class="num">${s.voteWins}</td><td class="num">${s.missed}</td><td class="num">${s.packs}</td><td class="num">${s.rares}</td><td class="num">${s.mythics}</td></tr>`).join('')}</tbody></table>`
           : '<p class="muted">No finished pods yet. Standings fill in as pods are finished.</p>'}
       </section>
       <section class="panel">
@@ -552,28 +556,28 @@ async function renderLeague(view) {
           <p class="small muted" style="margin:0">0 turns absent packs or the vote off. Running pods keep the rules they started with.</p>
           <button class="btn gold">Save rules</button>
         </form>` : `<ul class="rules-list">
-          <li>👑 Winner: <b>${plural(r.winnerPacks, 'pack')}</b></li>
+          <li>${I.crown} Winner: <b>${plural(r.winnerPacks, 'pack')}</b></li>
           <li>Everyone else in the pod: <b>${plural(r.loserPacks, 'pack')}</b></li>
-          <li>🗳 Bonus-pack vote: ${r.voteBonus ? `<b>+${plural(r.voteBonus, 'pack')}</b>` : 'off'}</li>
-          <li>📦 Missed a pod: ${r.absentPacks ? `<b>${plural(r.absentPacks, 'pack')}</b> of the spun set` : 'nothing'}</li>
-          <li>🎡 One spin per pod, by the winner. Pods have ${lim.podMin}–${lim.podMax} players.</li>
+          <li>${I.vote} Bonus-pack vote: ${r.voteBonus ? `<b>+${plural(r.voteBonus, 'pack')}</b>` : 'off'}</li>
+          <li>${I.pack} Missed a pod: ${r.absentPacks ? `<b>${plural(r.absentPacks, 'pack')}</b> of the spun set` : 'nothing'}</li>
+          <li>${I.wheel} One spin per pod, by the winner. Pods have ${lim.podMin}–${lim.podMax} players.</li>
         </ul>`}
       </section>
       <section class="panel">
         <h2>Activity</h2>
-        <div class="feed">${events.map(e => `<div class="feed-item"><span class="small dim">${fmtWhen(e.at)}</span><span>${esc(e.text)}</span></div>`).join('') || '<p class="muted">Nothing yet.</p>'}</div>
+        <div class="feed">${events.map(e => `<div class="feed-item"><span>${fmtWhen(e.at)}</span>${I[FEED_ICONS[e.kind] || 'dot']}<span>${esc(e.text.replace(LEADING_EMOJI, ''))}</span></div>`).join('') || '<p class="muted">Nothing yet.</p>'}</div>
       </section>
     </div>
     ${isAdmin() ? `<div class="panel" style="margin-top:18px"><h2>Admin</h2><div class="row">
       ${active ? `<button class="btn" id="newCode">New invite code</button><button class="btn danger" id="endL">End league</button>` : ''}
-      <button class="btn danger" id="delL">🗑 Delete league</button></div>
+      <button class="btn danger" id="delL">${I.trash} Delete league</button></div>
       <p class="small muted" style="margin:8px 0 0">Ending keeps everything as a read-only archive and frees the players to join another league. Deleting removes the league with all its pods, packs and pools.</p></div>` : ''}
     ${joinCreateForms()}`;
   wireJoinCreate(view);
   $('#copyCode', view)?.addEventListener('click', async () => {
     const text = `Join "${league.name}" on Pre-Con Commander: ${location.origin}  (League tab, invite code ${league.code})`;
     try { await navigator.clipboard.writeText(text); } catch { /* shown below anyway */ }
-    toast(`📋 Invite copied: code <b>${esc(league.code)}</b>`, 'good');
+    toast(`${I.copy} Invite copied: code <b>${esc(league.code)}</b>`, 'good');
   });
   $('#leaveL', view)?.addEventListener('click', async () => {
     if (!await confirmBox(`Leave ${esc(league.name)}?`, 'You stop getting packs for missed pods and can join or start another league. Your past pods stay in its history.', 'Leave league', true)) return;
@@ -603,7 +607,7 @@ async function renderLeague(view) {
     try { await post(`/leagues/${league.id}/end`); await refreshLeague(); } catch (err) { fail(err); }
   });
   $('#delL', view)?.addEventListener('click', async () => {
-    if (!await typedConfirm(`Delete ${esc(league.name)}?`, 'This permanently deletes the league with every pod, pack, vote and pool card in it.', 'DELETE', '🗑 Delete league')) return;
+    if (!await typedConfirm(`Delete ${esc(league.name)}?`, 'This permanently deletes the league with every pod, pack, vote and pool card in it.', 'DELETE', `${I.trash} Delete league`)) return;
     try { await del(`/leagues/${league.id}`); S.viewLeague = null; await refreshLeague(); toast('League deleted.', 'good'); } catch (err) { fail(err); }
   });
 }
@@ -613,8 +617,8 @@ async function renderLeague(view) {
 function pendingBanner() {
   if (!S.pending.length || S.viewLeague !== S.myLeagueId) return '';
   return `<div class="panel pending">
-    <h3 style="margin:0 0 8px">📦 ${plural(S.pending.length, 'pack')} waiting for you</h3>
-    <div class="row">${S.pending.map(k => `<a class="chip" href="#packs?pod=${k.podId}&player=${S.me.id}&pack=${k.packId}">${k.status === 'choosing' ? '❔' : icon(k.set)} ${k.status === 'choosing' ? 'Choose a set' : esc(k.set?.name || '')} <span class="dim">· ${esc(k.podName)}${k.absent ? ' (missed)' : ''}</span></a>`).join('')}</div>
+    <h3 style="margin:0 0 8px">${I.pack} ${plural(S.pending.length, 'pack')} waiting for you</h3>
+    <div class="row">${S.pending.map(k => `<a class="chip" href="#packs?pod=${k.podId}&player=${S.me.id}&pack=${k.packId}">${k.status === 'choosing' ? `${I.question}` : icon(k.set)} ${k.status === 'choosing' ? 'Choose a set' : esc(k.set?.name || '')} <span class="dim">· ${esc(k.podName)}${k.absent ? ' (missed)' : ''}</span></a>`).join('')}</div>
   </div>`;
 }
 
@@ -679,12 +683,12 @@ function wirePods(view) {
       e.preventDefault();
       const players = $$('.pf-row', rows).map(r => ({ userId: $('select', r).value, precon: $('.precon', r).value }));
       if (players.some(p => !p.userId)) return toast('Pick a league member for every row (or remove the empty row).', 'err');
-      try { const r = await post('/pods', { players, league: S.league?.id }); S.podId = r.pod.id; await loadState(); render(); toast(`${esc(r.pod.name)} is on. Good luck! 🎲`, 'good'); } catch (err) { fail(err); }
+      try { const r = await post('/pods', { players, league: S.league?.id }); S.podId = r.pod.id; await loadState(); render(); toast(`${esc(r.pod.name)} is on. Good luck!`, 'good'); } catch (err) { fail(err); }
     };
   }
   $$('[data-win]', view).forEach(b => b.onclick = async () => {
     const pod = podById(b.dataset.pod), p = pod.players.find(x => x.id === b.dataset.win);
-    if (!await confirmBox(`Crown <b>${esc(p.name)}</b> the winner?`, `${esc(p.name)} gets ${plural(pod.rules.winnerPacks, 'pack')}, everyone else gets ${pod.rules.loserPacks}, and ${esc(p.name)} spins the wheel for the whole pod.`, 'Crown winner 👑')) return;
+    if (!await confirmBox(`Crown <b>${esc(p.name)}</b> the winner?`, `${esc(p.name)} gets ${plural(pod.rules.winnerPacks, 'pack')}, everyone else gets ${pod.rules.loserPacks}, and ${esc(p.name)} spins the wheel for the whole pod.`, `Crown winner ${I.crown}`)) return;
     try { await post(`/pods/${pod.id}/winner`, { playerId: p.id }); await loadState(); render(); } catch (err) { fail(err); }
   });
   $$('[data-award]', view).forEach(b => b.onclick = async () => {
@@ -705,8 +709,8 @@ function wirePods(view) {
       const r = await post(`/pods/${b.dataset.vote}/vote`, { candidateId: b.dataset.cand });
       S.pods = S.pods.map(x => x.id === r.pod.id ? r.pod : x);
       render();
-      if (r.result === 'tied') toast('🗳 It\'s a tie: re-vote between the tied players.', 'good');
-      if (r.result === 'decided') toast(`🗳 ${esc(nameIn(r.pod, r.pod.vote.winnerId))} wins the bonus pack!`, 'good');
+      if (r.result === 'tied') toast(`${I.vote} It's a tie: re-vote between the tied players.`, 'good');
+      if (r.result === 'decided') toast(`${I.vote} ${esc(nameIn(r.pod, r.pod.vote.winnerId))} wins the bonus pack!`, 'good');
     } catch (err) { fail(err); b.disabled = false; }
   });
   $$('[data-skipvote]', view).forEach(b => b.onclick = async () => {
@@ -749,11 +753,11 @@ async function afterAdminDelete(msg) {
 async function deletePackFlow(podId, pack, owner) {
   const n = pack.cards?.length || 0;
   if (!await confirmBox(`Delete ${esc(owner.name)}'s ${esc(pack.set?.name || '')} pack?`,
-    `The pack is removed from the pod${n ? ` and its <b>${n} cards</b> leave ${esc(owner.name)}'s pool` : ''}. It can't be undone.`, '🗑 Delete pack', true)) return;
+    `The pack is removed from the pod${n ? ` and its <b>${n} cards</b> leave ${esc(owner.name)}'s pool` : ''}. It can't be undone.`, `${I.trash} Delete pack`, true)) return;
   try { await del(`/pods/${podId}/packs/${pack.id}`); await afterAdminDelete('Pack deleted.'); } catch (err) { fail(err); }
 }
 async function deleteCardFlow(c) {
-  if (!await confirmBox(`Remove ${esc(c.name)}?`, `One copy of <b>${esc(c.name)}</b>${c.foil ? ' (foil)' : ''} is removed from the player's pool and from its pack's pulls. It can't be undone.`, '🗑 Remove card', true)) return;
+  if (!await confirmBox(`Remove ${esc(c.name)}?`, `One copy of <b>${esc(c.name)}</b>${c.foil ? ' (foil)' : ''} is removed from the player's pool and from its pack's pulls. It can't be undone.`, `${I.trash} Remove card`, true)) return;
   try { await del(`/pool-cards/${c.id}`); $('#modal').hidden = true; await afterAdminDelete(`${esc(c.name)} removed.`); } catch (err) { fail(err); }
 }
 
@@ -769,16 +773,16 @@ function votePanel(pod) {
   if (!v || pod.status !== 'awarded' && v.status === 'open') return '';
   const past = v.rounds.map(r => roundLine(pod, r)).join('');
   if (v.status === 'done') {
-    return `<div class="vote-box done"><div><b>🗳 ${esc(nameIn(pod, v.winnerId))} won the vote</b> and gets <b>+${v.bonus} pack</b>.</div>${past ? `<details><summary class="small muted">How it went</summary>${past}</details>` : ''}</div>`;
+    return `<div class="vote-box done"><div><b>${I.vote} ${esc(nameIn(pod, v.winnerId))} won the vote</b> and gets <b>+${v.bonus} pack</b>.</div>${past ? `<details><summary class="small muted">How it went</summary>${past}</details>` : ''}</div>`;
   }
   if (v.status === 'skipped') {
-    return `<div class="vote-box done small muted">🗳 ${pod.players.length < 3 ? 'No bonus-pack vote: 2-player pods skip it (each player could only vote for the other).' : 'The bonus-pack vote was skipped by the admin.'}</div>`;
+    return `<div class="vote-box done small muted">${I.vote} ${pod.players.length < 3 ? 'No bonus-pack vote: 2-player pods skip it (each player could only vote for the other).' : 'The bonus-pack vote was skipped by the admin.'}</div>`;
   }
   const cur = v.current;
   const me = pod.players.find(p => p.id === S.me.id);
   const tied = cur.round > 1 ? v.rounds.at(-1).tied : null;
   return `<div class="vote-box">
-    <div class="spread"><h3 style="margin:0">🗳 Bonus pack vote${cur.round > 1 ? ` · re-vote ${cur.round - 1}` : ''}</h3>
+    <div class="spread"><h3 style="margin:0">${I.vote} Bonus pack vote${cur.round > 1 ? ` · re-vote ${cur.round - 1}` : ''}</h3>
       <span class="small muted">${cur.voted.length} of ${pod.players.length} voted</span></div>
     <p class="small muted" style="margin:6px 0 10px">${tied
       ? `Tied between ${tied.map(c => `<b>${esc(nameIn(pod, c))}</b>`).join(' and ')}. Everyone votes again, between them only.`
@@ -797,7 +801,7 @@ async function deletePodFlow(pod) {
   const cards = pod.players.reduce((s, p) => s + p.packs.reduce((t, k) => t + (k.cards?.length || 0), 0), 0);
   if (!await confirmBox(`Delete ${esc(pod.name)} for good?`,
     `This permanently removes ${esc(pod.name)}${pod.status === 'done' ? ' from History' : ''}, its spin and every pack in it${cards ? `, and takes its <b>${cards} opened cards</b> out of the players' pools` : ''}. It can't be undone.`,
-    '🗑 Delete pod', true)) return;
+    `${I.trash} Delete pod`, true)) return;
   try { await del(`/pods/${pod.id}`); S.history = null; S.pools = null; await loadState(); render(); toast(`${esc(pod.name)} deleted.`, 'good'); } catch (err) { fail(err); }
 }
 
@@ -806,8 +810,8 @@ function podPanel(pod) {
   const winner = pod.players.find(p => p.id === pod.winnerId);
   let head;
   if (pod.status === 'playing') head = `Playing since ${new Date(pod.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}. When the game ends, crown the winner.`;
-  else if (voteOpen(pod)) head = `👑 ${esc(winner.name)} won. Now vote for who gets the bonus pack, then ${esc(winner.name)} spins.`;
-  else if (!pod.spin) head = `👑 ${esc(winner.name)} won and spins the wheel for the whole pod.`;
+  else if (voteOpen(pod)) head = `${I.crown} ${esc(winner.name)} won. Now vote for who gets the bonus pack, then ${esc(winner.name)} spins.`;
+  else if (!pod.spin) head = `${I.crown} ${esc(winner.name)} won and spins the wheel for the whole pod.`;
   else head = `${icon(pod.spin.set)} Spun <b>${esc(pod.spin.set.name)}</b>. Everyone opens that set, or sacrifices a pack to pick any set.`;
   return `<div class="panel pod">
     <div class="spread pod-head">
@@ -817,7 +821,7 @@ function podPanel(pod) {
         ${pod.spin ? `<a class="btn gold" href="#packs?pod=${pod.id}">Open packs →</a>` : ''}
         ${member && pod.status === 'awarded' ? `<button class="btn" data-finish="${pod.id}">Finish pod</button>` : ''}
         ${member ? `<button class="btn danger sm" data-discard="${pod.id}">Discard</button>` : ''}
-        ${isAdmin() ? `<button class="btn danger sm" data-delete="${pod.id}" title="Admin: delete this pod permanently">🗑 Delete</button>` : ''}
+        ${isAdmin() ? `<button class="btn danger sm" data-delete="${pod.id}" title="Admin: delete this pod permanently">${I.trash} Delete</button>` : ''}
       </div>
     </div>
     ${votePanel(pod)}
@@ -831,10 +835,10 @@ function absentLine(pod) {
   const n = pod.rules?.absentPacks || 0;
   if (pod.spin) {
     if (!pod.absentees?.length) return '';
-    return `<div class="absent-line small muted">📦 Missed it, ${plural(n, 'pack')} each: ${pod.absentees.map(a => `<a class="chip" href="#packs?pod=${pod.id}&player=${a.id}">${esc(a.name)} · ${a.packs.filter(k => k.status === 'opened').length}/${a.packs.length} opened</a>`).join(' ')}</div>`;
+    return `<div class="absent-line small muted">${I.pack} Missed it, ${plural(n, 'pack')} each: ${pod.absentees.map(a => `<a class="chip" href="#packs?pod=${pod.id}&player=${a.id}">${esc(a.name)} · ${a.packs.filter(k => k.status === 'opened').length}/${a.packs.length} opened</a>`).join(' ')}</div>`;
   }
   const others = S.members.filter(m => !pod.players.some(p => p.id === m.id));
-  return n && others.length ? `<div class="absent-line small muted">📦 ${names(others.map(m => esc(m.username)))} ${others.length === 1 ? 'is' : 'are'} not in this pod and will get ${plural(n, 'pack')} of the spun set.</div>` : '';
+  return n && others.length ? `<div class="absent-line small muted">${I.pack} ${names(others.map(m => esc(m.username)))} ${others.length === 1 ? 'is' : 'are'} not in this pod and will get ${plural(n, 'pack')} of the spun set.</div>` : '';
 }
 const names = list => list.length < 2 ? list.join('') : `${list.slice(0, -1).join(', ')} and ${list.at(-1)}`;
 
@@ -846,13 +850,13 @@ function playerCard(p, pod, member) {
   ].join('') : Array.from({ length: p.awarded }, () => `<span class="pip unspun" title="Waiting for the spin"></span>`).join('');
   const opened = p.packs.filter(k => k.status === 'opened').length;
   return `<div class="pcard ${won ? 'winner' : ''} ${p.id === S.me.id ? 'me' : ''}">
-    ${won ? '<span class="crown">👑</span>' : ''}
+    ${won ? `<span class="crown">${I.crown}</span>` : ''}
     <div>
-      <div class="pname">${esc(p.name)}${p.id === S.me.id ? ' <span class="dim small">(you)</span>' : ''}${pod.vote?.winnerId === p.id ? ' <span class="chip gold" title="Won the bonus-pack vote">🗳 +1</span>' : ''}</div>
+      <div class="pname">${esc(p.name)}${p.id === S.me.id ? ' <span class="dim small">(you)</span>' : ''}${pod.vote?.winnerId === p.id ? ` <span class="chip gold" title="Won the bonus-pack vote">${I.vote} +1</span>` : ''}</div>
       ${p.precon ? `<div class="precon">${esc(p.precon)}</div>` : ''}
     </div>
     ${pod.status === 'playing'
-      ? (member ? `<button class="btn gold" data-pod="${pod.id}" data-win="${p.id}">👑 Won the game</button>` : '<span class="dim small">Playing…</span>')
+      ? (member ? `<button class="btn gold" data-pod="${pod.id}" data-win="${p.id}">${I.crown} Won the game</button>` : '<span class="dim small">Playing…</span>')
       : `<div class="pips">${pips || '<span class="dim small">No packs</span>'}</div>
          <div class="stat-line"><span><b>${pod.spin ? p.packs.length : p.awarded}</b> pack${(pod.spin ? p.packs.length : p.awarded) === 1 ? '' : 's'}</span><span><b>${opened}</b> opened</span>${p.sacrificed ? `<span><b>${p.sacrificed}</b> sacrificed</span>` : ''}</div>
          <div class="row">
@@ -865,7 +869,8 @@ function playerCard(p, pod, member) {
 }
 
 // =============== WHEEL TAB ===============
-const PALETTE = ['#e9dfc4', '#3d7fc6', '#5e4e62', '#c8503a', '#3e9a5b', '#d9a84e', '#2f6aa8', '#7a6380', '#b2432f', '#33804c'];
+const PALETTE = ['#1b1f26', '#ff5b1f', '#2c323c', '#14171c', '#e8e8e2', '#222730', '#3a414d', '#33c9ff', '#181b21'];
+const LIGHT_SEGMENTS = ['#e8e8e2', '#33c9ff', '#ff5b1f'];
 let wheelGeom = [];   // [{code, a0, a1, color}]
 let raf = null, audioCtx = null;
 
@@ -897,28 +902,31 @@ function drawWheel() {
   ctx.save();
   ctx.translate(R, R);
   // outer ring
-  ctx.beginPath(); ctx.arc(0, 0, R - 2, 0, Math.PI * 2);
-  const ring = ctx.createLinearGradient(-R, -R, R, R);
-  ring.addColorStop(0, '#f1cf7d'); ring.addColorStop(1, '#8e6424');
-  ctx.fillStyle = ring; ctx.fill();
+  ctx.beginPath(); ctx.arc(0, 0, R - 1, 0, Math.PI * 2);
+  ctx.fillStyle = '#000'; ctx.fill();
   const r = R - 12;
+  ctx.strokeStyle = '#ff5b1f'; ctx.lineWidth = 2;
+  for (let t = 0; t < 48; t++) {
+    const a = (t / 48) * Math.PI * 2, len = t % 4 ? 3 : 7;
+    ctx.beginPath(); ctx.moveTo(Math.cos(a) * (R - 2), Math.sin(a) * (R - 2)); ctx.lineTo(Math.cos(a) * (R - 2 - len), Math.sin(a) * (R - 2 - len)); ctx.stroke();
+  }
   ctx.rotate(S.rot);
   if (!wheelGeom.length) {
-    ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fillStyle = '#1d2230'; ctx.fill();
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fillStyle = '#1b1f26'; ctx.fill();
   }
   for (const seg of wheelGeom) {
     ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, r, seg.a0, seg.a1); ctx.closePath();
     ctx.fillStyle = seg.color; ctx.fill();
-    if (wheelGeom.length < 400) { ctx.strokeStyle = 'rgba(13,15,20,.55)'; ctx.lineWidth = wheelGeom.length > 120 ? 0.5 : 1.2; ctx.stroke(); }
+    if (wheelGeom.length < 400) { ctx.strokeStyle = '#000'; ctx.lineWidth = wheelGeom.length > 120 ? 0.5 : 1.2; ctx.stroke(); }
     const span = seg.a1 - seg.a0;
     const fontPx = Math.min(16, Math.max(8, span * r * 0.55));
     if (span * r > 9) {
       ctx.save();
       ctx.rotate((seg.a0 + seg.a1) / 2);
-      ctx.fillStyle = ['#e9dfc4', '#d9a84e'].includes(seg.color) ? '#1a1408' : '#f5f1e6';
-      ctx.font = `700 ${fontPx}px Inter, sans-serif`;
+      ctx.fillStyle = LIGHT_SEGMENTS.includes(seg.color) ? '#000' : '#f1f1ec';
+      ctx.font = `700 ${fontPx * 1.1}px 'Barlow Condensed', sans-serif`;
       ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-      const label = span * r > 70 ? (S.setsByCode.get(seg.code)?.name || seg.code.toUpperCase()) : seg.code.toUpperCase();
+      const label = (span * r > 70 ? (S.setsByCode.get(seg.code)?.name || seg.code) : seg.code).toUpperCase();
       const maxW = r * 0.62;
       let text = label;
       while (ctx.measureText(text).width > maxW && text.length > 4) text = text.slice(0, -2);
@@ -930,7 +938,7 @@ function drawWheel() {
   ctx.restore();
   // inner shadow
   const sh = ctx.createRadialGradient(R, R, r * 0.6, R, R, r);
-  sh.addColorStop(0, 'rgba(0,0,0,0)'); sh.addColorStop(1, 'rgba(0,0,0,.28)');
+  sh.addColorStop(0, 'rgba(0,0,0,0)'); sh.addColorStop(1, 'rgba(0,0,0,.35)');
   ctx.beginPath(); ctx.arc(R, R, r, 0, Math.PI * 2); ctx.fillStyle = sh; ctx.fill();
   paintTicker();
 }
@@ -1040,12 +1048,12 @@ function renderWheel(view) {
           <h3>${esc(pod.name)}</h3>
           <p class="small muted" style="margin:0">${pod.status === 'playing' ? 'Still playing. Crown the winner on the Pods tab first.'
             : pod.spin ? `${esc(pod.players.find(p => p.id === pod.spin.by)?.name || winner.name)} spun the wheel. One spin per pod: every pack is this set unless sacrificed.`
-            : voteOpen(pod) ? `🗳 The pod is voting on the bonus pack. <a href="#pods">Vote on the Pods tab</a>; the spin unlocks when it's decided.`
-            : `👑 <b>${esc(winner.name)}</b> spins once for the whole pod.${mayspin ? '' : ' Waiting for them to spin…'}`}</p>
+            : voteOpen(pod) ? `${I.vote} The pod is voting on the bonus pack. <a href="#pods">Vote on the Pods tab</a>; the spin unlocks when it's decided.`
+            : `${I.crown} <b>${esc(winner.name)}</b> spins once for the whole pod.${mayspin ? '' : ' Waiting for them to spin…'}`}</p>
         </div>
         <div id="revealBox"></div>
         ${isAdmin() ? `<details class="panel settings-box" ${store.get('wheelSettingsOpen', false) ? 'open' : ''}>
-          <summary><span>⚙️ Wheel settings <span class="chip gold">admin</span></span><span class="dim small">${S.wheel.length} of ${S.sets.length} sets</span></summary>
+          <summary><span>${I.sliders} Wheel settings <span class="chip gold">admin</span></span><span class="dim small">${S.wheel.length} of ${S.sets.length} sets</span></summary>
           <div class="grid" style="gap:14px">
             <div>
               <div class="small muted" style="margin-bottom:6px">Release years</div>
@@ -1133,13 +1141,13 @@ function renderReveal(pod) {
   const year = (set.released || '').slice(0, 4);
   const rows = people(pod).map(p => {
     const sp = spunPacks(p).length;
-    const status = p.packs.map(k => `<span class="chip">${k.status === 'choosing' ? '❔ choosing' : `${icon(k.set)}${k.source === 'sacrifice' ? '🔥 ' : ''}${k.status === 'opened' ? '✓' : ''}`}</span>`).join('');
+    const status = p.packs.map(k => `<span class="chip">${k.status === 'choosing' ? `${I.question} choosing` : `${icon(k.set)}${k.source === 'sacrifice' ? `${I.flame} ` : ''}${k.status === 'opened' ? '✓' : ''}`}</span>`).join('');
     const mine = canAct(p);
     return `<div class="reveal-row">
-      <div><b>${pod.winnerId === p.id ? '👑 ' : ''}${esc(p.name)}</b>${pod.absentees?.includes(p) ? ' <span class="dim small">missed the pod</span>' : ''}<div class="row" style="gap:4px;margin-top:4px">${status}</div></div>
+      <div><b>${pod.winnerId === p.id ? `${I.crown} ` : ''}${esc(p.name)}</b>${pod.absentees?.includes(p) ? ' <span class="dim small">missed the pod</span>' : ''}<div class="row" style="gap:4px;margin-top:4px">${status}</div></div>
       ${mine ? `<div class="row">
         <a class="btn sm gold" href="#packs?pod=${pod.id}&player=${p.id}">Open</a>
-        ${sp >= 2 ? `<button class="btn sm danger" data-sac="${p.id}">🔥 Sacrifice</button>` : ''}
+        ${sp >= 2 ? `<button class="btn sm danger" data-sac="${p.id}">${I.flame} Sacrifice</button>` : ''}
         ${p.packs.find(k => k.status === 'choosing') ? `<a class="btn sm" href="#sets?pod=${pod.id}&choose=${p.packs.find(k => k.status === 'choosing').id}">Choose set</a>` : ''}
       </div>` : ''}
     </div>`;
@@ -1168,7 +1176,7 @@ async function sacrifice(pod, player, packId) {
   const n = player.packs.length;
   const ok = await confirmBox('Sacrifice a Pack?',
     `${esc(player.name)} gives up 1 of ${plural(sp.length, `${esc(pod.spin.set.name)} pack`)} to pick <b>any set</b> for another one. That leaves ${plural(n - 1, 'pack')}: ${plural(sp.length - 2, `${esc(pod.spin.set.name)} pack`)} and 1 of your choice.`,
-    '🔥 Sacrifice', true);
+    `${I.flame} Sacrifice`, true);
   if (!ok) return;
   try { await post(`/pods/${pod.id}/packs/${pack.id}/sacrifice`); await loadState(); go(`#sets?pod=${pod.id}&choose=${pack.id}`); } catch (err) { fail(err); }
 }
@@ -1185,21 +1193,21 @@ function renderPacks(view) {
   const pulls = p.packs.filter(k => k.status === 'opened').flatMap(k => k.cards);
   view.innerHTML = `
     ${podSwitcher(pod, 'packs')}
-    <div class="player-tabs">${people(pod).map(x => `<a href="#packs?pod=${pod.id}&player=${x.id}" class="${x.id === p.id ? 'sel' : ''}">${pod.winnerId === x.id ? '👑 ' : ''}${esc(x.name)}${pod.absentees?.includes(x) ? ' <span class="dim">· missed</span>' : ''}</a>`).join('')}</div>
+    <div class="player-tabs">${people(pod).map(x => `<a href="#packs?pod=${pod.id}&player=${x.id}" class="${x.id === p.id ? 'sel' : ''}">${pod.winnerId === x.id ? `${I.crown} ` : ''}${esc(x.name)}${pod.absentees?.includes(x) ? ' <span class="dim">· missed</span>' : ''}</a>`).join('')}</div>
     <div class="packs-layout">
       <aside class="grid" style="gap:12px">
         <div class="pack-list">
           ${p.packs.map(k => `<button class="pack-item ${k.id === sel?.id ? 'sel' : ''}" data-k="${k.id}">
-              ${k.status === 'choosing' ? '<span class="set-icon">❔</span>' : icon(k.set)}
+              ${k.status === 'choosing' ? I.question : icon(k.set)}
               <span><div class="t">${k.status === 'choosing' ? 'Pick a set…' : esc(k.set.name)}</div>
-              <div class="s">${k.status === 'opened' ? `Opened · ${k.cards.length} cards` : k.status === 'choosing' ? '🔥 Sacrificed: choose a set' : 'Unopened'}${k.source === 'sacrifice' && k.status !== 'choosing' ? ' · 🔥 chosen' : ''}</div></span>
+              <div class="s">${k.status === 'opened' ? `Opened · ${k.cards.length} cards` : k.status === 'choosing' ? `${I.flame} Sacrificed: choose a set` : 'Unopened'}${k.source === 'sacrifice' && k.status !== 'choosing' ? ` · ${I.flame} chosen` : ''}</div></span>
             </button>`).join('') || `<div class="panel muted small">No packs.</div>`}
-          ${p.sacrificed ? `<div class="small dim" style="padding:4px 8px">🔥 ${plural(p.sacrificed, 'pack')} sacrificed</div>` : ''}
+          ${p.sacrificed ? `<div class="small dim" style="padding:4px 8px">${I.flame} ${plural(p.sacrificed, 'pack')} sacrificed</div>` : ''}
         </div>
         ${pulls.length ? `<div class="panel">
           <h3>All of ${esc(p.name)}'s pulls this pod</h3>
           <p class="small muted" style="margin:0 0 10px">${pulls.length} cards from ${plural(p.packs.filter(k => k.status === 'opened').length, 'pack')}, merged into one list. Everything is also in <a href="#pools?player=${p.id}">${esc(p.name)}'s pool</a>.</p>
-          <button class="btn gold" id="copyAll" style="width:100%">📋 Copy all pulls</button>
+          <button class="btn gold" id="copyAll" style="width:100%">${I.copy} Copy all pulls</button>
           <div style="margin-top:8px">${exportToggle()}</div>
         </div>` : ''}
       </aside>
@@ -1232,7 +1240,7 @@ function renderPackView(el, pack, owner, pod) {
   if (!pack) { el.innerHTML = `<div class="empty"><h2>No packs</h2></div>`; return; }
   const mine = canAct(owner);
   if (pack.status === 'choosing') {
-    el.innerHTML = `<div class="panel empty"><h2>🔥 Pack sacrificed</h2><p>${mine ? `Choose any set for ${esc(owner.name)}'s pack.` : `Waiting for ${esc(owner.name)} to choose a set.`}</p>${mine ? `<a class="btn gold" href="#sets?pod=${pod.id}&choose=${pack.id}">Choose a set →</a>` : ''}</div>`;
+    el.innerHTML = `<div class="panel empty"><h2>${I.flame} Pack sacrificed</h2><p>${mine ? `Choose any set for ${esc(owner.name)}'s pack.` : `Waiting for ${esc(owner.name)} to choose a set.`}</p>${mine ? `<a class="btn gold" href="#sets?pod=${pod.id}&choose=${pack.id}">Choose a set →</a>` : ''}</div>`;
     return;
   }
   const meta = S.setsByCode.get(pack.set.code);
@@ -1247,8 +1255,8 @@ function renderPackView(el, pack, owner, pod) {
       </div>
       <div style="text-align:center">
         ${mine ? `<button class="btn gold big" id="openBtn">Open ${owner.id === S.me.id ? 'your' : `${esc(owner.name)}'s`} pack</button>` : `<p class="muted">Only ${esc(owner.name)} can open this pack.</p>`}
-        ${canSac ? `<div style="margin-top:12px"><button class="btn danger" id="sacBtn">🔥 Sacrifice a Pack</button><div class="sac-note">Give up another ${esc(pack.set.name)} pack and make this one any set.</div></div>` : ''}
-        ${isAdmin() ? `<div style="margin-top:12px"><button class="btn danger sm" id="delPack">🗑 Delete pack (admin)</button></div>` : ''}
+        ${canSac ? `<div style="margin-top:12px"><button class="btn danger" id="sacBtn">${I.flame} Sacrifice a Pack</button><div class="sac-note">Give up another ${esc(pack.set.name)} pack and make this one any set.</div></div>` : ''}
+        ${isAdmin() ? `<div style="margin-top:12px"><button class="btn danger sm" id="delPack">${I.trash} Delete pack (admin)</button></div>` : ''}
         ${meta && !meta.realPack ? `<p class="small dim" style="margin-top:10px">Generated from this set's booster cards: commons, uncommons, a rare (sometimes mythic), and the odd foil.</p>` : ''}
       </div>`;
     $('#sacBtn', el)?.addEventListener('click', () => sacrifice(pod, owner, pack.id));
@@ -1279,12 +1287,12 @@ function renderPackView(el, pack, owner, pod) {
   el.innerHTML = `
     <div class="spread" style="margin-bottom:14px">
       <div class="row">${icon(pack.set, 'lg')}<div><h2 style="margin:0">${esc(pack.set.name)}</h2>
-      <div class="small muted">${esc(owner.name)} · ${esc(pack.boosterType || 'Booster')} · ${cards.length} cards${pack.source === 'sacrifice' ? ' · 🔥 chosen with a sacrifice' : ''}</div></div></div>
+      <div class="small muted">${esc(owner.name)} · ${esc(pack.boosterType || 'Booster')} · ${cards.length} cards${pack.source === 'sacrifice' ? ` · ${I.flame} chosen with a sacrifice` : ''}</div></div></div>
       <div class="row">
         ${animate ? `<button class="btn sm" id="revealAll">Reveal all</button>` : ''}
         ${exportToggle()}
-        <button class="btn gold" id="copyPack">📋 Copy pack list</button>
-        ${isAdmin() ? `<button class="btn danger sm" id="delPack" title="Admin: delete this pack and its pulls">🗑 Delete pack</button>` : ''}
+        <button class="btn gold" id="copyPack">${I.copy} Copy pack list</button>
+        ${isAdmin() ? `<button class="btn danger sm" id="delPack" title="Admin: delete this pack and its pulls">${I.trash} Delete pack</button>` : ''}
       </div>
     </div>
     ${hits.length ? `<div class="row" style="margin-bottom:12px">${hits.map(c => `<span class="chip ${c.rarity === 'mythic' ? 'gold' : ''}">${c.rarity === 'mythic' ? '★' : '◆'} ${esc(c.name)}${c.foil ? ' (foil)' : ''}</span>`).join('')}</div>` : ''}
@@ -1320,8 +1328,8 @@ function cardModal(c) {
       <div class="row">
         ${c.back ? `<button class="btn sm" id="flipBtn">↻ Flip</button>` : ''}
         <a class="btn sm" href="${esc(c.uri)}" target="_blank" rel="noopener">Scryfall ↗</a>
-        <button class="btn sm" id="copyOne" title="Formatted for ${siteName()}">📋 Copy (${siteName()})</button>
-        ${isAdmin() && c.id ? `<button class="btn sm danger" id="delOne">🗑 Remove</button>` : ''}
+        <button class="btn sm" id="copyOne" title="Formatted for ${siteName()}">${I.copy} Copy (${siteName()})</button>
+        ${isAdmin() && c.id ? `<button class="btn sm danger" id="delOne">${I.trash} Remove</button>` : ''}
         <button class="btn sm ghost" id="closeM">Close</button>
       </div></div>`;
     $('#flipBtn', m)?.addEventListener('click', e => { e.stopPropagation(); showBack = !showBack; paint(); });
@@ -1371,7 +1379,7 @@ async function renderPools(view) {
       </div>
       <div class="row">
         ${pool.pods.length ? `<select class="input" id="pp" title="Show cards from one pod"><option value="">All pods</option>${pool.pods.map(x => `<option value="${x.id}" ${poolFilter.pod === x.id ? 'selected' : ''}>${esc(x.name)}${x.status === 'done' ? '' : ' (running)'}</option>`).join('')}</select>` : ''}
-        ${cards.length ? `${exportToggle()}<button class="btn gold" id="copyPool">📋 Copy ${podName ? 'these cards' : 'whole pool'}</button>` : ''}
+        ${cards.length ? `${exportToggle()}<button class="btn gold" id="copyPool">${I.copy} Copy ${podName ? 'these cards' : 'whole pool'}</button>` : ''}
       </div>
     </div>
     ${cards.length ? `
@@ -1386,8 +1394,8 @@ async function renderPools(view) {
     </div>
     <div class="cards" id="poolCards"></div>
     <details class="panel" style="margin-top:18px"><summary class="muted" style="cursor:pointer">Packs in this pool (${packs.length})</summary>
-      <div class="row" style="margin-top:10px">${packs.map(k => `<span class="chip">${icon(k.set)}${esc(k.set.name)}${k.source === 'sacrifice' ? ' 🔥' : ''} <span class="dim">· ${esc(k.podName)}${k.absent ? ' (missed)' : ''} · ${k.cards.length}</span>${isAdmin() ? `<button class="chip-x" data-delpack="${k.podId}:${k.packId}" title="Admin: delete this pack and its pulls">✕</button>` : ''}</span>`).join('')}</div>
-      ${isAdmin() ? '<p class="small dim" style="margin:10px 0 0">Admin: ✕ deletes a whole pack; open a card and use 🗑 Remove to delete a single copy.</p>' : ''}
+      <div class="row" style="margin-top:10px">${packs.map(k => `<span class="chip">${icon(k.set)}${esc(k.set.name)}${k.source === 'sacrifice' ? ` ${I.flame}` : ''} <span class="dim">· ${esc(k.podName)}${k.absent ? ' (missed)' : ''} · ${k.cards.length}</span>${isAdmin() ? `<button class="chip-x" data-delpack="${k.podId}:${k.packId}" title="Admin: delete this pack and its pulls">✕</button>` : ''}</span>`).join('')}</div>
+      ${isAdmin() ? `<p class="small dim" style="margin:10px 0 0">Admin: ✕ deletes a whole pack; open a card and use ${I.trash} Remove to delete a single copy.</p>` : ''}
     </details>` : `<div class="empty"><p>${pool.userId === S.me.id ? 'Your' : `${esc(pool.username)}'s`} pool is empty. Cards show up here as soon as packs are opened.</p></div>`}`;
   $('#copyPool', view)?.addEventListener('click', () => copyText(listFor(cards), `${pool.username}'s pool${podName ? ` from ${podName}` : ''} (${cards.length} cards)`));
   $('#pp', view)?.addEventListener('change', e => { poolFilter.pod = e.target.value; renderPools(view); });
@@ -1426,7 +1434,7 @@ function renderSets(view) {
   const mode = chooseMode ? 'choose:' + choosing.id : 'browse';
   if (mode !== lastSetsMode) { setsFilter = { q: '', type: '', sort: setsFilter.sort === 'chance' && chooseMode ? 'new' : setsFilter.sort, only: '' }; lastSetsMode = mode; }
   view.innerHTML = `
-    ${chooseMode ? `<div class="choose-banner"><div>🔥 <b>${esc(choosing.player.name)}</b> sacrificed a pack. Tap any set for the replacement booster.</div><a class="btn sm ghost" href="#packs?pod=${pod.id}&player=${choosing.player.id}">Back to packs</a></div>` : `
+    ${chooseMode ? `<div class="choose-banner"><div>${I.flame} <b>${esc(choosing.player.name)}</b> sacrificed a pack. Tap any set for the replacement booster.</div><a class="btn sm ghost" href="#packs?pod=${pod.id}&player=${choosing.player.id}">Back to packs</a></div>` : `
       <div class="hero"><div><h1>All Sets${S.league ? ` · ${esc(S.league.name)}` : ''}</h1><p>Every Magic set that came in boosters, and its chance of coming up on ${S.league ? 'this league\'s' : 'the'} wheel (each league has its own). ${edit ? 'As admin you can toggle sets on or off the wheel and change their odds: a weight of 2 makes a set twice as likely as a weight-1 set.' : 'Only the league admin can change which sets are on the wheel and their odds.'}</p></div>
       <div class="row"><span class="chip ok">${S.wheel.length} on the wheel</span>${edit ? '<span class="chip gold">admin</span>' : ''}</div></div>`}
     <div class="set-tools">
@@ -1534,24 +1542,24 @@ async function renderHistory(view) {
   const table = [...stats.values()].sort((a, b) => b.wins - a.wins || b.wins / b.games - a.wins / a.games);
   view.innerHTML = `
     <div class="hero"><div><h1>${esc(S.league?.name || 'League')} History</h1><p>${plural(pods.length, 'pod')} played.</p></div>
-      <div class="row">${exportToggle()}${isAdmin() ? `<button class="btn danger" id="clearHist">🗑 Clear league history</button>` : ''}</div></div>
+      <div class="row">${exportToggle()}${isAdmin() ? `<button class="btn danger" id="clearHist">${I.trash} Clear league history</button>` : ''}</div></div>
     <div class="panel" style="margin-bottom:22px;overflow-x:auto">
       <h2>Standings</h2>
       <table class="standings"><thead><tr><th>Player</th><th class="num">Pods</th><th class="num">Wins</th><th class="num">Win %</th><th class="num">Packs</th><th class="num">Sacrificed</th><th class="num">Rares</th><th class="num">Mythics</th></tr></thead>
-      <tbody>${table.map((s, i) => `<tr><td>${i === 0 && s.wins ? '👑 ' : ''}<b>${esc(s.name)}</b></td><td class="num">${s.games}</td><td class="num">${s.wins}</td><td class="num">${Math.round(s.wins / s.games * 100)}%</td><td class="num">${s.packs}</td><td class="num">${s.sac}</td><td class="num">${s.rares}</td><td class="num">${s.mythics}</td></tr>`).join('')}</tbody></table>
+      <tbody>${table.map((s, i) => `<tr><td>${i === 0 && s.wins ? `${I.crown} ` : ''}<b>${esc(s.name)}</b></td><td class="num">${s.games}</td><td class="num">${s.wins}</td><td class="num">${Math.round(s.wins / s.games * 100)}%</td><td class="num">${s.packs}</td><td class="num">${s.sac}</td><td class="num">${s.rares}</td><td class="num">${s.mythics}</td></tr>`).join('')}</tbody></table>
     </div>
     <div class="grid" style="gap:12px">${pods.map(g => {
       const w = g.players.find(p => p.id === g.winnerId);
       return `<details class="hgame"><summary>
-        <div><b style="font-family:Cinzel">${esc(g.name)} · ${fmtDate(g.finishedAt || g.createdAt)}</b> <span class="muted">· 👑 ${esc(w?.name || '—')}${w?.precon ? ` with ${esc(w.precon)}` : ''}${g.spin ? ` · spun ${esc(g.spin.set.name)}` : ''}${g.vote?.winnerId ? ` · 🗳 ${esc(nameIn(g, g.vote.winnerId))}` : ''}</span></div>
+        <div><b class="hname">${esc(g.name)} · ${fmtDate(g.finishedAt || g.createdAt)}</b> <span class="muted">· ${I.crown} ${esc(w?.name || '—')}${w?.precon ? ` with ${esc(w.precon)}` : ''}${g.spin ? ` · spun ${esc(g.spin.set.name)}` : ''}${g.vote?.winnerId ? ` · ${I.vote} ${esc(nameIn(g, g.vote.winnerId))}` : ''}</span></div>
         <div class="row">${g.spin ? icon(g.spin.set) : ''}${g.players.flatMap(p => p.packs).filter(k => k.source === 'sacrifice' && k.status !== 'choosing').slice(0, 8).map(k => icon(k.set)).join('')}</div>
-      </summary><div class="body">${isAdmin() ? `<div class="spread small muted" style="margin-bottom:8px"><span>Admin: deleting removes this pod from History and its cards from the pools.</span><button class="btn danger sm" data-hdel="${g.id}">🗑 Delete pod</button></div>` : ''}${g.players.map(p => {
+      </summary><div class="body">${isAdmin() ? `<div class="spread small muted" style="margin-bottom:8px"><span>Admin: deleting removes this pod from History and its cards from the pools.</span><button class="btn danger sm" data-hdel="${g.id}">${I.trash} Delete pod</button></div>` : ''}${g.players.map(p => {
         const pulls = p.packs.filter(k => k.status === 'opened').flatMap(k => k.cards);
         const hits = sortForReveal(pulls).reverse().filter(c => c.rarity === 'mythic' || c.rarity === 'rare');
         return `<div class="hplayer">
-          <div class="spread"><div><b>${g.winnerId === p.id ? '👑 ' : ''}${esc(p.name)}</b> ${p.precon ? `<span class="muted small">· ${esc(p.precon)}</span>` : ''}</div>
-          ${pulls.length ? `<button class="btn sm" data-copy="${g.id}:${p.id}">📋 Copy ${pulls.length} pulls</button>` : ''}</div>
-          <div class="row small muted" style="margin-top:6px">${p.packs.map(k => `<span class="chip">${k.status === 'choosing' ? '' : icon(k.set)}${k.status === 'choosing' ? 'unchosen' : esc(k.set.name)}${k.source === 'sacrifice' ? ' 🔥' : ''}${k.status !== 'opened' ? ' (unopened)' : ` · ${k.cards.length}`}${isAdmin() ? `<button class="chip-x" data-delpack="${g.id}:${p.id}:${k.id}" title="Admin: delete this pack and its pulls">✕</button>` : ''}</span>`).join('') || 'No packs'}${p.sacrificed ? `<span class="chip">🔥 ${p.sacrificed} sacrificed</span>` : ''}</div>
+          <div class="spread"><div><b>${g.winnerId === p.id ? `${I.crown} ` : ''}${esc(p.name)}</b> ${p.precon ? `<span class="muted small">· ${esc(p.precon)}</span>` : ''}</div>
+          ${pulls.length ? `<button class="btn sm" data-copy="${g.id}:${p.id}">${I.copy} Copy ${pulls.length} pulls</button>` : ''}</div>
+          <div class="row small muted" style="margin-top:6px">${p.packs.map(k => `<span class="chip">${k.status === 'choosing' ? '' : icon(k.set)}${k.status === 'choosing' ? 'unchosen' : esc(k.set.name)}${k.source === 'sacrifice' ? ` ${I.flame}` : ''}${k.status !== 'opened' ? ' (unopened)' : ` · ${k.cards.length}`}${isAdmin() ? `<button class="chip-x" data-delpack="${g.id}:${p.id}:${k.id}" title="Admin: delete this pack and its pulls">✕</button>` : ''}</span>`).join('') || 'No packs'}${p.sacrificed ? `<span class="chip">${I.flame} ${p.sacrificed} sacrificed</span>` : ''}</div>
           ${hits.length ? `<div class="mini-cards">${hits.map(c => `<img src="${esc(c.image)}" alt="${esc(c.name)}" title="${esc(c.name)}" loading="lazy" data-card="${g.id}:${p.id}:${esc(c.set)}/${esc(c.number)}">`).join('')}</div>` : ''}
         </div>`;
       }).join('')}</div></details>`;
@@ -1566,7 +1574,7 @@ async function renderHistory(view) {
   });
   $('#clearHist', view)?.addEventListener('click', async () => {
     const cards = pods.reduce((s, g) => s + g.players.reduce((t, p) => t + p.packs.reduce((u, k) => u + (k.cards?.length || 0), 0), 0), 0);
-    if (!await typedConfirm('Clear league history?', `This permanently deletes all <b>${plural(pods.length, 'finished pod')}</b> (and any discarded ones), the standings built from them, and their <b>${cards} cards</b> from everyone's pools. Running pods are not touched.`, 'DELETE', '🗑 Clear history')) return;
+    if (!await typedConfirm('Clear league history?', `This permanently deletes all <b>${plural(pods.length, 'finished pod')}</b> (and any discarded ones), the standings built from them, and their <b>${cards} cards</b> from everyone's pools. Running pods are not touched.`, 'DELETE', `${I.trash} Clear history`)) return;
     try { const r = await del('/history' + lq()); await afterAdminDelete(`League history cleared (${plural(r.deletedPods, 'pod')} deleted).`); } catch (err) { fail(err); }
   });
   $$('[data-copy]', view).forEach(b => b.onclick = () => {
@@ -1609,12 +1617,12 @@ function connect() {
             await runSpin(pod.id, pod.spin);
             return;
           }
-          toast(`🎡 ${esc(pod.name)} spun <b>${esc(pod.spin.set.name)}</b> · <a href="#wheel?pod=${pod.id}">see it</a>`, 'good');
+          toast(`${I.wheel} ${esc(pod.name)} spun <b>${esc(pod.spin.set.name)}</b> · <a href="#wheel?pod=${pod.id}">see it</a>`, 'good');
         }
       }
       if ((info.vote === 'tied' || info.vote === 'decided') && Date.now() - (S.justVoted || 0) > 3000) {
         const pod = podById(info.podId);
-        if (pod?.players.some(p => p.id === S.me.id)) toast(info.vote === 'tied' ? `🗳 ${esc(pod.name)}: tie! Re-vote between the tied players.` : `🗳 ${esc(pod.name)}: ${esc(nameIn(pod, pod.vote.winnerId))} wins the bonus pack.`, 'good');
+        if (pod?.players.some(p => p.id === S.me.id)) toast(info.vote === 'tied' ? `${I.vote} ${esc(pod.name)}: tie! Re-vote between the tied players.` : `${I.vote} ${esc(pod.name)}: ${esc(nameIn(pod, pod.vote.winnerId))} wins the bonus pack.`, 'good');
       }
       if (S.spinning || S.opening) return;
       // Don't yank the page out from under someone mid-reveal or typing.
@@ -1630,7 +1638,7 @@ function connect() {
   es.addEventListener('feedback', async e => {
     const info = JSON.parse(e.data || '{}');
     const mine = info.authorId === S.me?.id;
-    if (mine && info.status && info.status !== 'new') toast(`💡 Your suggestion was marked <b>${FB_STATUS[info.status] || esc(info.status)}</b>. <a href="#account">See it</a>`, 'good');
+    if (mine && info.status && info.status !== 'new') toast(`${I.bulb} Your suggestion was marked <b>${FB_STATUS[info.status] || esc(info.status)}</b>. <a href="#account">See it</a>`, 'good');
     if (!isAdmin() && !mine) return;
     if (isAdmin()) await loadState().catch(() => {});
     const typing = document.activeElement && ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName);
