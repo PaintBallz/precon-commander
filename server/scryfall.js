@@ -1,19 +1,26 @@
 // Scryfall access: set list, per-set card pools, and card lookups by set/number.
-// Scryfall asks for <=10 req/s, a User-Agent and an Accept header, so every
-// request goes through one queue spaced 110 ms apart.
+// Scryfall asks for <=10 req/s (2 req/s for card search/collection lookups), a
+// User-Agent and an Accept header, so every request goes through one queue:
+// 110 ms apart, 550 ms after a search/collection call. A 429 is retried after
+// a pause (twice) instead of failing the lookup.
 import { cacheGetMany, cachePut, poolGet, poolPut, kvGet, kvSet } from './db.js';
 
 const BASE = process.env.SCRYFALL_BASE || 'https://api.scryfall.com';
 const HEADERS = { 'User-Agent': process.env.SCRYFALL_USER_AGENT || 'PreconCommander/1.0 (+https://github.com/PaintBallz/precon-commander)', Accept: 'application/json' };
 
 let chain = Promise.resolve();
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 function sfFetch(url, opts = {}) {
+  const slow = /\/cards\/(collection|search|named|random)/.test(url);
   const run = chain.then(async () => {
-    const res = await fetch(url.startsWith('http') ? url : BASE + url, { ...opts, headers: { ...HEADERS, ...(opts.headers || {}) } });
-    await new Promise(r => setTimeout(r, 110));
-    if (res.status === 404) return null;
-    if (!res.ok) throw new Error(`Scryfall ${res.status} for ${url}`);
-    return res.json();
+    for (let attempt = 0; ; attempt++) {
+      const res = await fetch(url.startsWith('http') ? url : BASE + url, { ...opts, headers: { ...HEADERS, ...(opts.headers || {}) } });
+      await sleep(slow ? 550 : 110);
+      if (res.status === 429 && attempt < 2) { await sleep(1000 * (attempt + 1)); continue; }
+      if (res.status === 404) return null;
+      if (!res.ok) throw new Error(`Scryfall ${res.status} for ${url}`);
+      return res.json();
+    }
   });
   chain = run.catch(() => {});
   return run;

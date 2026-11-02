@@ -26,7 +26,7 @@ import {
   logEvent, leagueEvents, migrateToLeagues,
 } from './leagues.js';
 import { getBoosterSets, BOOSTER_SET_TYPES } from './scryfall.js';
-import { openPack, hasRealPack, realPackKind, localPackSets } from './packs.js';
+import { openPack, hasRealPack, realPackKind, localPackSets, sheetOdds } from './packs.js';
 import { requireAuth, requireAdmin, authRoutes, seedAdmin, listUsers, getUser } from './auth.js';
 import { feedbackRoutes, newFeedbackCount } from './feedback.js';
 
@@ -785,6 +785,14 @@ app.post('/api/fun/open', wrap(async (req, res) => {
   const packs = [];
   for (let i = 0; i < count; i++) packs.push(await openPack(set));
   res.json({ set: { code: set.code, name: set.name, icon: set.icon, released: set.released, type: set.type }, pack: packs[0], packs });
+}));
+
+// What a set's print sheets should produce, to compare a batch against.
+app.get('/api/fun/odds/:code', wrap(async (req, res) => {
+  const code = String(req.params.code || '').toLowerCase();
+  const set = (await allSets()).find(s => s.code === code);
+  if (!set) throw new HttpError(404, 'Unknown set.');
+  res.json((await sheetOdds(code)) || { real: false });
 }));
 
 // ---------- feedback ----------

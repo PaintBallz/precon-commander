@@ -29,6 +29,9 @@ phones, and every phone sees spins, votes and packs live.
   layout for that era. Open 1, 3, 6, 12, 24 or 36 packs (a box) at once to test a set's sheets:
   multiple packs open face up, as card images or a compact list with each card's set number and
   slot.
+  A **Stats** view compares the batch with the set's print sheets: rarity mix and most-pulled
+  charts, each slot's rarity mix vs the sheet, every card's count vs its expected count (flagging
+  ones that come up far too often or aren't on the sheets), and how much of each sheet was seen.
 - **Pools**: each player's pulls in a league, grouped, searchable, filterable by pod.
 - **Copy for Moxfield or Archidekt**: one-tap deck-list export in either site's import format,
   foils included (`1 Name (SET) 123 *F*` / `1x Name (set) 123 *F*`).

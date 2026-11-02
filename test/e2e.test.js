@@ -837,6 +837,16 @@ test('fun packs: any set, explained, never saved', async () => {
   assert.equal(r.packs.length, 6);
   assert.ok(r.packs.every(p => p.cards.length === 15 && p.explain.source === 'real'));
   assert.ok(new Set(r.packs.map(p => p.cards.map(c => c.number).join())).size > 1, 'packs differ');
+  assert.ok(r.packs.every(p => p.explain.slots.every(sl => sl.sheet)), 'slots name their sheet');
+  // Sheet odds for the stats view: what a set's sheets should give per pack.
+  const odds = await ok(mike.get('/api/fun/odds/lea'));
+  assert.equal(odds.real, true);
+  assert.equal(odds.foilChance, 0);
+  assert.equal(Math.round(Object.values(odds.cards).reduce((s, c) => s + c.exp, 0)), 15, 'expected copies add up to a pack');
+  assert.ok(odds.sheets.every(sh => sh.appear === 1 && sh.keys.length === sh.size || sh.keys.length <= sh.size));
+  assert.ok(r.packs.flatMap(p => p.cards).every(c => odds.cards[`${c.set}/${c.number}${c.foil ? '/f' : ''}`]), 'every pulled card is on a sheet');
+  assert.deepEqual(await ok(mike.get('/api/fun/odds/fbb')), { real: false }, 'generated sets have no sheet odds');
+  assert.equal((await mike.get('/api/fun/odds/nope')).status, 404);
   assert.equal(JSON.stringify((await ok(mike.get('/api/pools'))).pools), before, 'pools are untouched');
   const { events } = await ok(mike.get(`/api/leagues/${S.league}`));
   assert.ok(events.every(e => !/fun pack/i.test(e.text)) && events.length === eventsBefore, 'nothing in the feed');

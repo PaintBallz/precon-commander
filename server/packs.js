@@ -75,7 +75,7 @@ async function openRealPack(code) {
     const foil = info.foil ?? slot.sheet.includes('foil');
     const first = picks.length;
     for (const c of drawFromSheet(sheet, slot.count, info)) picks.push({ set: c.set, number: String(c.number), name: c.name, foil, slot: slot.sheet });
-    slots.push({ label: sheetLabel(slot.sheet), count: slot.count, poolSize: sheet.length, cards: range(first, picks.length) });
+    slots.push({ sheet: slot.sheet, label: sheetLabel(slot.sheet), count: slot.count, poolSize: sheet.length, cards: range(first, picks.length) });
   }
   const looked = await lookupCards(picks);
   const cards = picks.map(p => {
@@ -189,6 +189,69 @@ async function openGeneratedPack(code, released) {
     generated: true,
     explain,
   };
+}
+
+// What a set's real print sheets should produce, for the Fun Packs stats:
+// per sheet, how often it's in a pack, how many cards it gives and its rarity
+// mix (by weight); per card, the expected copies per pack. Card keys match
+// opened cards: "set/number", plus "/f" from a foil sheet. Null for sets
+// without real sheets. Rarities come from Scryfall (cached), so the first
+// call for a big sheet can take a few seconds; the result is kept in memory.
+const oddsCache = new Map();
+export async function sheetOdds(code) {
+  if (!realPacks.has(code)) return null;
+  if (oddsCache.has(code)) return oddsCache.get(code);
+  const { file, kind } = realPacks.get(code);
+  const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const totalWeight = data.variants.reduce((s, v) => s + v.weight, 0);
+  const used = new Map(); // sheet -> { appear, perPack }
+  let foilChance = 0;
+  for (const v of data.variants) {
+    const chance = v.weight / totalWeight;
+    let hasFoil = false;
+    for (const slot of v.slots) {
+      const u = used.get(slot.sheet) || { appear: 0, perPack: 0 };
+      u.appear += chance; u.perPack += chance * slot.count;
+      used.set(slot.sheet, u);
+      const info = data.sheetInfo?.[slot.sheet] || {};
+      if (info.foil ?? slot.sheet.includes('foil')) hasFoil = true;
+    }
+    if (hasFoil) foilChance += chance;
+  }
+  const entries = [...used.keys()].flatMap(name => (data.sheets[name] || []).map(c => ({ set: c.set, number: String(c.number), name: c.name })));
+  const looked = await lookupCards(entries);
+  const cards = new Map(); // key -> { name, set, number, rarity, foil, exp }
+  const sheets = [];
+  for (const [name, u] of used) {
+    const sheet = data.sheets[name] || [];
+    const info = data.sheetInfo?.[name] || {};
+    const foil = info.foil ?? name.includes('foil');
+    const total = sheet.reduce((s, c) => s + (c.weight || 1), 0) || 1;
+    const mix = {};
+    const keys = [];
+    sheet.forEach((c, i) => {
+      const s = looked.get(`${c.set}/${c.number}`);
+      const number = s?.number || String(c.number).replace(/^(\d+)[a-z]$/, '$1');
+      const rarity = s?.rarity || guessRarity(name);
+      const key = `${c.set}/${number}${foil ? '/f' : ''}`;
+      // A fixed sheet always gives its first `count` cards; otherwise by weight.
+      const share = info.fixed ? (i < u.perPack / Math.max(u.appear, 1e-9) ? u.appear : 0) : u.perPack * (c.weight || 1) / total;
+      const card = cards.get(key) || { name: s?.name || c.name, set: c.set, number, rarity, foil, exp: 0 };
+      card.exp += share;
+      cards.set(key, card);
+      mix[rarity] = (mix[rarity] || 0) + (c.weight || 1) / total;
+      keys.push(key);
+    });
+    sheets.push({ sheet: name, label: sheetLabel(name), foil, appear: u.appear, perPack: u.perPack, size: sheet.length, mix, keys: [...new Set(keys)] });
+  }
+  const unresolved = new Set(entries.filter(e => !looked.has(`${e.set}/${e.number}`) && !looked.has(`${e.set}/${e.number.replace(/^(\d+)[a-z]$/, '$1')}`)).map(e => `${e.set}/${e.number}`)).size;
+  const odds = {
+    real: true, kind, boosterType: KIND_LABEL[kind], layouts: data.variants.length, foilChance,
+    unresolved, sheets, cards: Object.fromEntries(cards),
+  };
+  // Only keep a complete answer: cards Scryfall didn't return have guessed rarities.
+  if (!unresolved) oddsCache.set(code, odds);
+  return odds;
 }
 
 export async function openPack(set) {

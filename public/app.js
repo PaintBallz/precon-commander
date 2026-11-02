@@ -1486,7 +1486,8 @@ function renderFunPack(el, result) {
 // or a compact list for checking sheets), with one shared "how it's built".
 function renderFunBatch(el, result) {
   const { set, packs } = result;
-  const list = store.get('funView', 'cards') === 'list';
+  const mode = ['cards', 'list', 'stats'].includes(store.get('funView', 'cards')) ? store.get('funView', 'cards') : 'cards';
+  const list = mode === 'list';
   const all = packs.flatMap(p => p.cards);
   const count = pred => all.filter(pred).length;
   const sorted = packs.map(p => sortForReveal(p.cards));
@@ -1519,7 +1520,7 @@ function renderFunBatch(el, result) {
         <div class="small muted">${esc(packs[0].boosterType || 'Booster')} · ${packs.length} packs · ${all.length} cards · <b>just for fun, not saved</b></div></div></div>
       <div class="row">
         <div class="fun-seg" role="group" aria-label="View">
-          <button type="button" data-v="cards" class="${list ? '' : 'sel'}" aria-pressed="${!list}">Cards</button><button type="button" data-v="list" class="${list ? 'sel' : ''}" aria-pressed="${list}">List</button>
+          ${[['cards', 'Cards'], ['list', 'List'], ['stats', 'Stats']].map(([v, t]) => `<button type="button" data-v="${v}" class="${mode === v ? 'sel' : ''}" aria-pressed="${mode === v}">${t}</button>`).join('')}
         </div>
         <button class="btn gold" id="funAgain">Open ${packs.length} more</button>
       </div>
@@ -1531,7 +1532,7 @@ function renderFunBatch(el, result) {
       <span class="chip">${count(c => c.rarity === 'common')} common</span>
       <span class="chip">✦ ${count(c => c.foil)} foil</span>
     </div>
-    <div class="fun-packs">${packs.map(block).join('')}</div>
+    ${mode === 'stats' ? '<div id="funStats"><div class="spinner"></div></div>' : `<div class="fun-packs">${packs.map(block).join('')}</div>`}
     <div class="panel fun-built">
       <h2>How these packs were built</h2>
       <p class="muted" style="margin-top:0">${esc(x.summary || '')}</p>
@@ -1548,6 +1549,142 @@ function renderFunBatch(el, result) {
     $$('.mcard', sec).forEach(m => m.onclick = () => cardModal(sorted[n][Number(m.dataset.i)]));
     $$('tr[data-c]', sec).forEach(tr => tr.onclick = () => cardModal(packs[n].cards[Number(tr.dataset.c)]));
   });
+  if (mode === 'stats') loadFunStats($('#funStats', el), result);
+}
+
+// =============== FUN PACKS: STATS ===============
+// Compares a batch with what the set's print sheets should produce: rarity mix,
+// each slot's mix, how often each card came up, and how much of each sheet was seen.
+const RARITIES = ['common', 'uncommon', 'rare', 'mythic'];
+const fmt1 = n => (Math.round(n * 10) / 10).toLocaleString();
+// P(X >= k) for X ~ Poisson(lam): how surprising a card's count is.
+const poissonAtLeast = (lam, k) => { let p = Math.exp(-lam), cdf = 0; for (let i = 0; i < k; i++) { cdf += p; p *= lam / (i + 1); } return Math.max(0, 1 - cdf); };
+const cardKey = c => `${c.set}/${c.number}${c.foil ? '/f' : ''}`;
+
+async function loadFunStats(box, result) {
+  const code = result.set.code;
+  const cache = S.fun.odds ||= {};
+  if (!cache[code]) {
+    try { const o = await api(`/fun/odds/${code}`); if (o.unresolved) { if (box.isConnected) renderFunStats(box, result, o); return; } cache[code] = o; }
+    catch (err) { box.innerHTML = `<div class="panel empty"><p>Couldn't load the sheet odds: ${esc(err.message)}</p></div>`; return; }
+  }
+  if (!box.isConnected) return;
+  renderFunStats(box, result, cache[code]);
+}
+
+function renderFunStats(box, { packs }, odds) {
+  const N = packs.length;
+  const real = !!odds?.real;
+  const all = packs.flatMap(p => p.cards);
+  // Observed: copies per card, and per sheet the packs it was in and the cards it gave.
+  const pulled = new Map();
+  for (const c of all) { const k = cardKey(c); const e = pulled.get(k) || { card: c, n: 0 }; e.n++; pulled.set(k, e); }
+  const bySheet = new Map();
+  for (const p of packs) {
+    const seen = new Set();
+    for (const sl of p.explain?.slots || []) {
+      const id = sl.sheet || sl.label;
+      const o = bySheet.get(id) || { label: sl.label, packs: 0, cards: [] };
+      if (!seen.has(id)) { o.packs++; seen.add(id); }
+      o.cards.push(...sl.cards.map(i => p.cards[i]).filter(Boolean));
+      bySheet.set(id, o);
+    }
+  }
+  const foilPacks = packs.filter(p => p.cards.some(c => c.foil)).length;
+
+  // Expected rarity totals for the batch, from each sheet's weighted mix.
+  const expRarity = Object.fromEntries(RARITIES.map(r => [r, real ? N * odds.sheets.reduce((s, sh) => s + sh.perPack * (sh.mix[r] || 0), 0) : null]));
+  const obsRarity = Object.fromEntries(RARITIES.map(r => [r, all.filter(c => c.rarity === r).length]));
+
+  // A horizontal bar with an optional expected tick; both on one shared scale.
+  const bar = (value, exp, max, cls, tip) => `<div class="fs-bar" title="${esc(tip)}"><i class="${cls}" style="width:${Math.max(value / max * 100, value ? 1 : 0)}%"></i>${exp != null ? `<s style="left:${Math.min(exp / max * 100, 100)}%"></s>` : ''}</div>`;
+  const legend = real ? `<div class="fs-legend"><span><i class="fs-sw"></i>Pulled</span><span><s></s>Expected</span></div>` : '';
+
+  const rarityMax = Math.max(1, ...RARITIES.map(r => Math.max(obsRarity[r], expRarity[r] || 0)));
+  const rarityChart = RARITIES.filter(r => obsRarity[r] || expRarity[r]).map(r => `
+    <div class="fs-row"><span class="fs-lbl">${r}</span>
+      ${bar(obsRarity[r], expRarity[r], rarityMax, `v-${r}`, `${r}: ${obsRarity[r]} pulled${real ? `, ${fmt1(expRarity[r])} expected` : ''}`)}
+      <span class="fs-val num">${obsRarity[r]}${real ? `<em> / ${fmt1(expRarity[r])}</em>` : ''}</span></div>`).join('');
+
+  // Per card: copies vs expected copies; flag counts the sheet makes very unlikely.
+  const freq = [...pulled.entries()].map(([k, e]) => {
+    const ex = real ? odds.cards[k] : null;
+    const exp = ex ? ex.exp * N : null;
+    const p = exp != null ? poissonAtLeast(exp, e.n) : null;
+    const flag = real && !ex ? 'missing' : (p != null && e.n >= 3 && p < 0.001 ? 'high' : '');
+    return { k, ...e, exp, p, ratio: exp ? e.n / exp : null, flag };
+  }).sort((a, b) => (!!b.flag - !!a.flag) || (a.p ?? 1) - (b.p ?? 1) || b.n - a.n);
+  const flagged = freq.filter(f => f.flag);
+  const top = [...freq].sort((a, b) => b.n - a.n || (b.exp ?? 0) - (a.exp ?? 0)).slice(0, 12);
+  const topMax = Math.max(1, ...top.map(f => Math.max(f.n, f.exp || 0)));
+  const topChart = top.map(f => `
+    <div class="fs-row"><span class="fs-lbl fs-name" title="${esc(f.card.name)}">${esc(f.card.name)}${f.card.foil ? ' ✦' : ''}</span>
+      ${bar(f.n, f.exp, topMax, `v-${f.card.rarity}`, `${f.card.name}: ${f.n} pulled${f.exp != null ? `, ${fmt1(f.exp)} expected` : ''}`)}
+      <span class="fs-val num">${f.n}${f.exp != null ? `<em> / ${fmt1(f.exp)}</em>` : ''}</span></div>`).join('');
+
+  // Each slot's rarity mix, pulled vs the sheet's, as two stacked bars.
+  const stack = mix => `<div class="fs-stack">${RARITIES.filter(r => mix[r] > 0).map(r => `<i class="v-${r}" style="flex:${mix[r]}" title="${r}: ${Math.round(mix[r] * 100)}%"></i>`).join('')}</div>`;
+  const sheetRows = real ? odds.sheets : [...bySheet.entries()].map(([id, o]) => ({ sheet: id, label: o.label }));
+  const slotCards = sheetRows.map(sh => {
+    const o = bySheet.get(sh.sheet) || { packs: 0, cards: [] };
+    const obsMix = Object.fromEntries(RARITIES.map(r => [r, o.cards.length ? o.cards.filter(c => c.rarity === r).length / o.cards.length : 0]));
+    const off = real && o.cards.length >= 10 && RARITIES.some(r => Math.abs(obsMix[r] - (sh.mix[r] || 0)) > 0.15);
+    const parts = RARITIES.filter(r => obsMix[r] || (real && sh.mix[r])).map(r => `${r} ${Math.round(obsMix[r] * 100)}%${real ? ` <em>(exp ${Math.round((sh.mix[r] || 0) * 100)}%)</em>` : ''}`);
+    return `<div class="fs-slot ${off ? 'off' : ''}">
+      <div class="fs-slot-head"><b>${esc(sh.label)}</b>${sh.foil ? ' <span class="fun-foil">✦ foil</span>' : ''}${off ? ' <span class="chip st-planned">Off target</span>' : ''}
+        <span class="small muted">${o.cards.length} cards · in ${o.packs} of ${N} packs${real && sh.appear < 0.999 ? ` <em>(exp ${fmt1(sh.appear * N)})</em>` : ''}</span></div>
+      ${o.cards.length ? `<div class="fs-pair"><span class="fs-k">Pulled</span>${stack(obsMix)}</div>` : ''}
+      ${real ? `<div class="fs-pair"><span class="fs-k">Expected</span>${stack(sh.mix)}</div>` : ''}
+      <div class="small muted">${parts.join(' · ')}</div>
+    </div>`;
+  }).join('');
+
+  // How much of each sheet showed up, and what didn't.
+  const coverage = real ? odds.sheets.map(sh => {
+    const missing = sh.keys.filter(k => !pulled.has(k));
+    const seen = sh.keys.length - missing.length;
+    return `<div class="fs-cov">
+      <div class="fs-row"><span class="fs-lbl fs-name">${esc(sh.label)}${sh.foil ? ' ✦' : ''}</span>
+        ${bar(seen, null, Math.max(sh.keys.length, 1), 'v-cov', `${seen} of ${sh.keys.length} cards seen`)}
+        <span class="fs-val num">${seen}<em> / ${sh.keys.length}</em></span></div>
+      ${missing.length ? `<details><summary class="small muted">Not pulled yet (${missing.length})</summary>
+        <p class="small fs-missing">${missing.slice(0, 300).map(k => { const c = odds.cards[k]; return `<span class="fun-card r-${esc(c.rarity)}">${esc(c.name)}</span>`; }).join(', ')}${missing.length > 300 ? ` … and ${missing.length - 300} more` : ''}</p></details>` : ''}
+    </div>`;
+  }).join('') : '';
+
+  const freqRow = f => `<tr class="${f.flag ? 'flag' : ''}"><td><span class="fun-card r-${esc(f.card.rarity)}">${esc(f.card.name)}</span>${f.card.foil ? ' <span class="fun-foil">✦ foil</span>' : ''}</td>
+    <td class="mono">${esc(f.card.set.toUpperCase())} ${esc(f.card.number)}</td><td class="fun-card r-${esc(f.card.rarity)}">${esc(f.card.rarity)}</td>
+    <td class="num">${f.n}</td>${real ? `<td class="num">${f.exp != null ? fmt1(f.exp) : '–'}</td><td class="num">${f.ratio != null ? `×${fmt1(f.ratio)}` : '–'}</td>
+    <td>${f.flag === 'high' ? '<span class="chip st-planned">Too often</span>' : f.flag === 'missing' ? '<span class="chip st-planned">Not on sheet</span>' : ''}</td>` : ''}</tr>`;
+  const SHOW = 40;
+
+  box.innerHTML = `
+    ${real && odds.unresolved ? `<p class="small muted">${I.question} Scryfall didn't return ${plural(odds.unresolved, 'card')} on this set's sheets just now, so their rarities are guessed. Switch views and back to retry.</p>` : ''}
+    ${real ? '' : `<p class="small muted">This set has no real print sheets (its packs are generated), so there are no expected odds to compare with: these are the pulls only.</p>`}
+    <div class="fs-tiles">
+      <div class="fs-tile"><b class="num">${N}</b><span>packs</span></div>
+      <div class="fs-tile"><b class="num">${all.length}</b><span>cards</span></div>
+      <div class="fs-tile"><b class="num">${pulled.size}</b><span>different cards</span></div>
+      <div class="fs-tile"><b class="num">${foilPacks}</b><span>packs with a foil${real ? ` <em>exp ${fmt1(odds.foilChance * N)}</em>` : ''}</span></div>
+      ${real ? `<div class="fs-tile ${flagged.length ? 'warn' : 'good'}"><b class="num">${flagged.length}</b><span>${flagged.length ? 'cards flagged' : 'cards flagged: all within odds'}</span></div>` : ''}
+    </div>
+    <div class="fs-grid">
+      <section class="panel"><h2>Rarity mix</h2>${legend}<div class="fs-chart">${rarityChart}</div></section>
+      <section class="panel"><h2>Most pulled cards</h2>${legend}<div class="fs-chart">${topChart}</div></section>
+    </div>
+    <section class="panel fs-sec"><h2>Slot odds check</h2>
+      <p class="small muted" style="margin-top:0">${real ? `Each slot's rarity mix in this batch against its print sheet (by weight). A slot is marked <b>Off target</b> when a rarity is more than 15 points off with at least 10 cards pulled; small batches drift, so open more packs before reading much into it.` : `Each slot's rarity mix in this batch.`}</p>
+      <div class="fs-key">${RARITIES.map(r => `<span><i class="v-${r}"></i>${r}</span>`).join('')}</div>
+      <div class="fs-slots">${slotCards}</div></section>
+    <section class="panel fs-sec"><h2>Card frequency</h2>
+      <p class="small muted" style="margin-top:0">${real ? `How many times each card came up against the copies its sheets should give in ${N} packs (sheet weight × slot size, roughly), most surprising first. <b>Too often</b> means a count that's less than 0.1% likely by chance; <b>Not on sheet</b> means the card isn't on any of this booster's sheets.` : `How many times each card came up.`}</p>
+      <div class="fs-scroll"><table class="standings fun-rows fs-freq"><thead><tr><th>Card</th><th>Set · No.</th><th>Rarity</th><th class="num">Pulled</th>${real ? '<th class="num">Expected</th><th class="num">Ratio</th><th></th>' : ''}</tr></thead>
+        <tbody>${freq.slice(0, SHOW).map(freqRow).join('')}</tbody></table></div>
+      ${freq.length > SHOW ? `<button class="btn sm" id="fsAll">Show all ${freq.length} cards</button>` : ''}</section>
+    ${real ? `<section class="panel fs-sec"><h2>Sheet coverage</h2>
+      <p class="small muted" style="margin-top:0">How many of each sheet's cards showed up at least once in this batch.</p>
+      ${coverage}</section>` : ''}`;
+  $('#fsAll', box)?.addEventListener('click', e => { $('.fs-freq tbody', box).innerHTML = freq.map(freqRow).join(''); e.target.remove(); });
 }
 
 function cardModal(c) {

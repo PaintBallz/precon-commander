@@ -480,6 +480,50 @@ tr.dim td { color: var(--dim); }
 .fun-rows tbody tr { cursor: pointer; }
 .fun-rows tbody tr:hover td { background: var(--panel2); }
 .fun-rows td { padding-top: 5px; padding-bottom: 5px; }
+/* Fun Packs stats. Chart colours are their own validated set (not the text
+   rarity colours): common blue, uncommon teal, rare gold, mythic magenta. */
+#funStats { --v-common: #3987e5; --v-uncommon: #199e70; --v-rare: #c98500; --v-mythic: #d55181; --v-tick: #e8e8e2; }
+.v-common { background: var(--v-common); } .v-uncommon { background: var(--v-uncommon); }
+.v-rare { background: var(--v-rare); } .v-mythic { background: var(--v-mythic); } .v-cov { background: var(--cyan); }
+.fs-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.fs-tile { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--line2); padding: 10px 12px; display: flex; flex-direction: column; gap: 2px; }
+.fs-tile b { font-size: 1.6rem; line-height: 1.1; }
+.fs-tile span { color: var(--muted); font-size: .85rem; }
+.fs-tile em, .fs-val em, .fs-slot em { font-style: normal; color: var(--dim); }
+.fs-tile.warn { border-left-color: var(--accent); } .fs-tile.good { border-left-color: var(--ok); }
+.fs-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; margin-bottom: 14px; }
+.fs-grid h2, .fs-sec h2 { margin-top: 0; }
+.fs-sec { margin-bottom: 14px; }
+.fs-legend, .fs-key { display: flex; gap: 14px; flex-wrap: wrap; font-size: .8rem; color: var(--muted); margin-bottom: 10px; text-transform: capitalize; }
+.fs-legend span, .fs-key span { display: inline-flex; align-items: center; gap: 6px; }
+.fs-legend .fs-sw { width: 14px; height: 8px; border-radius: 0 4px 4px 0; background: var(--muted); display: inline-block; }
+.fs-legend s { width: 2px; height: 12px; background: var(--v-tick); display: inline-block; }
+.fs-key i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.fs-chart { display: grid; gap: 8px; }
+.fs-row { display: grid; grid-template-columns: minmax(70px, 140px) minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+.fs-lbl { font-size: .85rem; color: var(--muted); text-transform: capitalize; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fs-name { text-transform: none; color: var(--text); }
+.fs-val { font-size: .85rem; min-width: 54px; text-align: right; }
+.fs-bar { position: relative; height: 12px; }
+.fs-bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 0 4px 4px 0; }
+.fs-bar s { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--v-tick); box-shadow: 0 0 0 2px var(--panel); }
+.fs-slots { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; }
+.fs-slot { border: 1px solid var(--line); background: var(--bg2); padding: 10px 12px; display: grid; gap: 6px; }
+.fs-slot.off { border-color: var(--accent); }
+.fs-slot-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.fs-pair { display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: center; gap: 8px; }
+.fs-k { font-size: .75rem; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; font-family: var(--cond); font-weight: 700; }
+.fs-stack { display: flex; height: 12px; gap: 2px; }
+.fs-stack i { min-width: 2px; }
+.fs-stack i:last-child { border-radius: 0 4px 4px 0; }
+.fs-scroll { overflow-x: auto; }
+.fs-freq tr.flag td { background: rgba(255,91,31,.08); }
+.fs-sec > .btn { margin-top: 10px; }
+.fs-cov { padding: 6px 0; border-bottom: 1px solid var(--line); }
+.fs-cov:last-child { border-bottom: 0; }
+.fs-cov details { margin: 4px 0 0; }
+.fs-cov summary { cursor: pointer; }
+.fs-missing { margin: 6px 0 0; line-height: 1.6; }
 .fun-foil { color: var(--cyan); font-family: var(--cond); font-weight: 700; text-transform: uppercase; font-size: .75rem; letter-spacing: .05em; }
 .fun-card.r-uncommon { color: var(--uncommon); }
 
