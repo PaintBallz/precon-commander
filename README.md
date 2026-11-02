@@ -207,7 +207,7 @@ Coast. ©Wizards of the Coast LLC.
 
 Card data and images come from [Scryfall](https://scryfall.com) (not affiliated). Please follow
 the [Scryfall API guidelines](https://scryfall.com/docs/api) if you run your own copy. The
-real-booster print sheets come from the author's earlier pack-opener project and from
+real-booster print sheets come from
 [MTGJSON](https://mtgjson.com) (MIT License, Copyright © 2018-Present Zachary Halpern; see
 `packs/NOTICE.md`).
 

@@ -2,8 +2,8 @@
 //  - Sets with real booster data in packs/ use those exact print sheets and
 //    slot odds: Play Booster where it exists, else Draft, else the original
 //    ("default") booster of older sets, else Set Booster. Collector Boosters
-//    are never used. The sheets come from the author's mtg-pack-opener project
-//    and from MTGJSON (scripts/import-mtgjson-boosters.mjs).
+//    are never used. The sheets come from MTGJSON
+//    (scripts/import-mtgjson-boosters.mjs).
 //  - Every other set gets a generated "regular booster" from its Scryfall pool.
 import fs from 'node:fs';
 import path from 'node:path';

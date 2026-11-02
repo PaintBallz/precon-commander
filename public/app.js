@@ -1352,7 +1352,7 @@ function renderFun(view) {
           <summary><h2 style="margin:0">Where packs come from</h2></summary>
           <div class="grid" style="gap:12px;margin-top:12px">
             <div><h3>${I.check} Real print sheets: ${real.length} sets</h3>
-              <p class="small muted">The exact booster print sheets and slot odds for these sets are bundled with the app (Play Booster where the set has one, else Draft, else the set's original booster, else Set Booster; never Collector Boosters). Every slot draws from its real sheet at the printed rate. Sheet data comes from <a href="https://mtgjson.com" target="_blank" rel="noopener">MTGJSON</a> and an earlier pack-opener project.</p>
+              <p class="small muted">The exact booster print sheets and slot odds for these sets are bundled with the app (Play Booster where the set has one, else Draft, else the set's original booster, else Set Booster; never Collector Boosters). Every slot draws from its real sheet at the printed rate. Sheet data comes from <a href="https://mtgjson.com" target="_blank" rel="noopener">MTGJSON</a>.</p>
             </div>
             <div><h3>${I.sliders} Generated: ${plural(generated.length, 'set')}</h3>
               <p class="small muted">Sets with no regular booster on record (Jumpstart, The List, special printings) are built from Scryfall's list of the cards that set put in boosters, using that era's pack layout:</p>
