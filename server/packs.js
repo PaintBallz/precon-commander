@@ -61,11 +61,15 @@ async function openRealPack(code) {
   const { file, kind } = realPacks.get(code);
   const data = JSON.parse(fs.readFileSync(file, 'utf8'));
   const variant = weightedPick(data.variants, v => v.weight);
+  const totalWeight = data.variants.reduce((s, v) => s + v.weight, 0);
   const picks = [];
+  const slots = [];
   for (const slot of variant.slots) {
     const sheet = data.sheets[slot.sheet] || [];
     const foil = slot.sheet.includes('foil');
+    const first = picks.length;
     for (const c of drawFromSheet(sheet, slot.count)) picks.push({ set: c.set, number: String(c.number), name: c.name, foil, slot: slot.sheet });
+    slots.push({ label: sheetLabel(slot.sheet), count: slot.count, poolSize: sheet.length, cards: range(first, picks.length) });
   }
   const looked = await lookupCards(picks);
   const cards = picks.map(p => {
@@ -85,7 +89,21 @@ async function openRealPack(code) {
     };
   });
   const label = { play: 'Play Booster', draft: 'Draft Booster', set: 'Set Booster' }[kind];
-  return { cards, boosterType: label, generated: false };
+  const explain = {
+    source: 'real',
+    summary: `Built from the real ${label} print sheets: each slot draws from its sheet with the printed odds.`,
+    variant: { chance: variant.weight / totalWeight, of: data.variants.length },
+    slots,
+  };
+  return { cards, boosterType: label, generated: false, explain };
+}
+
+const range = (a, b) => Array.from({ length: b - a }, (_, i) => a + i);
+// "rare_mythic_with_showcase" -> "Rare / mythic (with showcase)"
+function sheetLabel(sheet) {
+  const [main, extra] = sheet.split(/_with_/);
+  const words = main.replace(/_/g, ' / ').replace(/^./, ch => ch.toUpperCase());
+  return extra ? `${words} (with ${extra.replace(/_/g, ' ')})` : words;
 }
 
 function guessRarity(sheet) {
@@ -131,19 +149,35 @@ async function openGeneratedPack(code, released) {
     foil = src[rnd(src.length)];
     commonPicks = commonPicks.slice(0, nCommons - 1);
   }
-  cards.push(...commonPicks.map(c => ({ ...c, foil: false })));
-  cards.push(...sample(uncommons, 3, taken).map(c => ({ ...c, foil: false })));
-  const rareSrc = mythics.length && Math.random() < 1 / 8 ? mythics : rares;
-  cards.push(...sample(rareSrc, 1, taken).map(c => ({ ...c, foil: false })));
-  if (foil) cards.push({ ...foil, foil: true });
+  const slots = [];
+  const add = (label, list, poolSize, note) => {
+    if (!list.length) return;
+    slots.push({ label, count: list.length, poolSize, note, cards: range(cards.length, cards.length + list.length) });
+    cards.push(...list);
+  };
   if (modern) {
     const land = basics.length ? basics[rnd(basics.length)] : sample(commons, 1, taken)[0];
-    if (land) cards.unshift({ ...land, foil: false });
+    if (land) add('Basic land', [{ ...land, foil: false }], basics.length || commons.length);
   }
+  add('Common', commonPicks.map(c => ({ ...c, foil: false })), commons.length, foil ? 'one common was replaced by the foil' : '');
+  add('Uncommon', sample(uncommons, 3, taken).map(c => ({ ...c, foil: false })), uncommons.length);
+  const mythicRoll = mythics.length && Math.random() < 1 / 8;
+  const rareSrc = mythicRoll ? mythics : rares;
+  add(mythicRoll ? 'Rare slot: hit a mythic (1 in 8)' : 'Rare slot (1 in 8 would be a mythic)', sample(rareSrc, 1, taken).map(c => ({ ...c, foil: false })), rareSrc.length);
+  if (foil) add('Foil (about 1 in 6 packs)', [{ ...foil, foil: true }], pool.length);
+  const explain = {
+    source: 'generated',
+    summary: `${released.slice(0, 4)} set with no bundled print sheets, so the pack is generated from Scryfall's list of the set's ${pool.length} booster cards using that era's pack layout.`,
+    era: modern ? 'Shards of Alara (2008) or later: basic land slot, 10 commons, 3 uncommons, 1 rare that is a mythic 1 time in 8.'
+      : 'Before Shards of Alara (2008): 11 commons, 3 uncommons, 1 rare, no land slot and no mythics.',
+    foils: hasFoils ? 'About 1 pack in 6 has a foil of any rarity in place of a common.' : 'Released before foils existed (Urza\'s Legacy, 1999).',
+    slots,
+  };
   return {
     cards: cards.map(c => ({ ...c, image: c.image || fallbackImage(c.set, c.number), uri: c.uri || `https://scryfall.com/card/${c.set}/${c.number}` })),
     boosterType: 'Booster',
     generated: true,
+    explain,
   };
 }
 

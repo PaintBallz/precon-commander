@@ -23,6 +23,9 @@ phones, and every phone sees spins, votes and packs live.
 - **Booster opener**: rip-open animation, rares revealed last, card zoom with double-faced flip.
   27 sets use real print-sheet data; every other set gets a generated pack from Scryfall's
   booster cards (with era-correct slots). Never a Collector Booster, and no prices anywhere.
+- **Fun Packs**: open a booster from any set just for fun. Nothing is saved (no pool, standings or
+  feed), and each pack shows how it was built: real print-sheet slots and odds, or the generated
+  layout for that era.
 - **Pools**: each player's pulls in a league, grouped, searchable, filterable by pod.
 - **Copy for Moxfield or Archidekt**: one-tap deck-list export in either site's import format,
   foils included (`1 Name (SET) 123 *F*` / `1x Name (set) 123 *F*`).

@@ -808,6 +808,27 @@ test('ending a league archives it and frees its players; deleting removes it', a
   assert.equal((await ok(gus.get('/api/state'))).myLeagueId, null, 'Gus is free');
 });
 
+test('fun packs: any set, explained, never saved', async () => {
+  const before = JSON.stringify((await ok(mike.get('/api/pools'))).pools);
+  const eventsBefore = (await ok(mike.get(`/api/leagues/${S.league}`))).events.length;
+  assert.equal((await mike.post('/api/fun/open', { set: 'nope' })).status, 400, 'unknown set');
+  // A real-sheet set (the one the pod spun, already cached) …
+  let r = await ok(mike.post('/api/fun/open', { set: S.spin.setCode }));
+  assert.equal(r.set.code, S.spin.setCode);
+  assert.equal(r.pack.generated, false);
+  assert.equal(r.pack.explain.source, 'real');
+  assert.equal(r.pack.explain.slots.reduce((n, sl) => n + sl.count, 0), r.pack.cards.length, 'every card comes from a listed slot');
+  assert.ok(r.pack.explain.slots.every(sl => sl.poolSize >= sl.count));
+  // … and a generated one (Alpha, cached by the earlier test).
+  r = await ok(mike.post('/api/fun/open', { set: 'lea' }));
+  assert.equal(r.pack.explain.source, 'generated');
+  assert.match(r.pack.explain.era, /Before Shards of Alara/);
+  assert.equal(r.pack.explain.slots.reduce((n, sl) => n + sl.count, 0), 15);
+  assert.equal(JSON.stringify((await ok(mike.get('/api/pools'))).pools), before, 'pools are untouched');
+  const { events } = await ok(mike.get(`/api/leagues/${S.league}`));
+  assert.ok(events.every(e => !/fun pack/i.test(e.text)) && events.length === eventsBefore, 'nothing in the feed');
+});
+
 test('feedback: players send ideas, only the admin sees them all and replies', async () => {
   assert.equal((await mike.post('/api/feedback', { kind: 'idea', text: 'hi' })).status, 400, 'too short');
   const { item } = await ok(mike.post('/api/feedback', { kind: 'idea', text: 'Discord webhook for mythic pulls' }));

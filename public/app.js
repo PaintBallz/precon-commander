@@ -228,7 +228,7 @@ async function copyText(text, what = 'List') {
 }
 
 // ---------------- routing ----------------
-const ROUTES = ['league', 'pods', 'wheel', 'packs', 'pools', 'sets', 'history', 'account'];
+const ROUTES = ['league', 'pods', 'wheel', 'packs', 'pools', 'sets', 'history', 'fun', 'account'];
 function parseRoute() {
   const [r, q] = location.hash.replace(/^#/, '').split('?');
   S.route = ROUTES.includes(r) ? r : 'pods';
@@ -247,7 +247,7 @@ function render() {
   $$('#tabs a').forEach(a => a.classList.toggle('active', a.dataset.tab === S.route));
   const view = $('#view');
   if (S.route !== 'wheel') stopWheelLoop();
-  ({ league: renderLeague, pods: renderPods, wheel: renderWheel, packs: renderPacks, pools: renderPools, sets: renderSets, history: renderHistory, account: renderAccount })[S.route](view);
+  ({ league: renderLeague, pods: renderPods, wheel: renderWheel, packs: renderPacks, pools: renderPools, sets: renderSets, history: renderHistory, fun: renderFun, account: renderAccount })[S.route](view);
 }
 
 function confirmBox(title, body, okLabel = 'OK', danger = false) {
@@ -1306,6 +1306,152 @@ function renderPackView(el, pack, owner, pod) {
     <details style="margin-top:16px"><summary class="muted small" style="cursor:pointer">Show list text</summary><pre class="list">${esc(listFor(cards))}</pre></details>`;
   $('#copyPack', el).onclick = () => copyText(listFor(cards), `${pack.set.name} pack`);
   $('#delPack', el)?.addEventListener('click', () => deletePackFlow(pod.id, pack, owner));
+  $$('.mcard', el).forEach(m => m.onclick = () => {
+    if (m.classList.contains('down')) { m.classList.remove('down'); return; }
+    cardModal(cards[Number(m.dataset.i)]);
+  });
+  if (animate) {
+    const downs = $$('.mcard.down', el);
+    let i = 0, timer;
+    const next = () => {
+      const m = downs[i++];
+      if (!m) { $('#revealAll', el)?.remove(); return; }
+      m.classList.remove('down');
+      if (m.classList.contains('r-mythic') || m.classList.contains('r-rare')) fanfare(); else tick();
+      timer = setTimeout(next, i >= downs.length - 2 ? 650 : 220);
+    };
+    timer = setTimeout(next, 300);
+    $('#revealAll', el).onclick = () => { clearTimeout(timer); downs.forEach(m => m.classList.remove('down')); $('#revealAll', el)?.remove(); };
+  }
+}
+
+// =============== FUN PACKS TAB ===============
+// Open any booster set just for fun. The server saves nothing: no pod, no pool,
+// no feed. Each pack comes back with how it was built, shown under the cards.
+function renderFun(view) {
+  const F = S.fun ||= { code: null, filter: '', realOnly: false, result: null, history: [] };
+  const sets = S.sets.filter(s => (!F.realOnly || s.realPack) && (!F.filter || `${s.name} ${s.code}`.toLowerCase().includes(F.filter.toLowerCase())));
+  if (!F.code || !S.setsByCode.has(F.code)) F.code = (S.sets.find(s => s.realPack) || S.sets[0])?.code || null;
+  const set = S.setsByCode.get(F.code);
+  const real = S.sets.filter(s => s.realPack);
+  view.innerHTML = `
+    <div class="hero"><div><h1>Fun Packs</h1>
+      <p>Rip a booster from any set ever sold in boosters, just for fun. <b>Nothing here is saved</b>: it doesn't go into your pool, the league, the standings or the activity feed.</p></div>
+      <span class="chip">Not saved · ${plural(S.sets.length, 'set')}</span></div>
+    <div class="fun-layout">
+      <div class="side">
+        <div class="panel grid" style="gap:12px">
+          <h2 style="margin:0">Pick a set</h2>
+          <input type="search" id="funSearch" placeholder="Search ${S.sets.length} sets…" value="${esc(F.filter)}">
+          <div class="fun-list" id="funSet" role="listbox">${sets.map(s => `<button type="button" role="option" class="${s.code === F.code ? 'sel' : ''}" data-code="${s.code}" aria-selected="${s.code === F.code}">${icon(s)}<span class="nm">${esc(s.name)}</span><span class="meta">${s.year || (s.released || '').slice(0, 4)} · ${s.realPack ? 'real sheets' : 'generated'}</span></button>`).join('') || '<p class="small dim" style="margin:8px">No sets match.</p>'}</div>
+          <label class="check"><input type="checkbox" id="funReal" ${F.realOnly ? 'checked' : ''}> Only sets with real print sheets (${real.length})</label>
+          <div class="row"><button class="btn sm" id="funRandom">Random set</button><button class="btn sm" id="funRandomReal">Random real-sheet set</button></div>
+        </div>
+        <details class="panel fun-source" ${store.get('funSourceOpen', true) ? 'open' : ''}>
+          <summary><h2 style="margin:0">Where packs come from</h2></summary>
+          <div class="grid" style="gap:12px;margin-top:12px">
+            <div><h3>${I.check} Real print sheets: ${real.length} sets</h3>
+              <p class="small muted">The exact booster print sheets and slot odds for these sets are bundled with the app (Play Booster where the set has one, else Draft, else Set Booster; never Collector Boosters). Every slot draws from its real sheet at the printed rate.</p>
+              <div class="row" style="gap:4px">${real.map(s => `<button class="chip fun-pick" data-code="${s.code}" title="${esc(s.name)}">${icon(s)}${esc(s.code.toUpperCase())}</button>`).join('')}</div></div>
+            <div><h3>${I.sliders} Generated: every other set</h3>
+              <p class="small muted">Built from Scryfall's list of the cards that set put in boosters, using that era's pack layout:</p>
+              <ul class="small muted fun-rules">
+                <li><b>2008 on</b> (Shards of Alara): a basic land, 10 commons, 3 uncommons and a rare that's a mythic 1 time in 8.</li>
+                <li><b>Before 2008</b>: 11 commons, 3 uncommons and a rare. No land slot, no mythics.</li>
+                <li><b>Foils</b> (Urza's Legacy, 1999, on): about 1 pack in 6 swaps a common for a foil of any rarity.</li>
+              </ul></div>
+            <p class="small dim" style="margin:0">Card names, rarities and images come from <a href="https://scryfall.com" target="_blank" rel="noopener">Scryfall</a>. League packs are built exactly the same way.</p>
+          </div>
+        </details>
+        ${F.history.length ? `<div class="panel fun-hist"><h2>This session</h2><div class="fun-history">${F.history.map((h, i) => `<button class="pack-item ${F.result === h ? 'sel' : ''}" data-hist="${i}">${icon(h.set)}<span class="fun-hi"><span class="t">${esc(h.set.name)}</span><span class="s">${esc(h.best)}</span></span></button>`).join('')}</div>
+          <p class="small dim" style="margin:8px 0 0">Kept until you reload the page.</p></div>` : ''}
+      </div>
+      <div id="funStage"></div>
+    </div>`;
+  const stage = $('#funStage', view);
+  if (F.result && F.result.set.code === F.code) renderFunPack(stage, F.result); else renderFunBooster(stage, set);
+
+  const pick = code => { F.code = code; F.result = null; renderFun(view); };
+  $('#funSearch', view).oninput = e => {
+    F.filter = e.target.value;
+    const pos = e.target.selectionStart;
+    renderFun(view);
+    const el = $('#funSearch', view); el.focus(); el.setSelectionRange(pos, pos);
+  };
+  $$('#funSet button', view).forEach(b => b.onclick = () => pick(b.dataset.code));
+  const sel = $('#funSet .sel', view);
+  if (sel) sel.parentElement.scrollTop = sel.offsetTop - sel.parentElement.offsetTop - 60;
+  $('#funReal', view).onchange = e => { F.realOnly = e.target.checked; renderFun(view); };
+  const randomFrom = list => list.length && pick(list[Math.floor(Math.random() * list.length)].code);
+  $('#funRandom', view).onclick = () => randomFrom(S.sets);
+  $('#funRandomReal', view).onclick = () => randomFrom(real);
+  $$('.fun-pick', view).forEach(b => b.onclick = () => pick(b.dataset.code));
+  const det = $('.fun-source', view);
+  det.addEventListener('toggle', () => store.set('funSourceOpen', det.open));
+  $$('[data-hist]', view).forEach(b => b.onclick = () => { const h = F.history[Number(b.dataset.hist)]; F.code = h.set.code; F.result = h; renderFun(view); });
+}
+
+function renderFunBooster(el, set) {
+  if (!set) { el.innerHTML = `<div class="panel empty"><h2>No sets</h2><p>The set list hasn't loaded yet.</p></div>`; return; }
+  el.innerHTML = `
+    <div class="panel fun-stage">
+      <div class="booster" id="booster">
+        ${icon(set, 'lg')}
+        <div class="bname">${esc(set.name)}</div>
+        <div class="btype">${kindLabel(set.code)}</div>
+      </div>
+      <div style="text-align:center">
+        <button class="btn gold big" id="funOpen">Open a ${esc(set.name)} pack</button>
+        <p class="small dim" style="margin:10px 0 0">${set.realPack ? `Real ${kindLabel(set.code)} print sheets.` : `Generated from Scryfall's ${set.name} booster cards.`} Just for fun: not saved.</p>
+      </div>
+    </div>`;
+  $('#funOpen', el).onclick = async () => {
+    const btn = $('#funOpen', el), bo = $('#booster', el);
+    btn.disabled = true; btn.textContent = 'Opening…';
+    bo.classList.add('shake');
+    S.opening = true;
+    try {
+      const r = await post('/fun/open', { set: set.code });
+      bo.classList.remove('shake'); bo.classList.add('rip');
+      await new Promise(res => setTimeout(res, 450));
+      const best = sortForReveal(r.pack.cards).at(-1);
+      const result = { set: { ...set, ...r.set }, pack: r.pack, best: best ? `${best.rarity}: ${best.name}${best.foil ? ' (foil)' : ''}` : '', animate: true };
+      S.fun.history.unshift(result);
+      S.fun.history.length = Math.min(S.fun.history.length, 12);
+      S.fun.result = result;
+      S.opening = false;
+      if (S.route === 'fun') renderFun($('#view'));
+    } catch (err) { S.opening = false; fail(err); btn.disabled = false; btn.textContent = 'Try again'; bo.classList.remove('shake'); }
+  };
+}
+
+function renderFunPack(el, result) {
+  const { set, pack } = result;
+  const cards = sortForReveal(pack.cards);
+  const animate = result.animate; result.animate = false;
+  const hits = cards.filter(c => c.rarity === 'mythic' || c.rarity === 'rare');
+  const x = pack.explain || {};
+  el.innerHTML = `
+    <div class="spread" style="margin-bottom:14px">
+      <div class="row">${icon(set, 'lg')}<div><h2 style="margin:0">${esc(set.name)}</h2>
+        <div class="small muted">${esc(pack.boosterType || 'Booster')} · ${cards.length} cards · <b>just for fun, not saved</b></div></div></div>
+      <div class="row">
+        ${animate ? `<button class="btn sm" id="revealAll">Reveal all</button>` : ''}
+        <button class="btn gold" id="funAgain">Open another</button>
+      </div>
+    </div>
+    ${hits.length ? `<div class="row" style="margin-bottom:12px">${hits.map(c => `<span class="chip ${c.rarity === 'mythic' ? 'gold' : ''}">${c.rarity === 'mythic' ? '★' : '◆'} ${esc(c.name)}${c.foil ? ' (foil)' : ''}</span>`).join('')}</div>` : ''}
+    <div class="cards" id="cards">${cards.map((c, i) => cardHtml(c, i, animate)).join('')}</div>
+    <div class="panel fun-built">
+      <h2>How this pack was built</h2>
+      <p class="muted" style="margin-top:0">${esc(x.summary || '')}</p>
+      ${x.variant && x.variant.of > 1 ? `<p class="small muted">The set has ${x.variant.of} pack layouts; this one comes up <b>${pct(x.variant.chance)}</b> of the time.</p>` : ''}
+      ${x.era ? `<p class="small muted">${esc(x.era)} ${esc(x.foils || '')}</p>` : ''}
+      <table class="standings fun-slots"><thead><tr><th>Slot</th><th class="num">Cards</th><th class="num">Drawn from</th><th>Pulled</th></tr></thead>
+        <tbody>${(x.slots || []).map(sl => `<tr><td><b>${esc(sl.label)}</b>${sl.note ? `<div class="small dim">${esc(sl.note)}</div>` : ''}</td><td class="num">${sl.count}</td><td class="num">${sl.poolSize}</td>
+          <td class="small">${sl.cards.map(i => pack.cards[i]).filter(Boolean).map(c => `<span class="fun-card r-${esc(c.rarity)}">${esc(c.name)}${c.foil ? ' ✦' : ''}</span>`).join(', ')}</td></tr>`).join('')}</tbody></table>
+    </div>`;
+  $('#funAgain', el).onclick = () => renderFunBooster(el, S.setsByCode.get(set.code) || set);
   $$('.mcard', el).forEach(m => m.onclick = () => {
     if (m.classList.contains('down')) { m.classList.remove('down'); return; }
     cardModal(cards[Number(m.dataset.i)]);

@@ -760,6 +760,24 @@ app.get('/api/pods/:id', (req, res) => {
   res.json({ pod: view(req, pod) });
 });
 
+// ---------- fun packs ----------
+// Open any booster set just for fun: nothing is saved (no pod, no pool, no
+// feed). Rate-limited per player so Scryfall isn't hammered.
+const FUN_WINDOW = 10 * 60 * 1000;
+const FUN_MAX = 20;
+const funOpens = new Map(); // userId -> recent open timestamps
+app.post('/api/fun/open', wrap(async (req, res) => {
+  const code = String(req.body?.set || '').toLowerCase();
+  const set = (await allSets()).find(s => s.code === code);
+  if (!set) throw new HttpError(400, 'Pick a set that came in boosters.');
+  const t = Date.now();
+  const recent = (funOpens.get(req.user.id) || []).filter(x => t - x < FUN_WINDOW);
+  if (recent.length >= FUN_MAX) throw new HttpError(429, `That's ${FUN_MAX} fun packs in 10 minutes. Give Scryfall a breather and try again shortly.`);
+  recent.push(t); funOpens.set(req.user.id, recent);
+  const pack = await openPack(set);
+  res.json({ set: { code: set.code, name: set.name, icon: set.icon, released: set.released, type: set.type }, pack });
+}));
+
 // ---------- feedback ----------
 // Only the admin (new-count badge) and the author (status/reply) care, so the
 // event carries just who to tell; everyone else ignores it.
