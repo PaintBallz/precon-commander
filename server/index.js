@@ -762,20 +762,29 @@ app.get('/api/pods/:id', (req, res) => {
 
 // ---------- fun packs ----------
 // Open any booster set just for fun: nothing is saved (no pod, no pool, no
-// feed). Rate-limited per player so Scryfall isn't hammered.
+// feed). Up to a box (36 packs) at a time, for testing the sheets.
+// Rate-limited per player by packs opened, so Scryfall isn't hammered.
 const FUN_WINDOW = 10 * 60 * 1000;
-const FUN_MAX = 20;
-const funOpens = new Map(); // userId -> recent open timestamps
+const FUN_MAX = 150;
+const FUN_BATCH = 36;
+const funOpens = new Map(); // userId -> timestamps, one per pack opened
 app.post('/api/fun/open', wrap(async (req, res) => {
   const code = String(req.body?.set || '').toLowerCase();
   const set = (await allSets()).find(s => s.code === code);
   if (!set) throw new HttpError(400, 'Pick a set that came in boosters.');
+  const count = req.body?.count === undefined ? 1 : Number(req.body.count);
+  if (!Number.isInteger(count) || count < 1 || count > FUN_BATCH) throw new HttpError(400, `Open between 1 and ${FUN_BATCH} packs at a time.`);
   const t = Date.now();
   const recent = (funOpens.get(req.user.id) || []).filter(x => t - x < FUN_WINDOW);
-  if (recent.length >= FUN_MAX) throw new HttpError(429, `That's ${FUN_MAX} fun packs in 10 minutes. Give Scryfall a breather and try again shortly.`);
-  recent.push(t); funOpens.set(req.user.id, recent);
-  const pack = await openPack(set);
-  res.json({ set: { code: set.code, name: set.name, icon: set.icon, released: set.released, type: set.type }, pack });
+  if (recent.length + count > FUN_MAX) {
+    const left = FUN_MAX - recent.length;
+    throw new HttpError(429, `That's ${FUN_MAX} fun packs in 10 minutes${left > 0 ? `; you can open ${left} more right now` : ''}. Give Scryfall a breather and try again shortly.`);
+  }
+  for (let i = 0; i < count; i++) recent.push(t);
+  funOpens.set(req.user.id, recent);
+  const packs = [];
+  for (let i = 0; i < count; i++) packs.push(await openPack(set));
+  res.json({ set: { code: set.code, name: set.name, icon: set.icon, released: set.released, type: set.type }, pack: packs[0], packs });
 }));
 
 // ---------- feedback ----------

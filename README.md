@@ -26,7 +26,9 @@ phones, and every phone sees spins, votes and packs live.
   Never a Collector Booster, and no prices anywhere.
 - **Fun Packs**: open a booster from any set just for fun. Nothing is saved (no pool, standings or
   feed), and each pack shows how it was built: real print-sheet slots and odds, or the generated
-  layout for that era.
+  layout for that era. Open 1, 3, 6, 12, 24 or 36 packs (a box) at once to test a set's sheets:
+  multiple packs open face up, as card images or a compact list with each card's set number and
+  slot.
 - **Pools**: each player's pulls in a league, grouped, searchable, filterable by pod.
 - **Copy for Moxfield or Archidekt**: one-tap deck-list export in either site's import format,
   foils included (`1 Name (SET) 123 *F*` / `1x Name (set) 123 *F*`).

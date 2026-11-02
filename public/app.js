@@ -1329,7 +1329,7 @@ function renderPackView(el, pack, owner, pod) {
 // Open any booster set just for fun. The server saves nothing: no pod, no pool,
 // no feed. Each pack comes back with how it was built, shown under the cards.
 function renderFun(view) {
-  const F = S.fun ||= { code: null, filter: '', realOnly: false, result: null, history: [] };
+  const F = S.fun ||= { code: null, filter: '', realOnly: false, result: null, history: [], count: FUN_COUNTS.includes(store.get('funCount', 1)) ? store.get('funCount', 1) : 1 };
   const sets = S.sets.filter(s => (!F.realOnly || s.realPack) && (!F.filter || `${s.name} ${s.code}`.toLowerCase().includes(F.filter.toLowerCase())));
   if (!F.code || !S.setsByCode.has(F.code)) F.code = (S.sets.find(s => s.realPack) || S.sets[0])?.code || null;
   const set = S.setsByCode.get(F.code);
@@ -1365,13 +1365,13 @@ function renderFun(view) {
             <p class="small dim" style="margin:0">Card names, rarities and images come from <a href="https://scryfall.com" target="_blank" rel="noopener">Scryfall</a>. League packs are built exactly the same way.</p>
           </div>
         </details>
-        ${F.history.length ? `<div class="panel fun-hist"><h2>This session</h2><div class="fun-history">${F.history.map((h, i) => `<button class="pack-item ${F.result === h ? 'sel' : ''}" data-hist="${i}">${icon(h.set)}<span class="fun-hi"><span class="t">${esc(h.set.name)}</span><span class="s">${esc(h.best)}</span></span></button>`).join('')}</div>
+        ${F.history.length ? `<div class="panel fun-hist"><h2>This session</h2><div class="fun-history">${F.history.map((h, i) => `<button class="pack-item ${F.result === h ? 'sel' : ''}" data-hist="${i}">${icon(h.set)}<span class="fun-hi"><span class="t">${esc(h.set.name)}${h.packs ? ` ×${h.packs.length}` : ''}</span><span class="s">${esc(h.best)}</span></span></button>`).join('')}</div>
           <p class="small dim" style="margin:8px 0 0">Kept until you reload the page.</p></div>` : ''}
       </div>
       <div id="funStage"></div>
     </div>`;
   const stage = $('#funStage', view);
-  if (F.result && F.result.set.code === F.code) renderFunPack(stage, F.result); else renderFunBooster(stage, set);
+  if (F.result && F.result.set.code === F.code) (F.result.packs ? renderFunBatch : renderFunPack)(stage, F.result); else renderFunBooster(stage, set);
 
   const pick = code => { F.code = code; F.result = null; renderFun(view); };
   $('#funSearch', view).oninput = e => {
@@ -1393,8 +1393,12 @@ function renderFun(view) {
   $$('[data-hist]', view).forEach(b => b.onclick = () => { const h = F.history[Number(b.dataset.hist)]; F.code = h.set.code; F.result = h; renderFun(view); });
 }
 
+const FUN_COUNTS = [1, 3, 6, 12, 24, 36];
+const bestOf = cards => { const b = sortForReveal(cards).at(-1); return b ? `${b.rarity}: ${b.name}${b.foil ? ' (foil)' : ''}` : ''; };
+
 function renderFunBooster(el, set) {
   if (!set) { el.innerHTML = `<div class="panel empty"><h2>No sets</h2><p>The set list hasn't loaded yet.</p></div>`; return; }
+  const n = S.fun.count || 1;
   el.innerHTML = `
     <div class="panel fun-stage">
       <div class="booster" id="booster">
@@ -1403,21 +1407,26 @@ function renderFunBooster(el, set) {
         <div class="btype">${kindLabel(set.code)}</div>
       </div>
       <div style="text-align:center">
-        <button class="btn gold big" id="funOpen">Open a ${esc(set.name)} pack</button>
-        <p class="small dim" style="margin:10px 0 0">${set.realPack ? `Real ${kindLabel(set.code)} print sheets.` : `Generated from Scryfall's ${set.name} booster cards.`} Just for fun: not saved.</p>
+        <div class="fun-count" role="group" aria-label="How many packs">
+          <span class="lbl">Packs</span>${FUN_COUNTS.map(c => `<button type="button" class="${c === n ? 'sel' : ''}" data-n="${c}" aria-pressed="${c === n}">${c}${c === 36 ? ' <small>box</small>' : ''}</button>`).join('')}
+        </div>
+        <button class="btn gold big" id="funOpen">${n === 1 ? `Open a ${esc(set.name)} pack` : `Open ${n} ${esc(set.name)} packs`}</button>
+        <p class="small dim" style="margin:10px 0 0">${set.realPack ? `Real ${kindLabel(set.code)} print sheets.` : `Generated from Scryfall's ${set.name} booster cards.`} Just for fun: not saved.${n > 1 ? ' Several packs open face up, with no reveal animation.' : ''}</p>
       </div>
     </div>`;
+  $$('.fun-count button', el).forEach(b => b.onclick = () => { S.fun.count = Number(b.dataset.n); store.set('funCount', S.fun.count); renderFunBooster(el, set); });
   $('#funOpen', el).onclick = async () => {
     const btn = $('#funOpen', el), bo = $('#booster', el);
-    btn.disabled = true; btn.textContent = 'Opening…';
+    btn.disabled = true; btn.textContent = n === 1 ? 'Opening…' : `Opening ${n} packs…`;
     bo.classList.add('shake');
     S.opening = true;
     try {
-      const r = await post('/fun/open', { set: set.code });
+      const r = await post('/fun/open', { set: set.code, count: n });
       bo.classList.remove('shake'); bo.classList.add('rip');
       await new Promise(res => setTimeout(res, 450));
-      const best = sortForReveal(r.pack.cards).at(-1);
-      const result = { set: { ...set, ...r.set }, pack: r.pack, best: best ? `${best.rarity}: ${best.name}${best.foil ? ' (foil)' : ''}` : '', animate: true };
+      const result = n === 1
+        ? { set: { ...set, ...r.set }, pack: r.pack, best: bestOf(r.pack.cards), animate: true }
+        : { set: { ...set, ...r.set }, packs: r.packs, best: `best ${bestOf(r.packs.flatMap(p => p.cards))}` };
       S.fun.history.unshift(result);
       S.fun.history.length = Math.min(S.fun.history.length, 12);
       S.fun.result = result;
@@ -1471,6 +1480,74 @@ function renderFunPack(el, result) {
     timer = setTimeout(next, 300);
     $('#revealAll', el).onclick = () => { clearTimeout(timer); downs.forEach(m => m.classList.remove('down')); $('#revealAll', el)?.remove(); };
   }
+}
+
+// Several fun packs at once: every pack face up in its own block (card images,
+// or a compact list for checking sheets), with one shared "how it's built".
+function renderFunBatch(el, result) {
+  const { set, packs } = result;
+  const list = store.get('funView', 'cards') === 'list';
+  const all = packs.flatMap(p => p.cards);
+  const count = pred => all.filter(pred).length;
+  const sorted = packs.map(p => sortForReveal(p.cards));
+  const slotOf = p => { const m = []; for (const sl of p.explain?.slots || []) for (const i of sl.cards) m[i] = sl.label; return m; };
+  const hitChips = cards => cards.filter(c => c.rarity === 'mythic' || c.rarity === 'rare' || c.foil)
+    .map(c => `<span class="chip ${c.rarity === 'mythic' ? 'gold' : ''}">${c.rarity === 'mythic' ? '★' : c.rarity === 'rare' ? '◆' : '✦'} ${esc(c.name)}${c.foil ? ' (foil)' : ''}</span>`).join('');
+  const block = (p, n) => {
+    const slots = slotOf(p);
+    const body = list
+      ? `<table class="standings fun-rows"><thead><tr><th class="num">#</th><th>Card</th><th>Set · No.</th><th>Rarity</th><th>Slot</th></tr></thead>
+          <tbody>${p.cards.map((c, i) => `<tr data-c="${i}"><td class="num">${i + 1}</td><td><span class="fun-card r-${esc(c.rarity)}">${esc(c.name)}</span>${c.foil ? ' <span class="fun-foil">✦ foil</span>' : ''}</td>
+            <td class="mono">${esc(c.set.toUpperCase())} ${esc(c.number)}</td><td class="fun-card r-${esc(c.rarity)}">${esc(c.rarity)}</td><td class="small muted">${esc(slots[i] || '')}</td></tr>`).join('')}</tbody></table>`
+      : `<div class="cards">${sorted[n].map((c, i) => cardHtml(c, i, false)).join('')}</div>`;
+    return `<section class="panel fun-pack" data-p="${n}">
+      <div class="fun-pack-head"><h3>Pack ${n + 1}</h3><span class="small muted">${p.cards.length} cards</span><div class="row">${hitChips(p.cards)}</div></div>
+      ${body}</section>`;
+  };
+  // Shared build info: every distinct slot across the batch, and how many packs had it.
+  const x = packs[0].explain || {};
+  const rows = new Map();
+  for (const p of packs) for (const sl of p.explain?.slots || []) {
+    const k = `${sl.label}|${sl.count}|${sl.poolSize}`;
+    const r = rows.get(k) || { ...sl, packs: 0 };
+    r.packs++; rows.set(k, r);
+  }
+  const layouts = x.variant?.of > 1;
+  el.innerHTML = `
+    <div class="spread" style="margin-bottom:14px">
+      <div class="row">${icon(set, 'lg')}<div><h2 style="margin:0">${esc(set.name)}</h2>
+        <div class="small muted">${esc(packs[0].boosterType || 'Booster')} · ${packs.length} packs · ${all.length} cards · <b>just for fun, not saved</b></div></div></div>
+      <div class="row">
+        <div class="fun-seg" role="group" aria-label="View">
+          <button type="button" data-v="cards" class="${list ? '' : 'sel'}" aria-pressed="${!list}">Cards</button><button type="button" data-v="list" class="${list ? 'sel' : ''}" aria-pressed="${list}">List</button>
+        </div>
+        <button class="btn gold" id="funAgain">Open ${packs.length} more</button>
+      </div>
+    </div>
+    <div class="row" style="margin-bottom:14px">
+      <span class="chip gold">★ ${count(c => c.rarity === 'mythic')} mythic</span>
+      <span class="chip">◆ ${count(c => c.rarity === 'rare')} rare</span>
+      <span class="chip">${count(c => c.rarity === 'uncommon')} uncommon</span>
+      <span class="chip">${count(c => c.rarity === 'common')} common</span>
+      <span class="chip">✦ ${count(c => c.foil)} foil</span>
+    </div>
+    <div class="fun-packs">${packs.map(block).join('')}</div>
+    <div class="panel fun-built">
+      <h2>How these packs were built</h2>
+      <p class="muted" style="margin-top:0">${esc(x.summary || '')}</p>
+      ${layouts ? `<p class="small muted">The set has ${x.variant.of} pack layouts, so the slots below didn't all appear in every pack.</p>` : ''}
+      ${x.era ? `<p class="small muted">${esc(x.era)} ${esc(x.foils || '')}</p>` : ''}
+      <table class="standings fun-slots"><thead><tr><th>Slot</th><th class="num">Cards</th><th class="num">Drawn from</th><th class="num">In packs</th></tr></thead>
+        <tbody>${[...rows.values()].map(sl => `<tr><td><b>${esc(sl.label)}</b>${sl.note ? `<div class="small dim">${esc(sl.note)}</div>` : ''}</td><td class="num">${sl.count}</td><td class="num">${sl.poolSize}</td>
+          <td class="num">${sl.packs} of ${packs.length}</td></tr>`).join('')}</tbody></table>
+    </div>`;
+  $('#funAgain', el).onclick = () => { S.fun.count = packs.length; renderFunBooster(el, S.setsByCode.get(set.code) || set); };
+  $$('.fun-seg button', el).forEach(b => b.onclick = () => { store.set('funView', b.dataset.v); renderFunBatch(el, result); });
+  $$('.fun-pack', el).forEach(sec => {
+    const n = Number(sec.dataset.p);
+    $$('.mcard', sec).forEach(m => m.onclick = () => cardModal(sorted[n][Number(m.dataset.i)]));
+    $$('tr[data-c]', sec).forEach(tr => tr.onclick = () => cardModal(packs[n].cards[Number(tr.dataset.c)]));
+  });
 }
 
 function cardModal(c) {

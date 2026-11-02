@@ -427,7 +427,7 @@ tr.dim td { color: var(--dim); }
 
 /* ---------- fun packs ---------- */
 .fun-layout { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 22px; align-items: start; }
-@media (max-width: 900px) { .fun-layout { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .fun-layout { grid-template-columns: minmax(0, 1fr); } }
 .fun-list { max-height: 300px; overflow-y: auto; border: 1px solid var(--line); background: var(--bg2); }
 .fun-list button { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 8px; align-items: center; width: 100%; padding: 7px 10px; border: 0; border-bottom: 1px solid var(--line); background: none; color: var(--text); text-align: left; cursor: pointer; font-size: .9rem; }
 .fun-list button:hover { background: var(--panel2); }
@@ -460,6 +460,27 @@ tr.dim td { color: var(--dim); }
 .fun-slots td { vertical-align: top; }
 .fun-card.r-rare { color: var(--rare); }
 .fun-card.r-mythic { color: var(--mythic); font-weight: 700; }
+/* Multi-pack opening: count picker, Cards/List switch, one block per pack. */
+.fun-count, .fun-seg { display: inline-flex; align-items: stretch; border: 1px solid var(--line2); background: var(--bg2); }
+.fun-count { margin-bottom: 14px; flex-wrap: wrap; justify-content: center; }
+.fun-count .lbl { display: flex; align-items: center; padding: 0 10px; font-family: var(--cond); font-weight: 700; text-transform: uppercase; letter-spacing: .08em; font-size: .78rem; color: var(--dim); border-right: 1px solid var(--line2); }
+.fun-count button, .fun-seg button { border: 0; border-right: 1px solid var(--line2); background: none; color: var(--muted); font-family: var(--mono); font-weight: 700; padding: 7px 12px; cursor: pointer; }
+.fun-count button:last-child, .fun-seg button:last-child { border-right: 0; }
+.fun-seg button { font-family: var(--cond); text-transform: uppercase; letter-spacing: .06em; padding: 6px 12px; }
+.fun-count button small { font-family: var(--cond); text-transform: uppercase; font-size: .68rem; letter-spacing: .06em; opacity: .8; }
+.fun-count button:hover, .fun-seg button:hover { color: var(--text); background: var(--panel2); }
+.fun-count button.sel, .fun-seg button.sel { background: var(--accent); color: #000; }
+.fun-packs { display: grid; gap: 14px; }
+.fun-pack { padding: 14px; overflow-x: auto; }
+.fun-pack-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.fun-pack-head h3 { margin: 0; font-family: var(--cond); text-transform: uppercase; letter-spacing: .04em; }
+.fun-pack-head .row { gap: 6px; }
+.fun-pack .cards { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
+.fun-rows { font-size: .88rem; }
+.fun-rows tbody tr { cursor: pointer; }
+.fun-rows tbody tr:hover td { background: var(--panel2); }
+.fun-rows td { padding-top: 5px; padding-bottom: 5px; }
+.fun-foil { color: var(--cyan); font-family: var(--cond); font-weight: 700; text-transform: uppercase; font-size: .75rem; letter-spacing: .05em; }
 .fun-card.r-uncommon { color: var(--uncommon); }
 
 /* ---------- footer + feedback ---------- */

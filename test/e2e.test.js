@@ -830,6 +830,13 @@ test('fun packs: any set, explained, never saved', async () => {
   assert.equal(r.pack.explain.source, 'generated');
   assert.match(r.pack.explain.era, /Before Shards of Alara/);
   assert.equal(r.pack.explain.slots.reduce((n, sl) => n + sl.count, 0), 15);
+  // Several packs at once (up to a box of 36), each built independently.
+  assert.equal((await mike.post('/api/fun/open', { set: 'lea', count: 37 })).status, 400, 'more than a box');
+  assert.equal((await mike.post('/api/fun/open', { set: 'lea', count: 0 })).status, 400, 'zero packs');
+  r = await ok(mike.post('/api/fun/open', { set: 'lea', count: 6 }));
+  assert.equal(r.packs.length, 6);
+  assert.ok(r.packs.every(p => p.cards.length === 15 && p.explain.source === 'real'));
+  assert.ok(new Set(r.packs.map(p => p.cards.map(c => c.number).join())).size > 1, 'packs differ');
   assert.equal(JSON.stringify((await ok(mike.get('/api/pools'))).pools), before, 'pools are untouched');
   const { events } = await ok(mike.get(`/api/leagues/${S.league}`));
   assert.ok(events.every(e => !/fun pack/i.test(e.text)) && events.length === eventsBefore, 'nothing in the feed');
