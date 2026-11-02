@@ -1024,15 +1024,16 @@ function podSwitcher(pod, route) {
 }
 
 function renderWheel(view) {
+  // With no pod running the wheel is still shown (spin locked) so everyone can
+  // see which sets are on it.
   const pod = currentPod();
-  if (!pod) { view.innerHTML = `<div class="empty"><h2>No pods running</h2><p>Start a pod first. When it ends, the winner spins the wheel here.</p><a class="btn gold" href="#pods">Start a pod</a></div>`; return; }
   buildGeom();
-  if (pod.spin && !S.spinning) restOn(pod.spin);
+  if (pod?.spin && !S.spinning) restOn(pod.spin);
   const st = S.settings;
-  const winner = pod.players.find(p => p.id === pod.winnerId);
-  const mayspin = pod.status === 'awarded' && !pod.spin && !voteOpen(pod) && (isAdmin() || S.me.id === pod.winnerId);
+  const winner = pod?.players.find(p => p.id === pod.winnerId);
+  const mayspin = !!pod && pod.status === 'awarded' && !pod.spin && !voteOpen(pod) && (isAdmin() || S.me.id === pod.winnerId);
   view.innerHTML = `
-    ${podSwitcher(pod, 'wheel')}
+    ${pod ? podSwitcher(pod, 'wheel') : ''}
     <div class="wheel-layout">
       <div class="wheel-wrap">
         <div class="ticker" id="ticker"></div>
@@ -1044,13 +1045,18 @@ function renderWheel(view) {
         <p class="muted small" style="margin-top:12px">${S.wheel.length} sets on the wheel · <a href="#sets">see every set's odds</a></p>
       </div>
       <div class="side">
-        <div class="panel">
+        ${!pod ? `<div class="panel">
+          <h3>Preview: no pod running</h3>
+          <p class="small muted">This is ${S.league ? `${esc(S.league.name)}'s` : 'the'} wheel: <b>${plural(S.wheel.length, 'set')}</b> anyone's pack could come from. When a pod ends, its winner spins it once and every pack in the pod is that set.</p>
+          <p class="small muted" style="margin:0 0 12px">Each set's exact odds are on <a href="#sets">All Sets</a>.</p>
+          ${S.league?.status === 'active' ? '<a class="btn gold" href="#pods">Start a pod</a>' : ''}
+        </div>` : `<div class="panel">
           <h3>${esc(pod.name)}</h3>
           <p class="small muted" style="margin:0">${pod.status === 'playing' ? 'Still playing. Crown the winner on the Pods tab first.'
             : pod.spin ? `${esc(pod.players.find(p => p.id === pod.spin.by)?.name || winner.name)} spun the wheel. One spin per pod: every pack is this set unless sacrificed.`
             : voteOpen(pod) ? `${I.vote} The pod is voting on the bonus pack. <a href="#pods">Vote on the Pods tab</a>; the spin unlocks when it's decided.`
             : `${I.crown} <b>${esc(winner.name)}</b> spins once for the whole pod.${mayspin ? '' : ' Waiting for them to spin…'}`}</p>
-        </div>
+        </div>`}
         <div id="revealBox"></div>
         ${isAdmin() ? `<details class="panel settings-box" ${store.get('wheelSettingsOpen', false) ? 'open' : ''}>
           <summary><span>${I.sliders} Wheel settings <span class="chip gold">admin</span></span><span class="dim small">${S.wheel.length} of ${S.sets.length} sets</span></summary>
@@ -1076,7 +1082,7 @@ function renderWheel(view) {
   requestAnimationFrame(drawWheel);
   const spinBtn = $('#spinBtn', view);
   spinBtn.disabled = !mayspin || S.spinning || !S.wheel.length;
-  spinBtn.title = pod.spin ? 'This pod already spun' : pod.status !== 'awarded' ? 'Crown a winner first' : voteOpen(pod) ? 'Finish the bonus-pack vote first' : !mayspin ? `Only ${winner.name} can spin` : 'Spin!';
+  spinBtn.title = !pod ? 'Start a pod: its winner spins when it ends' : pod.spin ? 'This pod already spun' : pod.status !== 'awarded' ? 'Crown a winner first' : voteOpen(pod) ? 'Finish the bonus-pack vote first' : !mayspin ? `Only ${winner.name} can spin` : 'Spin!';
   spinBtn.onclick = async () => {
     spinBtn.disabled = true;
     try {
@@ -1105,7 +1111,7 @@ function renderWheel(view) {
       if (await confirmBox('Reset the wheel?', 'Clears year/type filters, excluded sets and every custom per-set odd.', 'Reset', true)) saveFilters({ reset: true });
     };
   }
-  renderReveal(pod);
+  if (pod) renderReveal(pod);
 }
 
 async function runSpin(podId, spin) {
