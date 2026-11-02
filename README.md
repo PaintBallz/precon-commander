@@ -21,8 +21,9 @@ phones, and every phone sees spins, votes and packs live.
 - **Sacrifice a Pack**: give up one of your spun-set packs to make another one any set you like.
 - **Missed a pod?** Every league member who wasn't in it gets 1 pack of the spun set too.
 - **Booster opener**: rip-open animation, rares revealed last, card zoom with double-faced flip.
-  27 sets use real print-sheet data; every other set gets a generated pack from Scryfall's
-  booster cards (with era-correct slots). Never a Collector Booster, and no prices anywhere.
+  170 sets, Alpha to today, use their real print sheets and slot odds; the few with no regular
+  booster on record get a generated pack from Scryfall's booster cards (with era-correct slots).
+  Never a Collector Booster, and no prices anywhere.
 - **Fun Packs**: open a booster from any set just for fun. Nothing is saved (no pool, standings or
   feed), and each pack shows how it was built: real print-sheet slots and odds, or the generated
   layout for that era.
@@ -139,11 +140,15 @@ migrated automatically on startup.
 
 ## How packs are built
 
-- **Real booster data** for 27 sets (Play Booster, else Draft Booster, else Set Booster):
-  print-sheet weights bundled in `packs/`.
-- **Every other set** gets a generated booster from Scryfall's booster cards: 10 commons,
-  3 uncommons, 1 rare (1-in-8 mythic) and a basic land; before Shards of Alara, 11 commons and
-  no land slot; from Urza's Legacy on, about 1 in 6 packs has a foil.
+- **Real booster data** for 170 sets, from Alpha to today (Play Booster, else Draft Booster,
+  else the set's original booster, else Set Booster): print sheets, slot odds and pack layouts
+  bundled in `packs/`. Collector, Jumpstart, prerelease and Arena boosters are never used.
+- **The few sets with no regular booster on record** (Jumpstart, The List, some special
+  printings) get a generated booster from Scryfall's booster cards: 10 commons, 3 uncommons,
+  1 rare (1-in-8 mythic) and a basic land; before Shards of Alara, 11 commons and no land slot;
+  from Urza's Legacy on, about 1 in 6 packs has a foil.
+- **Adding sets:** `node scripts/import-mtgjson-boosters.mjs <set code> ...` downloads a set's
+  booster sheets from MTGJSON and writes them to `packs/` (it never calls Scryfall).
 - **The wheel** holds every released, non-digital expansion, core, masters and draft-innovation
   set with 40+ cards. Each league's wheel can filter by year and type, drop sets, or weight
   them (2 = twice as likely).
@@ -174,7 +179,8 @@ server/
   feedback.js  feature suggestions and the admin inbox
   mail.js      optional SMTP for reset emails
 public/        the app: plain ES modules, no build step
-packs/         real booster print-sheet data
+packs/         real booster print-sheet data (see packs/NOTICE.md)
+scripts/       import-mtgjson-boosters.mjs: add sets' sheets from MTGJSON
 test/          end-to-end suite
 ```
 
@@ -196,6 +202,8 @@ Coast. ©Wizards of the Coast LLC.
 
 Card data and images come from [Scryfall](https://scryfall.com) (not affiliated). Please follow
 the [Scryfall API guidelines](https://scryfall.com/docs/api) if you run your own copy. The
-real-booster print sheets come from the author's earlier pack-opener project.
+real-booster print sheets come from the author's earlier pack-opener project and from
+[MTGJSON](https://mtgjson.com) (MIT License, Copyright © 2018-Present Zachary Halpern; see
+`packs/NOTICE.md`).
 
 Released under the [MIT License](LICENSE).

@@ -1,7 +1,9 @@
 // Booster generation.
-//  - Sets with real booster data (bundled in packs/, from the author's mtg-pack-opener project) use those exact
-//    print sheets and slot odds — Play Booster where it exists, else Draft,
-//    else Set Booster. Collector Boosters are never used.
+//  - Sets with real booster data in packs/ use those exact print sheets and
+//    slot odds: Play Booster where it exists, else Draft, else the original
+//    ("default") booster of older sets, else Set Booster. Collector Boosters
+//    are never used. The sheets come from the author's mtg-pack-opener project
+//    and from MTGJSON (scripts/import-mtgjson-boosters.mjs).
 //  - Every other set gets a generated "regular booster" from its Scryfall pool.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -9,7 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { getSetPool, lookupCards, fallbackImage } from './scryfall.js';
 
 const PACK_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'packs');
-const PRIORITY = ['play', 'draft', 'set'];
+const PRIORITY = ['play', 'draft', 'default', 'set'];
+const KIND_LABEL = { play: 'Play Booster', draft: 'Draft Booster', default: 'Booster', set: 'Set Booster' };
 
 const realPacks = new Map(); // setCode -> { file, kind, name, setName }
 for (const f of fs.readdirSync(PACK_DIR).filter(f => f.endsWith('.json'))) {
@@ -45,14 +48,16 @@ function weightedPick(items, weightOf) {
   return items[items.length - 1];
 }
 
-// Draw `count` distinct cards from a weighted sheet.
-function drawFromSheet(sheet, count) {
+// Draw `count` cards from a weighted sheet: distinct unless the sheet allows
+// duplicates; a "fixed" sheet always gives its cards as listed.
+function drawFromSheet(sheet, count, info = {}) {
+  if (info.fixed) return sheet.slice(0, count);
   const pool = sheet.slice();
   const out = [];
   for (let i = 0; i < count && pool.length; i++) {
     const pick = weightedPick(pool, c => c.weight || 1);
     out.push(pick);
-    pool.splice(pool.indexOf(pick), 1);
+    if (!info.allowDuplicates) pool.splice(pool.indexOf(pick), 1);
   }
   return out;
 }
@@ -66,9 +71,10 @@ async function openRealPack(code) {
   const slots = [];
   for (const slot of variant.slots) {
     const sheet = data.sheets[slot.sheet] || [];
-    const foil = slot.sheet.includes('foil');
+    const info = data.sheetInfo?.[slot.sheet] || {};
+    const foil = info.foil ?? slot.sheet.includes('foil');
     const first = picks.length;
-    for (const c of drawFromSheet(sheet, slot.count)) picks.push({ set: c.set, number: String(c.number), name: c.name, foil, slot: slot.sheet });
+    for (const c of drawFromSheet(sheet, slot.count, info)) picks.push({ set: c.set, number: String(c.number), name: c.name, foil, slot: slot.sheet });
     slots.push({ label: sheetLabel(slot.sheet), count: slot.count, poolSize: sheet.length, cards: range(first, picks.length) });
   }
   const looked = await lookupCards(picks);
@@ -88,10 +94,10 @@ async function openRealPack(code) {
       foil: p.foil,
     };
   });
-  const label = { play: 'Play Booster', draft: 'Draft Booster', set: 'Set Booster' }[kind];
+  const label = KIND_LABEL[kind];
   const explain = {
     source: 'real',
-    summary: `Built from the real ${label} print sheets: each slot draws from its sheet with the printed odds.`,
+    summary: `Built from the real ${kind === 'default' ? 'booster' : label} print sheets${data.source === 'MTGJSON' ? ' (from MTGJSON)' : ''}: each slot draws from its sheet with the printed odds.`,
     variant: { chance: variant.weight / totalWeight, of: data.variants.length },
     slots,
   };
@@ -99,10 +105,14 @@ async function openRealPack(code) {
 }
 
 const range = (a, b) => Array.from({ length: b - a }, (_, i) => a + i);
-// "rare_mythic_with_showcase" -> "Rare / mythic (with showcase)"
+// "rare_mythic_with_showcase" -> "Rare / mythic (with showcase)";
+// MTGJSON's "rareMythicWithBoosterfun" -> "Rare / mythic (with boosterfun)", "nonFoilLand" -> "Non foil land"
 function sheetLabel(sheet) {
-  const [main, extra] = sheet.split(/_with_/);
-  const words = main.replace(/_/g, ' / ').replace(/^./, ch => ch.toUpperCase());
+  const camel = !sheet.includes('_');
+  const snake = sheet.replace(/([a-z])([A-Z0-9])/g, '$1_$2').replace(/(\d)([A-Za-z])/g, '$1_$2').toLowerCase();
+  const [main, extra] = snake.split(/_with_/);
+  const join = camel ? ' ' : ' / ';
+  const words = main.split('_').join(join).replace('rare mythic', 'rare / mythic').replace(/^./, ch => ch.toUpperCase());
   return extra ? `${words} (with ${extra.replace(/_/g, ' ')})` : words;
 }
 

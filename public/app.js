@@ -90,7 +90,7 @@ const typeLabel = t => ({ expansion: 'Expansion', core: 'Core', masters: 'Master
 const fmtDate = iso => new Date(iso).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 const RARITY_ORDER = { common: 0, uncommon: 1, rare: 2, mythic: 3, special: 3, bonus: 3 };
-const kindLabel = code => { const m = S.setsByCode.get(code); return m?.realPack ? `${{ play: 'Play', draft: 'Draft', set: 'Set' }[m.packKind]} Booster` : 'Booster'; };
+const kindLabel = code => { const m = S.setsByCode.get(code); return m?.realPack ? ({ play: 'Play Booster', draft: 'Draft Booster', set: 'Set Booster' }[m.packKind] || 'Booster') : 'Booster'; };
 
 function paintLeaguePicker() {
   const sel = $('#leagueSel');
@@ -1334,6 +1334,7 @@ function renderFun(view) {
   if (!F.code || !S.setsByCode.has(F.code)) F.code = (S.sets.find(s => s.realPack) || S.sets[0])?.code || null;
   const set = S.setsByCode.get(F.code);
   const real = S.sets.filter(s => s.realPack);
+  const generated = S.sets.filter(s => !s.realPack);
   view.innerHTML = `
     <div class="hero"><div><h1>Fun Packs</h1>
       <p>Rip a booster from any set ever sold in boosters, just for fun. <b>Nothing here is saved</b>: it doesn't go into your pool, the league, the standings or the activity feed.</p></div>
@@ -1351,10 +1352,11 @@ function renderFun(view) {
           <summary><h2 style="margin:0">Where packs come from</h2></summary>
           <div class="grid" style="gap:12px;margin-top:12px">
             <div><h3>${I.check} Real print sheets: ${real.length} sets</h3>
-              <p class="small muted">The exact booster print sheets and slot odds for these sets are bundled with the app (Play Booster where the set has one, else Draft, else Set Booster; never Collector Boosters). Every slot draws from its real sheet at the printed rate.</p>
-              <div class="row" style="gap:4px">${real.map(s => `<button class="chip fun-pick" data-code="${s.code}" title="${esc(s.name)}">${icon(s)}${esc(s.code.toUpperCase())}</button>`).join('')}</div></div>
-            <div><h3>${I.sliders} Generated: every other set</h3>
-              <p class="small muted">Built from Scryfall's list of the cards that set put in boosters, using that era's pack layout:</p>
+              <p class="small muted">The exact booster print sheets and slot odds for these sets are bundled with the app (Play Booster where the set has one, else Draft, else the set's original booster, else Set Booster; never Collector Boosters). Every slot draws from its real sheet at the printed rate. Sheet data comes from <a href="https://mtgjson.com" target="_blank" rel="noopener">MTGJSON</a> and an earlier pack-opener project.</p>
+            </div>
+            <div><h3>${I.sliders} Generated: ${plural(generated.length, 'set')}</h3>
+              <p class="small muted">Sets with no regular booster on record (Jumpstart, The List, special printings) are built from Scryfall's list of the cards that set put in boosters, using that era's pack layout:</p>
+              <div class="row" style="gap:4px;margin-bottom:8px">${generated.map(s => `<button class="chip fun-pick" data-code="${s.code}" title="${esc(s.name)}">${icon(s)}${esc(s.code.toUpperCase())}</button>`).join('')}</div>
               <ul class="small muted fun-rules">
                 <li><b>2008 on</b> (Shards of Alara): a basic land, 10 commons, 3 uncommons and a rare that's a mythic 1 time in 8.</li>
                 <li><b>Before 2008</b>: 11 commons, 3 uncommons and a rare. No land slot, no mythics.</li>

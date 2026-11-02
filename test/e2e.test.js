@@ -475,8 +475,8 @@ test('cannot sacrifice without another spun pack to give up', async () => {
   S.joePack = j.id;
 });
 
-test('generated booster for an old set (Alpha): 11 commons, 3 uncommons, 1 rare, no land slot', async () => {
-  await ok(joe.post(`/api/pods/${S.pod.id}/packs/${S.joePack}/choose`, { setCode: 'lea' }));
+test('generated booster for an old set (Foreign Black Border): 11 commons, 3 uncommons, 1 rare, no land slot', async () => {
+  await ok(joe.post(`/api/pods/${S.pod.id}/packs/${S.joePack}/choose`, { setCode: 'fbb' }));
   const { pack } = await ok(joe.post(`/api/pods/${S.pod.id}/packs/${S.joePack}/open`));
   assert.equal(pack.generated, true);
   assert.equal(pack.cards.length, 15);
@@ -484,10 +484,10 @@ test('generated booster for an old set (Alpha): 11 commons, 3 uncommons, 1 rare,
   assert.equal(count(pack.cards, c => c.rarity === 'uncommon'), 3);
   assert.equal(count(pack.cards, isRareUp), 1);
   assert.equal(count(pack.cards, isBasic), 0, 'no basic land slot before Shards of Alara');
-  assert.ok(pack.cards.every(c => c.set === 'lea'));
+  assert.ok(pack.cards.every(c => c.set === 'fbb'));
 });
 
-test('generated booster for a modern set (Magic 2010): land slot + rare/mythic', async () => {
+test('generated booster for a modern set (Jumpstart): land slot + rare/mythic', async () => {
   assert.equal((await nick.post(`/api/pods/${S.pod.id}/award`, { playerId: S.u.Nick.id, delta: 1 })).status, 403, 'only the admin adjusts packs');
   let { pod } = await ok(admin.post(`/api/pods/${S.pod.id}/award`, { playerId: S.u.Nick.id, delta: 1 }));
   const nk = player(pod, 'Nick');
@@ -495,7 +495,7 @@ test('generated booster for a modern set (Magic 2010): land slot + rare/mythic',
   assert.equal(nk.packs.at(-1).set.code, S.spin.setCode);
   const k = nk.packs.find(x => x.status === 'ready');
   ({ pod } = await ok(nick.post(`/api/pods/${S.pod.id}/packs/${k.id}/sacrifice`)));
-  await ok(nick.post(`/api/pods/${S.pod.id}/packs/${k.id}/choose`, { setCode: 'm10' }));
+  await ok(nick.post(`/api/pods/${S.pod.id}/packs/${k.id}/choose`, { setCode: 'jmp' }));
   const { pack } = await ok(nick.post(`/api/pods/${S.pod.id}/packs/${k.id}/open`));
   assert.equal(pack.cards.length, 15);
   assert.equal(count(pack.cards, isBasic), 1, 'one basic land');
@@ -716,9 +716,9 @@ test('admin can delete a single pulled card and a whole pack', async () => {
   assert.equal(after.cards.length, mikePack.cards.length - 1, 'and the pack\'s pulls in History');
   assert.ok(!after.cards.some(c => c.id === card.id));
 
-  // Joe's whole Alpha pack.
+  // Joe's whole Foreign Black Border pack.
   const joePacks = player(await histPod(), 'Joe').packs;
-  const alpha = joePacks.find(k => k.set.code === 'lea');
+  const alpha = joePacks.find(k => k.set.code === 'fbb');
   assert.equal((await joe.del(`/api/pods/${S.pod.id}/packs/${alpha.id}`)).status, 403, 'players cannot delete packs');
   assert.equal((await admin.del(`/api/pods/${S.pod.id}/packs/nope`)).status, 404);
   await ok(admin.del(`/api/pods/${S.pod.id}/packs/${alpha.id}`));
@@ -819,8 +819,14 @@ test('fun packs: any set, explained, never saved', async () => {
   assert.equal(r.pack.explain.source, 'real');
   assert.equal(r.pack.explain.slots.reduce((n, sl) => n + sl.count, 0), r.pack.cards.length, 'every card comes from a listed slot');
   assert.ok(r.pack.explain.slots.every(sl => sl.poolSize >= sl.count));
-  // … and a generated one (Alpha, cached by the earlier test).
+  // Alpha's original booster comes from MTGJSON's print sheets: 11 commons, 3 uncommons, 1 rare.
   r = await ok(mike.post('/api/fun/open', { set: 'lea' }));
+  assert.equal(r.pack.generated, false);
+  assert.match(r.pack.explain.summary, /MTGJSON/);
+  assert.deepEqual(r.pack.explain.slots.map(sl => [sl.label, sl.count]).sort(), [['Common', 11], ['Rare', 1], ['Uncommon', 3]]);
+  assert.ok(r.pack.cards.every(c => c.set === 'lea' && c.image));
+  // … and a generated one (Foreign Black Border, cached by the earlier test).
+  r = await ok(mike.post('/api/fun/open', { set: 'fbb' }));
   assert.equal(r.pack.explain.source, 'generated');
   assert.match(r.pack.explain.era, /Before Shards of Alara/);
   assert.equal(r.pack.explain.slots.reduce((n, sl) => n + sl.count, 0), 15);

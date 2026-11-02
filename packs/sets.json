@@ -1,15 +1,191 @@
 {
+ "10e": {
+  "name": "Tenth Edition",
+  "released": "2007-07-13"
+ },
+ "2ed": {
+  "name": "Unlimited Edition",
+  "released": "1993-12-01"
+ },
+ "2x2": {
+  "name": "Double Masters 2022",
+  "released": "2022-07-08"
+ },
+ "2xm": {
+  "name": "Double Masters",
+  "released": "2020-08-07"
+ },
+ "3ed": {
+  "name": "Revised Edition",
+  "released": "1994-04-11"
+ },
+ "4ed": {
+  "name": "Fourth Edition",
+  "released": "1995-04-01"
+ },
+ "5dn": {
+  "name": "Fifth Dawn",
+  "released": "2004-06-04"
+ },
+ "5ed": {
+  "name": "Fifth Edition",
+  "released": "1997-03-24"
+ },
+ "6ed": {
+  "name": "Classic Sixth Edition",
+  "released": "1999-04-21"
+ },
+ "7ed": {
+  "name": "Seventh Edition",
+  "released": "2001-04-11"
+ },
+ "8ed": {
+  "name": "Eighth Edition",
+  "released": "2003-07-28"
+ },
+ "9ed": {
+  "name": "Ninth Edition",
+  "released": "2005-07-29"
+ },
+ "a25": {
+  "name": "Masters 25",
+  "released": "2018-03-16"
+ },
+ "acr": {
+  "name": "Assassin's Creed",
+  "released": "2024-07-05"
+ },
+ "aer": {
+  "name": "Aether Revolt",
+  "released": "2017-01-20"
+ },
  "afr": {
   "name": "Adventures in the Forgotten Realms",
   "released": "2021-07-23"
+ },
+ "akh": {
+  "name": "Amonkhet",
+  "released": "2017-04-28"
+ },
+ "ala": {
+  "name": "Shards of Alara",
+  "released": "2008-10-03"
+ },
+ "all": {
+  "name": "Alliances",
+  "released": "1996-06-10"
+ },
+ "apc": {
+  "name": "Apocalypse",
+  "released": "2001-06-04"
+ },
+ "arb": {
+  "name": "Alara Reborn",
+  "released": "2009-04-30"
+ },
+ "arn": {
+  "name": "Arabian Nights",
+  "released": "1993-12-17"
+ },
+ "atq": {
+  "name": "Antiquities",
+  "released": "1994-03-04"
+ },
+ "avr": {
+  "name": "Avacyn Restored",
+  "released": "2012-05-04"
+ },
+ "bbd": {
+  "name": "Battlebond",
+  "released": "2018-06-08"
+ },
+ "bchr": {
+  "name": "Chronicles Foreign Black Border",
+  "released": "1995-07-01"
+ },
+ "bfz": {
+  "name": "Battle for Zendikar",
+  "released": "2015-10-02"
  },
  "blb": {
   "name": "Bloomburrow",
   "released": "2024-08-02"
  },
+ "bng": {
+  "name": "Born of the Gods",
+  "released": "2014-02-07"
+ },
+ "bok": {
+  "name": "Betrayers of Kamigawa",
+  "released": "2005-02-04"
+ },
  "bro": {
   "name": "The Brothers' War",
   "released": "2022-11-18"
+ },
+ "chk": {
+  "name": "Champions of Kamigawa",
+  "released": "2004-10-01"
+ },
+ "chr": {
+  "name": "Chronicles",
+  "released": "1995-07-01"
+ },
+ "clb": {
+  "name": "Commander Legends: Battle for Baldur's Gate",
+  "released": "2022-06-10"
+ },
+ "clu": {
+  "name": "Ravnica: Clue Edition",
+  "released": "2024-02-23"
+ },
+ "cmm": {
+  "name": "Commander Masters",
+  "released": "2023-08-04"
+ },
+ "cmr": {
+  "name": "Commander Legends",
+  "released": "2020-11-20"
+ },
+ "cn2": {
+  "name": "Conspiracy: Take the Crown",
+  "released": "2016-08-26"
+ },
+ "cns": {
+  "name": "Conspiracy",
+  "released": "2014-06-06"
+ },
+ "con": {
+  "name": "Conflux",
+  "released": "2009-02-06"
+ },
+ "csp": {
+  "name": "Coldsnap",
+  "released": "2006-07-21"
+ },
+ "dbl": {
+  "name": "Innistrad: Double Feature",
+  "released": "2022-01-28"
+ },
+ "dft": {
+  "name": "Aetherdrift",
+  "released": "2025-02-14"
+ },
+ "dgm": {
+  "name": "Dragon's Maze",
+  "released": "2013-05-03"
+ },
+ "dis": {
+  "name": "Dissension",
+  "released": "2006-05-05"
+ },
+ "dka": {
+  "name": "Dark Ascension",
+  "released": "2012-02-03"
+ },
+ "dmr": {
+  "name": "Dominaria Remastered",
+  "released": "2023-01-13"
  },
  "dmu": {
   "name": "Dominaria United",
@@ -19,33 +195,229 @@
   "name": "Dominaria",
   "released": "2018-04-27"
  },
+ "drk": {
+  "name": "The Dark",
+  "released": "1994-08-01"
+ },
  "dsk": {
   "name": "Duskmourn: House of Horror",
   "released": "2024-09-27"
+ },
+ "dst": {
+  "name": "Darksteel",
+  "released": "2004-02-06"
+ },
+ "dtk": {
+  "name": "Dragons of Tarkir",
+  "released": "2015-03-27"
+ },
+ "ecl": {
+  "name": "Lorwyn Eclipsed",
+  "released": "2026-01-23"
  },
  "eld": {
   "name": "Throne of Eldraine",
   "released": "2019-10-04"
  },
+ "ema": {
+  "name": "Eternal Masters",
+  "released": "2016-06-10"
+ },
+ "emn": {
+  "name": "Eldritch Moon",
+  "released": "2016-07-22"
+ },
+ "eoe": {
+  "name": "Edge of Eternities",
+  "released": "2025-08-01"
+ },
+ "eve": {
+  "name": "Eventide",
+  "released": "2008-07-25"
+ },
+ "exo": {
+  "name": "Exodus",
+  "released": "1998-06-15"
+ },
+ "fdn": {
+  "name": "Foundations",
+  "released": "2024-11-15"
+ },
+ "fem": {
+  "name": "Fallen Empires",
+  "released": "1994-11-01"
+ },
+ "fin": {
+  "name": "Final Fantasy",
+  "released": "2025-06-13"
+ },
+ "fra": {
+  "name": "Reality Fracture",
+  "released": "2026-10-02"
+ },
+ "frf": {
+  "name": "Fate Reforged",
+  "released": "2015-01-23"
+ },
+ "fut": {
+  "name": "Future Sight",
+  "released": "2007-05-04"
+ },
+ "gpt": {
+  "name": "Guildpact",
+  "released": "2006-02-03"
+ },
  "grn": {
   "name": "Guilds of Ravnica",
   "released": "2018-10-05"
+ },
+ "gtc": {
+  "name": "Gatecrash",
+  "released": "2013-02-01"
+ },
+ "hml": {
+  "name": "Homelands",
+  "released": "1995-10-01"
+ },
+ "hob": {
+  "name": "The Hobbit",
+  "released": "2026-08-14"
+ },
+ "hou": {
+  "name": "Hour of Devastation",
+  "released": "2017-07-14"
+ },
+ "ice": {
+  "name": "Ice Age",
+  "released": "1995-06-03"
  },
  "iko": {
   "name": "Ikoria: Lair of Behemoths",
   "released": "2020-04-24"
  },
+ "ima": {
+  "name": "Iconic Masters",
+  "released": "2017-11-17"
+ },
+ "inr": {
+  "name": "Innistrad Remastered",
+  "released": "2025-01-24"
+ },
+ "inv": {
+  "name": "Invasion",
+  "released": "2000-10-02"
+ },
+ "isd": {
+  "name": "Innistrad",
+  "released": "2011-09-30"
+ },
+ "jou": {
+  "name": "Journey into Nyx",
+  "released": "2014-05-02"
+ },
+ "jud": {
+  "name": "Judgment",
+  "released": "2002-05-27"
+ },
  "khm": {
   "name": "Kaldheim",
   "released": "2021-02-05"
+ },
+ "kld": {
+  "name": "Kaladesh",
+  "released": "2016-09-30"
+ },
+ "ktk": {
+  "name": "Khans of Tarkir",
+  "released": "2014-09-26"
  },
  "lci": {
   "name": "The Lost Caverns of Ixalan",
   "released": "2023-11-17"
  },
+ "lea": {
+  "name": "Limited Edition Alpha",
+  "released": "1993-08-05"
+ },
+ "leb": {
+  "name": "Limited Edition Beta",
+  "released": "1993-10-04"
+ },
+ "leg": {
+  "name": "Legends",
+  "released": "1994-06-01"
+ },
+ "lgn": {
+  "name": "Legions",
+  "released": "2003-02-03"
+ },
+ "lrw": {
+  "name": "Lorwyn",
+  "released": "2007-10-12"
+ },
  "ltr": {
   "name": "The Lord of the Rings: Tales of Middle-earth",
   "released": "2023-06-23"
+ },
+ "m10": {
+  "name": "Magic 2010",
+  "released": "2009-07-17"
+ },
+ "m11": {
+  "name": "Magic 2011",
+  "released": "2010-07-16"
+ },
+ "m12": {
+  "name": "Magic 2012",
+  "released": "2011-07-15"
+ },
+ "m13": {
+  "name": "Magic 2013",
+  "released": "2012-07-13"
+ },
+ "m14": {
+  "name": "Magic 2014",
+  "released": "2013-07-19"
+ },
+ "m15": {
+  "name": "Magic 2015",
+  "released": "2014-07-18"
+ },
+ "m19": {
+  "name": "Core Set 2019",
+  "released": "2018-07-13"
+ },
+ "m20": {
+  "name": "Core Set 2020",
+  "released": "2019-07-12"
+ },
+ "m21": {
+  "name": "Core Set 2021",
+  "released": "2020-07-03"
+ },
+ "mat": {
+  "name": "March of the Machine: The Aftermath",
+  "released": "2023-05-12"
+ },
+ "mb2": {
+  "name": "Mystery Booster 2",
+  "released": "2024-08-02"
+ },
+ "mbc": {
+  "name": "Mystery Booster Commander Edition",
+  "released": "2026-10-19"
+ },
+ "mbs": {
+  "name": "Mirrodin Besieged",
+  "released": "2011-02-04"
+ },
+ "mh1": {
+  "name": "Modern Horizons",
+  "released": "2019-06-14"
+ },
+ "mh2": {
+  "name": "Modern Horizons 2",
+  "released": "2021-06-18"
  },
  "mh3": {
   "name": "Modern Horizons 3",
@@ -55,41 +427,225 @@
   "name": "Innistrad: Midnight Hunt",
   "released": "2021-09-24"
  },
+ "mir": {
+  "name": "Mirage",
+  "released": "1996-10-08"
+ },
  "mkm": {
   "name": "Murders at Karlov Manor",
   "released": "2024-02-09"
+ },
+ "mm2": {
+  "name": "Modern Masters 2015",
+  "released": "2015-05-22"
+ },
+ "mm3": {
+  "name": "Modern Masters 2017",
+  "released": "2017-03-17"
+ },
+ "mma": {
+  "name": "Modern Masters",
+  "released": "2013-06-07"
+ },
+ "mmq": {
+  "name": "Mercadian Masques",
+  "released": "1999-10-04"
  },
  "mom": {
   "name": "March of the Machine",
   "released": "2023-04-21"
  },
+ "mor": {
+  "name": "Morningtide",
+  "released": "2008-02-01"
+ },
+ "mrd": {
+  "name": "Mirrodin",
+  "released": "2003-10-02"
+ },
+ "msh": {
+  "name": "Marvel Super Heroes",
+  "released": "2026-06-26"
+ },
+ "nem": {
+  "name": "Nemesis",
+  "released": "2000-02-14"
+ },
  "neo": {
   "name": "Kamigawa: Neon Dynasty",
   "released": "2022-02-18"
+ },
+ "nph": {
+  "name": "New Phyrexia",
+  "released": "2011-05-13"
+ },
+ "ody": {
+  "name": "Odyssey",
+  "released": "2001-10-01"
+ },
+ "ogw": {
+  "name": "Oath of the Gatewatch",
+  "released": "2016-01-22"
  },
  "one": {
   "name": "Phyrexia: All Will Be One",
   "released": "2023-02-10"
  },
+ "ons": {
+  "name": "Onslaught",
+  "released": "2002-10-07"
+ },
+ "ori": {
+  "name": "Magic Origins",
+  "released": "2015-07-17"
+ },
  "otj": {
   "name": "Outlaws of Thunder Junction",
   "released": "2024-04-19"
+ },
+ "pcy": {
+  "name": "Prophecy",
+  "released": "2000-06-05"
+ },
+ "plc": {
+  "name": "Planar Chaos",
+  "released": "2007-02-02"
+ },
+ "pls": {
+  "name": "Planeshift",
+  "released": "2001-02-05"
+ },
+ "rav": {
+  "name": "Ravnica: City of Guilds",
+  "released": "2005-10-07"
+ },
+ "ren": {
+  "name": "Renaissance",
+  "released": "1995-08-01"
+ },
+ "rin": {
+  "name": "Rinascimento",
+  "released": "1995-08-01"
+ },
+ "rix": {
+  "name": "Rivals of Ixalan",
+  "released": "2018-01-19"
  },
  "rna": {
   "name": "Ravnica Allegiance",
   "released": "2019-01-25"
  },
+ "roe": {
+  "name": "Rise of the Eldrazi",
+  "released": "2010-04-23"
+ },
+ "rtr": {
+  "name": "Return to Ravnica",
+  "released": "2012-10-05"
+ },
+ "rvr": {
+  "name": "Ravnica Remastered",
+  "released": "2024-01-12"
+ },
+ "scg": {
+  "name": "Scourge",
+  "released": "2003-05-26"
+ },
+ "shm": {
+  "name": "Shadowmoor",
+  "released": "2008-05-02"
+ },
  "snc": {
   "name": "Streets of New Capenna",
   "released": "2022-04-29"
+ },
+ "soi": {
+  "name": "Shadows over Innistrad",
+  "released": "2016-04-08"
+ },
+ "sok": {
+  "name": "Saviors of Kamigawa",
+  "released": "2005-06-03"
+ },
+ "som": {
+  "name": "Scars of Mirrodin",
+  "released": "2010-10-01"
+ },
+ "sos": {
+  "name": "Secrets of Strixhaven",
+  "released": "2026-04-24"
+ },
+ "spm": {
+  "name": "Marvel's Spider-Man",
+  "released": "2025-09-26"
+ },
+ "sth": {
+  "name": "Stronghold",
+  "released": "1998-03-02"
  },
  "stx": {
   "name": "Strixhaven: School of Mages",
   "released": "2021-04-23"
  },
+ "sum": {
+  "name": "Summer Magic / Edgar",
+  "released": "1994-06-21"
+ },
+ "tdm": {
+  "name": "Tarkir: Dragonstorm",
+  "released": "2025-04-11"
+ },
  "thb": {
   "name": "Theros Beyond Death",
   "released": "2020-01-24"
+ },
+ "ths": {
+  "name": "Theros",
+  "released": "2013-09-27"
+ },
+ "tla": {
+  "name": "Avatar: The Last Airbender",
+  "released": "2025-11-21"
+ },
+ "tmp": {
+  "name": "Tempest",
+  "released": "1997-10-14"
+ },
+ "tmt": {
+  "name": "Teenage Mutant Ninja Turtles",
+  "released": "2026-03-06"
+ },
+ "tor": {
+  "name": "Torment",
+  "released": "2002-02-04"
+ },
+ "tsp": {
+  "name": "Time Spiral",
+  "released": "2006-10-06"
+ },
+ "tsr": {
+  "name": "Time Spiral Remastered",
+  "released": "2021-03-19"
+ },
+ "uds": {
+  "name": "Urza's Destiny",
+  "released": "1999-06-07"
+ },
+ "ulg": {
+  "name": "Urza's Legacy",
+  "released": "1999-02-15"
+ },
+ "uma": {
+  "name": "Ultimate Masters",
+  "released": "2018-12-07"
+ },
+ "usg": {
+  "name": "Urza's Saga",
+  "released": "1998-10-12"
+ },
+ "vis": {
+  "name": "Visions",
+  "released": "1997-02-03"
  },
  "vow": {
   "name": "Innistrad: Crimson Vow",
@@ -102,6 +658,22 @@
  "woe": {
   "name": "Wilds of Eldraine",
   "released": "2023-09-08"
+ },
+ "wth": {
+  "name": "Weatherlight",
+  "released": "1997-06-09"
+ },
+ "wwk": {
+  "name": "Worldwake",
+  "released": "2010-02-05"
+ },
+ "xln": {
+  "name": "Ixalan",
+  "released": "2017-09-29"
+ },
+ "zen": {
+  "name": "Zendikar",
+  "released": "2009-10-02"
  },
  "znr": {
   "name": "Zendikar Rising",
