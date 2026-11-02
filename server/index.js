@@ -28,6 +28,7 @@ import {
 import { getBoosterSets, BOOSTER_SET_TYPES } from './scryfall.js';
 import { openPack, hasRealPack, realPackKind, localPackSets } from './packs.js';
 import { requireAuth, requireAdmin, authRoutes, seedAdmin, listUsers, getUser } from './auth.js';
+import { feedbackRoutes, newFeedbackCount } from './feedback.js';
 
 const PORT = Number(process.env.PORT || 3000);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -486,6 +487,7 @@ app.get('/api/state', wrap(async (req, res) => {
     openPods: openPodIds.map(id => view(req, loadPod(id))).filter(Boolean),
     members: league ? leagueMembers(league.id).map(m => ({ id: m.id, username: m.username, precon: m.precon })) : [],
     pending,
+    ...(req.user.isAdmin ? { feedbackNew: newFeedbackCount() } : {}),
   });
 }));
 
@@ -757,6 +759,11 @@ app.get('/api/pods/:id', (req, res) => {
   if (!pod) return res.status(404).json({ error: 'Not found' });
   res.json({ pod: view(req, pod) });
 });
+
+// ---------- feedback ----------
+// Only the admin (new-count badge) and the author (status/reply) care, so the
+// event carries just who to tell; everyone else ignores it.
+feedbackRoutes(app, wrap, item => broadcast('feedback', { authorId: item.userId, status: item.deleted ? null : item.status, id: item.id }));
 
 // ---------- pools ----------
 // A player's pool in a league = their pool_cards from that league's running

@@ -44,6 +44,7 @@ async function loadState() {
   S.me = st.me; S.pods = st.pods; S.openPods = st.openPods || []; S.members = st.members; S.pending = st.pending || [];
   S.league = st.league; S.leagues = st.leagues || []; S.myLeagueId = st.myLeagueId;
   S.viewLeague = st.league?.id || null;
+  S.feedbackNew = st.feedbackNew || 0;
   paintMe();
   paintLeaguePicker();
 }
@@ -99,7 +100,10 @@ function paintLeaguePicker() {
 $('#leagueSel').addEventListener('change', e => showLeague(e.target.value).catch(fail));
 
 function paintMe() {
-  $('#meBtn').innerHTML = S.me ? `${isAdmin() ? '<span class="chip gold">admin</span>' : ''}<span>${esc(S.me.username)}</span>` : '';
+  const fb = isAdmin() && S.feedbackNew ? `<span class="chip st-new" title="${plural(S.feedbackNew, 'new suggestion')}">💡${S.feedbackNew}</span>` : '';
+  $('#meBtn').innerHTML = S.me ? `${isAdmin() ? '<span class="chip gold">admin</span>' : ''}${fb}<span>${esc(S.me.username)}</span>` : '';
+  const inApp = !!S.me && !S.me.mustChange;
+  $('#fbBtn').hidden = !inApp; $('#fbOr').hidden = !inApp;
 }
 const soundBtn = $('#soundBtn');
 const paintSound = () => { soundBtn.textContent = S.sound ? '🔊' : '🔇'; };
@@ -109,6 +113,88 @@ $('#discordBtn').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText('paintballz'); toast('📋 Discord username copied: paintballz', 'good'); }
   catch { toast('My Discord username is paintballz'); }
 });
+
+// ---------------- feedback ----------------
+const FB_KINDS = { idea: '💡 Feature idea', bug: '🐞 Bug', other: '💬 Other' };
+const FB_STATUS = { new: 'New', planned: 'Planned', done: 'Done', declined: 'Declined' };
+const fbChip = st => `<span class="chip st-${st}">${FB_STATUS[st] || esc(st)}</span>`;
+$('#fbBtn').addEventListener('click', () => {
+  const m = $('#modal');
+  m.innerHTML = `<div class="box"><div class="dialog">
+    <h2>💡 Suggest a feature</h2>
+    <p class="muted small">Ideas, bugs, anything that would make the league better. Only the site admin sees it, and you can follow it on your Account page.</p>
+    <form id="fbForm" class="grid">
+      <div class="fb-filter">${Object.entries(FB_KINDS).map(([k, l], i) => `<label class="chip"><input type="radio" name="kind" value="${k}" ${i ? '' : 'checked'}> ${l}</label>`).join('')}</div>
+      <label>Your idea<textarea name="text" rows="5" maxlength="2000" required placeholder="What should it do, and why would it be great?"></textarea></label>
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <span class="small dim" id="fbCount">0 / 2000</span>
+        <div class="row"><button type="button" class="btn ghost" id="fbCancel">Cancel</button><button class="btn gold">Send</button></div>
+      </div>
+    </form></div></div>`;
+  m.hidden = false;
+  const ta = $('textarea', m);
+  ta.focus();
+  ta.oninput = () => { $('#fbCount').textContent = `${ta.value.length} / 2000`; };
+  $('#fbCancel', m).onclick = () => { m.hidden = true; };
+  $('#fbForm', m).onsubmit = async e => {
+    e.preventDefault();
+    try {
+      await post('/feedback', Object.fromEntries(new FormData(e.target)));
+      m.hidden = true;
+      toast('💡 Thanks! Your suggestion was sent.', 'good');
+      if (S.route === 'account') render();
+    } catch (err) { fail(err); }
+  };
+});
+
+// Account page: a player's own suggestions, or the admin's inbox.
+async function renderFeedback(box) {
+  const filter = S.fbFilter ?? (isAdmin() ? 'new' : '');
+  let d;
+  try { d = await api('/feedback' + (isAdmin() && filter ? `?status=${filter}` : '')); } catch (err) { fail(err); return; }
+  if (S.route !== 'account' || !box.isConnected) return;
+  const when = iso => new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  if (!isAdmin()) {
+    box.innerHTML = d.items.length ? `<div class="panel" style="margin-top:18px">
+      <h2>Your suggestions</h2>
+      <div class="fb-list">${d.items.map(it => `<div class="fb-item">
+        <div class="fb-head">${fbChip(it.status)}<span class="small">${FB_KINDS[it.kind] || ''}</span><span class="small dim">${when(it.createdAt)}</span>
+          ${it.status === 'new' ? `<button class="chip-x" data-fbdel="${it.id}" title="Take it back" style="margin-left:auto">✕</button>` : ''}</div>
+        <p class="fb-text">${esc(it.text)}</p>
+        ${it.reply ? `<p class="fb-reply"><b>Admin:</b> ${esc(it.reply)}</p>` : ''}
+      </div>`).join('')}</div></div>` : '';
+  } else {
+    const total = Object.values(d.counts).reduce((a, b) => a + b, 0);
+    box.innerHTML = `<div class="panel" style="margin-top:18px">
+      <h2>💡 Feedback inbox</h2>
+      <div class="fb-filter">${[['new', 'New'], ['planned', 'Planned'], ['done', 'Done'], ['declined', 'Declined'], ['', 'All']].map(([k, l]) =>
+        `<button class="btn sm ghost ${filter === k ? 'sel' : ''}" data-fbf="${k}">${l} · ${k ? d.counts[k] : total}</button>`).join('')}</div>
+      ${d.items.length ? `<div class="fb-list">${d.items.map(it => `<div class="fb-item" data-fb="${it.id}">
+        <div class="fb-head">${fbChip(it.status)}<b>${esc(it.username)}</b><span class="small">${FB_KINDS[it.kind] || ''}</span><span class="small dim">${when(it.createdAt)}</span></div>
+        <p class="fb-text">${esc(it.text)}</p>
+        <div class="fb-admin">
+          <select name="status">${Object.entries(FB_STATUS).map(([k, l]) => `<option value="${k}" ${it.status === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+          <input name="reply" maxlength="500" value="${esc(it.reply)}" placeholder="Reply (the player sees this)">
+          <button class="btn sm gold" data-fbsave>Save</button>
+          <button class="btn sm danger" data-fbdel="${it.id}">Delete</button>
+        </div>
+      </div>`).join('')}</div>` : `<p class="muted small" style="margin-top:10px">Nothing ${filter ? `marked ${FB_STATUS[filter].toLowerCase()}` : 'here'} yet.</p>`}
+    </div>`;
+    $$('[data-fbf]', box).forEach(b => b.onclick = () => { S.fbFilter = b.dataset.fbf; renderFeedback(box); });
+    $$('[data-fbsave]', box).forEach(b => b.onclick = async () => {
+      const item = b.closest('[data-fb]');
+      try {
+        await api(`/feedback/${item.dataset.fb}`, { method: 'PUT', body: { status: $('[name=status]', item).value, reply: $('[name=reply]', item).value } });
+        toast('Saved.', 'good');
+        await loadState(); renderFeedback(box);
+      } catch (err) { fail(err); }
+    });
+  }
+  $$('[data-fbdel]', box).forEach(b => b.onclick = async () => {
+    if (!await confirmBox('Delete this suggestion?', "It can't be brought back.", 'Delete', true)) return;
+    try { await del(`/feedback/${b.dataset.fbdel}`); if (isAdmin()) await loadState(); renderFeedback(box); } catch (err) { fail(err); }
+  });
+}
 
 // ---- deck-list text ("1 Card Name (SET) 123" — Moxfield / Archidekt) ----
 // Which deck builder copied lists are formatted for (remembered per device).
@@ -182,6 +268,7 @@ function confirmBox(title, body, okLabel = 'OK', danger = false) {
 let authMode = 'login';
 function showAuth() {
   $('#top').hidden = true;
+  $('#fbBtn').hidden = true; $('#fbOr').hidden = true;
   stopWheelLoop();
   const view = $('#view');
   const resetToken = location.hash.startsWith('#reset') ? new URLSearchParams(location.hash.split('?')[1] || '').get('token') : null;
@@ -320,8 +407,10 @@ async function renderAccount(view) {
         <button class="btn gold">Change password</button>
       </form>
     </div>
+    <div id="fbBox"></div>
     <div id="adminBox"></div>`;
   $('#lo', view).onclick = logout;
+  renderFeedback($('#fbBox', view));
   $('#profForm', view).onsubmit = async e => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.target));
@@ -1538,6 +1627,15 @@ function connect() {
   };
   es.addEventListener('state', onState);
   es.addEventListener('spin', onState);
+  es.addEventListener('feedback', async e => {
+    const info = JSON.parse(e.data || '{}');
+    const mine = info.authorId === S.me?.id;
+    if (mine && info.status && info.status !== 'new') toast(`💡 Your suggestion was marked <b>${FB_STATUS[info.status] || esc(info.status)}</b>. <a href="#account">See it</a>`, 'good');
+    if (!isAdmin() && !mine) return;
+    if (isAdmin()) await loadState().catch(() => {});
+    const typing = document.activeElement && ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName);
+    if (S.route === 'account' && !typing && $('#fbBox')) renderFeedback($('#fbBox'));
+  });
   es.addEventListener('sets', async () => {
     await loadSets().catch(() => {});
     if (S.spinning) return;

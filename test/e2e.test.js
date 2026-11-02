@@ -808,6 +808,30 @@ test('ending a league archives it and frees its players; deleting removes it', a
   assert.equal((await ok(gus.get('/api/state'))).myLeagueId, null, 'Gus is free');
 });
 
+test('feedback: players send ideas, only the admin sees them all and replies', async () => {
+  assert.equal((await mike.post('/api/feedback', { kind: 'idea', text: 'hi' })).status, 400, 'too short');
+  const { item } = await ok(mike.post('/api/feedback', { kind: 'idea', text: 'Discord webhook for mythic pulls' }));
+  assert.equal(item.status, 'new');
+  await ok(joe.post('/api/feedback', { kind: 'bug', text: 'Wheel stutters on my phone' }));
+  assert.deepEqual((await ok(mike.get('/api/feedback'))).items.map(i => i.text), ['Discord webhook for mythic pulls'], 'players see only their own');
+  assert.equal((await mike.put(`/api/feedback/${item.id}`, { status: 'done' })).status, 403, 'players cannot change status');
+  assert.equal((await joe.del(`/api/feedback/${item.id}`)).status, 403, 'or delete someone else\'s');
+  const inbox = await ok(admin.get('/api/feedback?status=new'));
+  assert.ok(inbox.items.length >= 2 && inbox.counts.new >= 2, 'the admin sees everything new');
+  assert.ok((await ok(admin.get('/api/state'))).feedbackNew >= 2, 'and gets a new-count badge');
+  assert.equal((await ok(mike.get('/api/state'))).feedbackNew, undefined, 'players don\'t');
+  const { item: planned } = await ok(admin.put(`/api/feedback/${item.id}`, { status: 'planned', reply: 'On the list!' }));
+  assert.equal(planned.status, 'planned');
+  const mine = (await ok(mike.get('/api/feedback'))).items[0];
+  assert.equal(mine.reply, 'On the list!', 'the player sees the reply');
+  assert.equal((await mike.del(`/api/feedback/${item.id}`)).status, 403, 'reviewed suggestions can\'t be taken back');
+  for (let i = 0; i < 5; i++) await ok(eve.post('/api/feedback', { text: `Idea number ${i}` }));
+  assert.equal((await eve.post('/api/feedback', { text: 'One too many ideas' })).status, 429, '5 an hour');
+  const evesFirst = (await ok(eve.get('/api/feedback'))).items.at(-1);
+  await ok(eve.del(`/api/feedback/${evesFirst.id}`));
+  await ok(admin.del(`/api/feedback/${item.id}`));
+});
+
 test('logging out ends the session', async () => {
   await ok(eve.post('/api/auth/logout'));
   assert.equal((await eve.get('/api/state')).status, 401);

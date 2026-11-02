@@ -28,6 +28,9 @@ phones, and every phone sees spins, votes and packs live.
   foils included (`1 Name (SET) 123 *F*` / `1x Name (set) 123 *F*`).
 - **League tab**: standings, players, rules and an activity feed (winners, votes, spins, mythic
   pulls). Leagues can be ended into a read-only archive (seasons).
+- **Suggest a feature**: a footer button sends ideas and bug reports to the site admin's inbox.
+  Players follow theirs on the Account page and see the admin's status (planned / done /
+  declined) and reply.
 - **Accounts**: username + email + password sign-up, password change, reset by email (SMTP) or
   by an admin-made link.
 
@@ -43,6 +46,7 @@ phones, and every phone sees spins, votes and packs live.
 | Edit a league's wheel (sets and odds) | | | ✓ |
 | Adjust or delete packs, cards, pods and history; skip a stuck vote | | | ✓ |
 | Make password-reset links | | | ✓ |
+| Read and answer feature suggestions | | | ✓ |
 
 The **league admin** is whoever started the league, for as long as they're in it. The **site
 admin** is the built-in `admin` account; it manages everything but doesn't play, so it never
@@ -124,6 +128,7 @@ Everything is in one SQLite file, `data/app.db`:
 | `pod_votes` | ballot in a pod's bonus-pack vote (round, voter, candidate) |
 | `pool_cards` | opened card, tied to its pod, pack and player: pools are built from this |
 | `booster_sets` | set referenced by a pack (name, symbol, release date) |
+| `feedback` | feature idea or bug report: author, status, admin reply |
 
 Deleting a pod or league cascades to everything in it. Back up while it's running with
 `sqlite3 data/app.db ".backup app.db.bak"` (or Node's `VACUUM INTO`). Older databases are
@@ -163,6 +168,7 @@ server/
   db.js        SQLite schema and pod storage
   packs.js     booster generation
   scryfall.js  rate-limited, cached Scryfall client
+  feedback.js  feature suggestions and the admin inbox
   mail.js      optional SMTP for reset emails
 public/        the app: plain ES modules, no build step
 packs/         real booster print-sheet data

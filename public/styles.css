@@ -34,7 +34,7 @@ h1 { font-size: 1.9rem; }
 h2 { font-size: 1.35rem; }
 h3 { font-size: 1.05rem; }
 a { color: var(--gold2); }
-button, input, select { font: inherit; color: inherit; }
+button, input, select, textarea { font: inherit; color: inherit; }
 .muted { color: var(--muted); }
 .dim { color: var(--dim); }
 .small { font-size: .85rem; }
@@ -95,10 +95,10 @@ button, input, select { font: inherit; color: inherit; }
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .spread { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
 .grid { display: grid; gap: 16px; }
-input[type=text], input[type=number], input[type=search], input[type=email], input[type=password], input:not([type]), select.input {
+input[type=text], input[type=number], input[type=search], input[type=email], input[type=password], input:not([type]), select.input, textarea {
   background: var(--bg2); border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px; outline: none; min-width: 0;
 }
-input:focus, select:focus { border-color: var(--gold); }
+input:focus, select:focus, textarea:focus { border-color: var(--gold); }
 .chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: var(--panel2); border: 1px solid var(--line); font-size: .8rem; color: var(--muted); white-space: nowrap; }
 .chip.gold { color: var(--gold2); border-color: #6b5222; background: rgba(217,168,78,.08); }
 .chip.ok { color: #8fe0ad; border-color: #2c5a3e; }
@@ -363,5 +363,22 @@ tr.dim td { color: var(--dim); }
 .site-foot .credit { font-weight: 600; }
 .site-foot .discord { background: none; border: 0; padding: 0; font: inherit; color: #8b9cff; cursor: pointer; }
 .site-foot .discord:hover { text-decoration: underline; }
+.site-foot .fb-btn { margin: 8px 0 4px; }
+.fb-list { display: grid; gap: 10px; margin-top: 10px; }
+.fb-item { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--panel2); }
+.fb-item .fb-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px; }
+.fb-item .fb-text { white-space: pre-wrap; word-break: break-word; margin: 0; }
+.fb-item .fb-reply { margin: 8px 0 0; padding: 6px 10px; border-left: 3px solid var(--gold2); color: var(--muted); white-space: pre-wrap; word-break: break-word; }
+.fb-item .fb-admin select { background: var(--bg2); border: 1px solid var(--line); border-radius: 9px; padding: 8px; }
+.fb-item .fb-admin { display: grid; grid-template-columns: auto 1fr auto auto; gap: 6px; margin-top: 8px; align-items: center; }
+@media (max-width: 640px) { .fb-item .fb-admin { grid-template-columns: 1fr 1fr; } .fb-item .fb-admin input { grid-column: 1 / -1; } }
+.chip.st-new { color: #8b9cff; border-color: #3b4580; }
+.chip.st-planned { color: var(--gold2); border-color: #6b5222; }
+.chip.st-done { color: #6fd39a; border-color: #2c6b48; }
+.chip.st-declined { color: var(--dim); }
+.fb-filter { display: flex; flex-wrap: wrap; gap: 6px; }
+form .fb-filter label.chip { display: inline-flex; gap: 6px; cursor: pointer; font-weight: 500; color: var(--text); }
+textarea { resize: vertical; }
+.fb-filter .sel { border-color: var(--gold2); color: var(--gold2); }
 .legal { max-width: 1240px; margin: 0 auto; padding: 0 20px 28px; font-size: .72rem; color: var(--dim); text-align: center; }
 .legal a { color: var(--muted); }

@@ -170,6 +170,19 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS league_events_league ON league_events(league_id, id);
 
+  CREATE TABLE IF NOT EXISTS feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    username TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    text TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'new',
+    reply TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS feedback_user ON feedback(user_id, created_at);
+
   CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
