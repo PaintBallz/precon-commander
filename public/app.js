@@ -105,6 +105,10 @@ const soundBtn = $('#soundBtn');
 const paintSound = () => { soundBtn.textContent = S.sound ? '🔊' : '🔇'; };
 paintSound();
 soundBtn.addEventListener('click', () => { S.sound = !S.sound; store.set('sound', S.sound); paintSound(); });
+$('#discordBtn').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText('paintballz'); toast('📋 Discord username copied: paintballz', 'good'); }
+  catch { toast('My Discord username is paintballz'); }
+});
 
 // ---- deck-list text ("1 Card Name (SET) 123" — Moxfield / Archidekt) ----
 // Which deck builder copied lists are formatted for (remembered per device).
