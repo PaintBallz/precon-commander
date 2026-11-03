@@ -143,7 +143,7 @@ export function requireAdmin(req) {
 }
 
 // ---------- routes (mounted under /api) ----------
-export function authRoutes(app, wrap) {
+export function authRoutes(app, wrap, onChange = () => {}) {
   app.get('/api/auth/me', (req, res) => {
     const u = sessionUser(req);
     res.json({ user: publicUser(u), passwordRules: PASSWORD_RULES, emailEnabled: mailEnabled() });
@@ -156,14 +156,15 @@ export function authRoutes(app, wrap) {
     const email = String(req.body?.email || '').trim().toLowerCase();
     const password = req.body?.password;
     checkUsername(username); checkEmail(email); checkPassword(password);
+    if (req.body?.agree !== true && req.body?.agree !== 'yes') throw new AuthError(400, 'Please confirm you\'re 13 or older and agree to the Terms of Use and Privacy Policy.');
     // "Taken" answers count toward the limit too, so signup can't be used to
     // test which emails have accounts.
     const taken = msg => { noteFailure(key); return new AuthError(409, msg); };
     if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) throw taken('That username is taken.');
     if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) throw taken('An account already uses that email.');
     const id = crypto.randomUUID();
-    db.prepare('INSERT INTO users (id, username, email, pass_hash, is_admin, must_change, created_at) VALUES (?, ?, ?, ?, 0, 0, ?)')
-      .run(id, username, email, hashPassword(password), now());
+    db.prepare('INSERT INTO users (id, username, email, pass_hash, is_admin, must_change, created_at, terms_accepted_at) VALUES (?, ?, ?, ?, 0, 0, ?, ?)')
+      .run(id, username, email, hashPassword(password), now(), now());
     noteFailure(key);
     startSession(req, res, id);
     res.json({ user: publicUser(getUser(id)) });
@@ -245,10 +246,29 @@ export function authRoutes(app, wrap) {
     res.json({ user: publicUser(getUser(row.user_id)) });
   }));
 
+  // Delete your own account (password required). The admin account can't be
+  // deleted this way: the league needs one.
+  app.post('/api/auth/delete', wrap(async (req, res) => {
+    const u = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+    if (!verifyPassword(req.body?.password || '', u.pass_hash)) throw new AuthError(400, 'That password is wrong.');
+    if (u.is_admin) throw new AuthError(409, 'The admin account can\'t be deleted: the league needs an admin.');
+    deleteAccount(u.id);
+    res.setHeader('Set-Cookie', `${COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+    onChange();
+    res.json({ ok: true });
+  }));
+
   // ---------- admin ----------
   app.get('/api/admin/users', wrap(async (req, res) => {
     requireAdmin(req);
     res.json({ users: listUsers().map(publicUser), emailEnabled: mailEnabled() });
+  }));
+  app.delete('/api/admin/users/:id', wrap(async (req, res) => {
+    requireAdmin(req);
+    if (req.params.id === req.user.id) throw new AuthError(409, 'You can\'t delete your own admin account.');
+    if (!deleteAccount(req.params.id)) throw new AuthError(404, 'User not found');
+    onChange();
+    res.json({ ok: true });
   }));
   // A reset link the admin can hand over directly (works without email).
   app.post('/api/admin/users/:id/reset-link', wrap(async (req, res) => {
@@ -256,6 +276,32 @@ export function authRoutes(app, wrap) {
     if (!getUser(req.params.id)) throw new AuthError(404, 'User not found');
     res.json({ link: createResetLink(req.params.id), minutes: RESET_MINUTES });
   }));
+}
+
+// Remove an account for good: login details, sessions, reset links, feature
+// suggestions and league memberships. Pods they played and packs they opened
+// stay, because other players' standings and history depend on them, but
+// their name there (pod seats and the activity feed) becomes "Deleted player".
+export const DELETED_NAME = 'Deleted player';
+export function deleteAccount(userId) {
+  const u = db.prepare('SELECT username FROM users WHERE id = ?').get(userId);
+  if (!u) return false;
+  const word = new RegExp(`\\b${u.username.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&')}\\b`, 'g');
+  db.exec('BEGIN');
+  try {
+    db.prepare("UPDATE pod_players SET name = ?, precon = '' WHERE user_id = ?").run(DELETED_NAME, userId);
+    const fix = db.prepare('UPDATE league_events SET text = ? WHERE id = ?');
+    const events = db.prepare(`SELECT id, text FROM league_events WHERE text LIKE ?
+      AND league_id IN (SELECT league_id FROM league_members WHERE user_id = ?)`).all(`%${u.username}%`, userId);
+    for (const e of events) fix.run(e.text.replace(word, DELETED_NAME), e.id);
+    db.prepare('DELETE FROM league_members WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM feedback WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM reset_tokens WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+    db.exec('COMMIT');
+  } catch (err) { db.exec('ROLLBACK'); throw err; }
+  return true;
 }
 
 function createResetLink(userId) {

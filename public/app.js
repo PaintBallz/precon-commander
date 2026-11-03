@@ -263,6 +263,7 @@ function confirmBox(title, body, okLabel = 'OK', danger = false) {
     const done = v => { m.hidden = true; m.innerHTML = ''; resolve(v); };
     $$('[data-r]', m).forEach(b => b.onclick = () => done(b.dataset.r === '1'));
     m.onclick = e => { if (e.target === m) done(false); };
+    $('[data-r="0"]', m).focus();
   });
 }
 
@@ -292,6 +293,7 @@ function showAuth() {
         <label>Email <span class="dim small">(to recover your account)</span><input name="email" type="email" autocomplete="email" required maxlength="254"></label>
         <label>Password<input name="password" type="password" autocomplete="new-password" required minlength="8" maxlength="128"></label>
         <p class="small muted" style="margin:-4px 0 0">${esc(S.passwordRules)}</p>
+        <label class="check consent"><input type="checkbox" name="agree" value="yes" required><span>I'm 13 or older and agree to the <a href="/terms" target="_blank">Terms of Use</a> and <a href="/privacy" target="_blank">Privacy Policy</a>.</span></label>
         <button class="btn gold big">Create account</button>
       </form>`,
     forgot: `<form id="authForm" class="grid">
@@ -410,8 +412,20 @@ async function renderAccount(view) {
       </form>
     </div>
     <div id="fbBox"></div>
-    <div id="adminBox"></div>`;
+    <div id="adminBox"></div>
+    ${isAdmin() ? '' : `<form class="panel grid danger-zone" id="delForm">
+      <h2>Delete account</h2>
+      <p class="small muted" style="margin:0">Permanently removes your username, email, password and precon, signs you out everywhere and deletes your suggestions. Pods you played and packs you opened stay in your leagues' history (other players' standings depend on them) under the name <b>Deleted player</b>. See the <a href="/privacy" target="_blank">Privacy Policy</a>.</p>
+      <label>Your password<input name="password" type="password" autocomplete="current-password" required maxlength="128"></label>
+      <button class="btn danger">Delete my account</button>
+    </form>`}`;
   $('#lo', view).onclick = logout;
+  $('#delForm', view)?.addEventListener('submit', async e => {
+    e.preventDefault();
+    const f = Object.fromEntries(new FormData(e.target));
+    if (!await confirmBox('Delete your account?', `This can't be undone. <b>${esc(me.username)}</b> will be gone for good.`, `${I.trash} Delete account`, true)) return;
+    try { await post('/auth/delete', f); S.me = null; toast('Your account was deleted.', 'good'); location.hash = ''; location.reload(); } catch (err) { fail(err); }
+  });
   renderFeedback($('#fbBox', view));
   $('#profForm', view).onsubmit = async e => {
     e.preventDefault();
@@ -434,8 +448,12 @@ async function renderAccount(view) {
       <p class="small muted">${d.emailEnabled ? 'Password-reset emails are on.' : 'Password-reset emails are <b>off</b> (no SMTP server configured). Use <b>Reset link</b> and send the link to the player yourself.'}</p>
       <table class="standings"><thead><tr><th>Username</th><th>Email</th><th>Precon</th><th>Joined</th><th></th></tr></thead>
       <tbody>${d.users.map(u => `<tr><td><b>${esc(u.username)}</b>${u.isAdmin ? ' <span class="chip gold">admin</span>' : ''}</td><td class="small">${esc(u.email) || '<span class="dim">—</span>'}</td><td class="small muted">${esc(u.precon) || '—'}</td><td class="small muted">${new Date(u.createdAt).toLocaleDateString()}</td>
-        <td style="text-align:right">${u.id === me.id ? '' : `<button class="btn sm" data-reset="${u.id}" data-name="${esc(u.username)}">Reset link</button>`}</td></tr>`).join('')}</tbody></table>
+        <td style="text-align:right;white-space:nowrap">${u.id === me.id ? '' : `<button class="btn sm" data-reset="${u.id}" data-name="${esc(u.username)}">Reset link</button> <button class="btn sm danger" data-deluser="${u.id}" data-name="${esc(u.username)}">${I.trash} Delete</button>`}</td></tr>`).join('')}</tbody></table>
     </div>`;
+  $$('[data-deluser]', view).forEach(b => b.onclick = async () => {
+    if (!await confirmBox(`Delete ${esc(b.dataset.name)}?`, `Removes their login, email and suggestions for good. Their past pods stay in league history as <b>Deleted player</b>. This can't be undone.`, `${I.trash} Delete account`, true)) return;
+    try { await del(`/admin/users/${b.dataset.deluser}`); toast(`${esc(b.dataset.name)}'s account was deleted.`, 'good'); renderAccount(view); } catch (err) { fail(err); }
+  });
   $$('[data-reset]', view).forEach(b => b.onclick = async () => {
     try {
       const r = await post(`/admin/users/${b.dataset.reset}/reset-link`);
@@ -1352,7 +1370,7 @@ function renderFun(view) {
           <summary><h2 style="margin:0">Where packs come from</h2></summary>
           <div class="grid" style="gap:12px;margin-top:12px">
             <div><h3>${I.check} Real print sheets: ${real.length} sets</h3>
-              <p class="small muted">The exact booster print sheets and slot odds for these sets are bundled with the app (Play Booster where the set has one, else Draft, else the set's original booster, else Set Booster; never Collector Boosters). Every slot draws from its real sheet at the printed rate. Sheet data comes from <a href="https://mtgjson.com" target="_blank" rel="noopener">MTGJSON</a>.</p>
+              <p class="small muted">The booster print sheets and slot odds for these sets are bundled with the app (Play Booster where the set has one, else Draft, else the set's original booster, else Set Booster; never Collector Boosters). Every slot draws from its sheet at the sheet's rates. Sheet data comes from <a href="https://mtgjson.com" target="_blank" rel="noopener">MTGJSON</a>, compiled by the community, so it can contain mistakes.</p>
             </div>
             <div><h3>${I.sliders} Generated: ${plural(generated.length, 'set')}</h3>
               <p class="small muted">Sets with no regular booster on record (Jumpstart, The List, special printings) are built from Scryfall's list of the cards that set put in boosters, using that era's pack layout:</p>
@@ -2021,7 +2039,17 @@ function connect() {
 }
 
 window.addEventListener('resize', () => { if (S.route === 'wheel' && !S.spinning) drawWheel(); });
-document.addEventListener('keydown', e => { if (e.key === 'Escape') $('#modal').hidden = true; });
+// Keyboard access. Cards and clickable rows aren't buttons, so make them
+// focusable and let Enter/Space click them. Escape closes the dialog (as
+// Cancel, when it asks a question).
+const KEYABLE = '.mcard, [data-card], tr.pickable, tr[data-c]';
+new MutationObserver(() => $$(`:is(${KEYABLE}):not([tabindex])`).forEach(el => { el.tabIndex = 0; el.setAttribute('role', 'button'); }))
+  .observe(document.body, { childList: true, subtree: true });
+document.addEventListener('keydown', e => {
+  const m = $('#modal');
+  if (e.key === 'Escape' && !m.hidden) { const cancel = $('[data-r="0"]', m); if (cancel) cancel.click(); else m.hidden = true; return; }
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches?.(KEYABLE)) { e.preventDefault(); e.target.click(); }
+});
 
 // ---------------- boot ----------------
 (async function boot() {

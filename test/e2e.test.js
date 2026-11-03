@@ -100,6 +100,13 @@ test('serves the app shell and assets', async () => {
   for (const f of ['/app.js', '/styles.css', '/decklist.js', '/favicon.svg']) {
     assert.equal((await anon.get(f)).status, 200, `${f} should be served`);
   }
+  // Legal pages are public; fonts come from this site, not Google.
+  for (const f of ['/privacy', '/terms', '/fonts/barlow-400.woff2', '/fonts/OFL-Barlow.txt']) {
+    assert.equal((await anon.get(f)).status, 200, `${f} should be served`);
+  }
+  assert.match(home.text, /href="\/privacy"/);
+  assert.match((await anon.get('/terms')).text, /unofficial Fan Content permitted under the Fan Content Policy/);
+  assert.doesNotMatch(home.text, /fonts\.googleapis|fonts\.gstatic/, 'no third-party font requests');
   const app = (await anon.get('/app.js')).text;
   assert.doesNotMatch(app, /price|\$\d/i, 'no prices or values anywhere in the UI');
   assert.doesNotMatch(app, /booster box|open box/i, 'no booster boxes in the UI');
@@ -133,17 +140,18 @@ test('admin starts on "changeme" and must change it first', async () => {
 });
 
 test('sign-up needs a username, an email and a simple-rules password', async () => {
-  assert.equal((await anon.post('/api/auth/signup', { username: 'Nick', password: PW })).status, 400, 'email required');
-  assert.equal((await anon.post('/api/auth/signup', { username: 'Nick', email: 'not-an-email', password: PW })).status, 400);
-  assert.equal((await anon.post('/api/auth/signup', { username: 'Nick', email: 'nick@example.com', password: 'abc' })).status, 400, 'weak password');
-  assert.equal((await anon.post('/api/auth/signup', { username: 'x', email: 'x@example.com', password: PW })).status, 400, 'username too short');
+  assert.equal((await anon.post('/api/auth/signup', { agree: true, username: 'Nick', password: PW })).status, 400, 'email required');
+  assert.equal((await anon.post('/api/auth/signup', { agree: true, username: 'Nick', email: 'not-an-email', password: PW })).status, 400);
+  assert.equal((await anon.post('/api/auth/signup', { agree: true, username: 'Nick', email: 'nick@example.com', password: 'abc' })).status, 400, 'weak password');
+  assert.equal((await anon.post('/api/auth/signup', { agree: true, username: 'x', email: 'x@example.com', password: PW })).status, 400, 'username too short');
+  assert.equal((await anon.post('/api/auth/signup', { username: 'Nick', email: 'nick@example.com', password: PW })).status, 400, 'must confirm 13+ and accept the terms');
   for (const [name, c] of [['Nick', nick], ['Mike', mike], ['Joe', joe], ['Dan', dan], ['Eve', eve]]) {
-    const { user } = await ok(c.post('/api/auth/signup', { username: name, email: `${name.toLowerCase()}@example.com`, password: PW }));
+    const { user } = await ok(c.post('/api/auth/signup', { agree: true, username: name, email: `${name.toLowerCase()}@example.com`, password: PW }));
     assert.equal(user.isAdmin, false);
     S.u[name] = user;
   }
-  assert.equal((await anon.post('/api/auth/signup', { username: 'nick', email: 'other@example.com', password: PW })).status, 409, 'usernames are unique (any case)');
-  assert.equal((await anon.post('/api/auth/signup', { username: 'Nick2', email: 'NICK@example.com', password: PW })).status, 409, 'one account per email');
+  assert.equal((await anon.post('/api/auth/signup', { agree: true, username: 'nick', email: 'other@example.com', password: PW })).status, 409, 'usernames are unique (any case)');
+  assert.equal((await anon.post('/api/auth/signup', { agree: true, username: 'Nick2', email: 'NICK@example.com', password: PW })).status, 409, 'one account per email');
   await ok(nick.put('/api/auth/profile', { precon: 'Animated Army' }));
   // Logging in by email works too.
   await ok(client().post('/api/auth/login', { username: 'eve@example.com', password: PW }));
@@ -187,7 +195,7 @@ test('starting a league brings in every player who is not in one', async () => {
 
 test('players join with the invite code; one league at a time', async () => {
   for (const [name, c] of [['Fay', fay], ['Gus', gus]]) {
-    S.u[name] = (await ok(c.post('/api/auth/signup', { username: name, email: `${name.toLowerCase()}@example.com`, password: PW }))).user;
+    S.u[name] = (await ok(c.post('/api/auth/signup', { agree: true, username: name, email: `${name.toLowerCase()}@example.com`, password: PW }))).user;
   }
   assert.equal((await fay.post('/api/leagues/join', { code: 'ZZZZZZ' })).status, 404, 'unknown code');
   const { league } = await ok(fay.post('/api/leagues/join', { code: S.code.toLowerCase() }));
@@ -883,6 +891,25 @@ test('feedback: players send ideas, only the admin sees them all and replies', a
   const evesFirst = (await ok(eve.get('/api/feedback'))).items.at(-1);
   await ok(eve.del(`/api/feedback/${evesFirst.id}`));
   await ok(admin.del(`/api/feedback/${item.id}`));
+});
+
+test('players can delete their account; past pods keep them as "Deleted player"', async () => {
+  const joesPod = (await ok(nick.post('/api/pods', { players: ['Nick', 'Mike', 'Joe'].map(n => ({ userId: S.u[n].id })) }))).pod;
+  assert.equal((await joe.post('/api/auth/delete', { password: 'wrongpass1' })).status, 400, 'needs the password');
+  await ok(joe.post('/api/auth/delete', { password: 'NewJoe2026' })); // set by the reset test
+  assert.equal((await joe.get('/api/state')).status, 401, 'signed out');
+  assert.equal((await anon.post('/api/auth/login', { username: 'Joe', password: 'NewJoe2026' })).status, 401, 'the login is gone');
+  const { pod } = await ok(nick.get(`/api/pods/${joesPod.id}`));
+  assert.equal(pod.players.find(p => p.id === S.u.Joe.id).name, 'Deleted player', 'their seat stays, anonymised');
+  const { events } = await ok(nick.get(`/api/leagues/${S.league}`));
+  assert.ok(events.every(e => !/\bJoe\b/.test(e.text)), 'their name is gone from the feed');
+  assert.ok(!(await ok(admin.get('/api/admin/users'))).users.some(u => u.username === 'Joe'));
+  // The admin can delete other accounts, but not their own.
+  const me = (await ok(admin.get('/api/auth/me'))).user;
+  assert.equal((await admin.del(`/api/admin/users/${me.id}`)).status, 409);
+  assert.equal((await nick.del(`/api/admin/users/${S.u.Dan.id}`)).status, 403, 'players can\'t delete others');
+  await ok(admin.del(`/api/admin/users/${S.u.Dan.id}`));
+  assert.equal((await anon.post('/api/auth/login', { username: 'Dan', password: PW })).status, 401);
 });
 
 test('logging out ends the session', async () => {

@@ -81,7 +81,7 @@ const names = list => list.length < 2 ? list.join('') : `${list.slice(0, -1).joi
 
 app.get('/healthz', (req, res) => res.json({ ok: true }));
 app.use('/api', requireAuth);
-authRoutes(app, wrap);
+authRoutes(app, wrap, () => broadcast('state'));
 
 // ---------- live updates ----------
 const clients = new Set();

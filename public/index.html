@@ -6,9 +6,7 @@
   <meta name="theme-color" content="#000000" />
   <title>Pre-Con Commander</title>
   <link rel="icon" href="/favicon.svg?v=wubrg" type="image/svg+xml" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700;800&family=Barlow:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet" />
+  <link rel="preload" href="/fonts/barlow-condensed-800.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -43,7 +41,8 @@
     <p class="small">Have a feature you'd like, or an idea you think would be great? Message me on Discord<span id="fbOr" hidden>, or send it right here</span>.</p>
     <button type="button" class="btn sm gold fb-btn" id="fbBtn" hidden><svg class="i i-bulb" aria-hidden="true"><use href="#i-bulb"/></svg> Suggest a feature</button>
   </footer>
-  <footer class="legal">Pre-Con Commander is unofficial Fan Content permitted under the Fan Content Policy. Not approved/endorsed by Wizards. Portions of the materials used are property of Wizards of the Coast. ©Wizards of the Coast LLC. Card data and images from <a href="https://scryfall.com" target="_blank" rel="noopener">Scryfall</a>.</footer>
+  <footer class="legal">Pre-Con Commander is unofficial Fan Content permitted under the Fan Content Policy. Not approved/endorsed by Wizards. Portions of the materials used are property of Wizards of the Coast. ©Wizards of the Coast LLC. Card data and images from <a href="https://scryfall.com" target="_blank" rel="noopener">Scryfall</a>.
+    <nav class="legal-links"><a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Use</a></nav></footer>
 
   <div id="modal" class="modal" hidden></div>
   <div id="toasts" class="toasts" aria-live="polite"></div>

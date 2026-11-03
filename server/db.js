@@ -204,6 +204,7 @@ for (const [table, col, def] of [
   ['pods', 'league_id', 'TEXT'], ['pods', 'rules', 'TEXT'],
   ['pod_players', 'role', "TEXT NOT NULL DEFAULT 'player'"],
   ['league_members', 'kicked', 'INTEGER NOT NULL DEFAULT 0'],
+  ['users', 'terms_accepted_at', 'TEXT'],
 ]) {
   if (!db.prepare(`SELECT 1 FROM pragma_table_info('${table}') WHERE name = ?`).get(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
 }

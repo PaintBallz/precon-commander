@@ -1,5 +1,16 @@
 /* Pre-Con Commander — "Scoreboard": a sports-stats broadcast look. Condensed
    uppercase type, hard edges, big tabular numbers, one signal-orange accent. */
+/* Fonts are served from this site (SIL Open Font License, see /fonts/OFL-*.txt),
+   so pages make no requests to Google. Latin subset. */
+@font-face { font-family: 'Barlow'; font-weight: 400; font-display: swap; src: url(/fonts/barlow-400.woff2) format('woff2'); }
+@font-face { font-family: 'Barlow'; font-weight: 500; font-display: swap; src: url(/fonts/barlow-500.woff2) format('woff2'); }
+@font-face { font-family: 'Barlow'; font-weight: 600; font-display: swap; src: url(/fonts/barlow-600.woff2) format('woff2'); }
+@font-face { font-family: 'Barlow'; font-weight: 700; font-display: swap; src: url(/fonts/barlow-700.woff2) format('woff2'); }
+@font-face { font-family: 'Barlow Condensed'; font-weight: 500; font-display: swap; src: url(/fonts/barlow-condensed-500.woff2) format('woff2'); }
+@font-face { font-family: 'Barlow Condensed'; font-weight: 600; font-display: swap; src: url(/fonts/barlow-condensed-600.woff2) format('woff2'); }
+@font-face { font-family: 'Barlow Condensed'; font-weight: 700; font-display: swap; src: url(/fonts/barlow-condensed-700.woff2) format('woff2'); }
+@font-face { font-family: 'Barlow Condensed'; font-weight: 800; font-display: swap; src: url(/fonts/barlow-condensed-800.woff2) format('woff2'); }
+@font-face { font-family: 'JetBrains Mono'; font-weight: 100 800; font-display: swap; src: url(/fonts/jetbrains-mono.woff2) format('woff2'); }
 :root {
   --bg: #0a0b0d;
   --bg2: #07080a;
@@ -10,7 +21,7 @@
   --line2: #3a414d;
   --text: #f1f1ec;
   --muted: #9aa0ab;
-  --dim: #636a76;
+  --dim: #838a96; /* >= 4.5:1 on bg, panel and panel2 */
   --accent: #ff5b1f;
   --accent2: #ff7a45;
   --accent-ink: #000;
@@ -33,6 +44,8 @@ body {
   font: 15px/1.5 Barlow, system-ui, -apple-system, "Segoe UI", sans-serif;
   min-height: 100vh;
 }
+/* A clear focus ring for keyboard users (mouse clicks don't show it). */
+:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 h1, h2, h3 { font-family: var(--cond); text-transform: uppercase; font-weight: 800; letter-spacing: .01em; margin: 0 0 .5em; line-height: 1.05; }
 h1 { font-size: 3rem; line-height: .95; }
 h2 { font-size: 1.15rem; letter-spacing: .06em; padding-left: 10px; border-left: 4px solid var(--accent); }
@@ -550,4 +563,15 @@ tr.dim td { color: var(--dim); }
 form .fb-filter label.chip { display: inline-flex; gap: 6px; cursor: pointer; color: var(--text); font-size: .9rem; }
 .fb-filter .sel { border-color: var(--accent); color: var(--accent); }
 .legal { max-width: 1240px; margin: 0 auto; padding: 0 20px 28px; font-size: .72rem; color: var(--dim); text-align: center; }
+.legal-links { margin-top: 8px; font-size: .8rem; }
+.consent { font-size: .85rem; line-height: 1.4; align-items: flex-start; }
+.consent input { margin-top: 3px; }
+.danger-zone { margin-top: 18px; border-left: 3px solid var(--danger); max-width: 560px; }
+/* Privacy Policy / Terms pages */
+.legal-doc { max-width: 760px; margin: 0 auto; padding: 32px 20px 60px; line-height: 1.6; }
+.legal-doc h1 { font-size: 2.4rem; margin: 18px 0 4px; }
+.legal-doc h2 { margin-top: 28px; }
+.legal-doc ul { padding-left: 20px; }
+.legal-doc li { margin-bottom: 6px; }
+.legal-back { font-family: var(--cond); font-weight: 700; text-transform: uppercase; letter-spacing: .06em; text-decoration: none; }
 .legal a { color: var(--muted); }
