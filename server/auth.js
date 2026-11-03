@@ -50,6 +50,9 @@ function verifyPassword(pw, stored) {
   return crypto.timingSafeEqual(want, got);
 }
 const token = () => crypto.randomBytes(32).toString('base64url');
+// Checked against when the username doesn't exist, so a wrong username takes as
+// long as a wrong password (timing can't reveal which accounts exist).
+const DUMMY_HASH = hashPassword(crypto.randomBytes(16).toString('hex'));
 const now = () => new Date().toISOString();
 
 // ---------- users ----------
@@ -107,6 +110,8 @@ function sessionUser(req) {
 // ---------- login throttling ----------
 const failures = new Map();   // key -> [timestamps]
 const WINDOW = 15 * 60e3, MAX_FAILS = 10;
+// Failed logins per IP across all usernames (credential stuffing tries many).
+const MAX_IP_FAILS = 30;
 // New accounts per IP: a handful per hour is plenty for a friend group.
 const SIGNUP_WINDOW = 60 * 60e3, MAX_SIGNUPS = 10;
 // Behind a local proxy (e.g. cloudflared) the real client IP comes from
@@ -151,8 +156,11 @@ export function authRoutes(app, wrap) {
     const email = String(req.body?.email || '').trim().toLowerCase();
     const password = req.body?.password;
     checkUsername(username); checkEmail(email); checkPassword(password);
-    if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) throw new AuthError(409, 'That username is taken.');
-    if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) throw new AuthError(409, 'An account already uses that email.');
+    // "Taken" answers count toward the limit too, so signup can't be used to
+    // test which emails have accounts.
+    const taken = msg => { noteFailure(key); return new AuthError(409, msg); };
+    if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) throw taken('That username is taken.');
+    if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) throw taken('An account already uses that email.');
     const id = crypto.randomUUID();
     db.prepare('INSERT INTO users (id, username, email, pass_hash, is_admin, must_change, created_at) VALUES (?, ?, ?, ?, 0, 0, ?)')
       .run(id, username, email, hashPassword(password), now());
@@ -164,10 +172,12 @@ export function authRoutes(app, wrap) {
   app.post('/api/auth/login', wrap(async (req, res) => {
     const login = String(req.body?.username || '').trim();
     const key = `${clientIp(req)}|${login.toLowerCase()}`;
-    if (throttled(key)) throw new AuthError(429, 'Too many tries. Wait 15 minutes, or reset your password.');
+    const ipKey = `login-ip|${clientIp(req)}`;
+    if (throttled(key) || throttled(ipKey, WINDOW, MAX_IP_FAILS)) throw new AuthError(429, 'Too many tries. Wait 15 minutes, or reset your password.');
     const u = login && byLogin(login);
-    if (!u || !verifyPassword(req.body?.password || '', u.pass_hash)) {
-      noteFailure(key);
+    const good = verifyPassword(req.body?.password || '', u ? u.pass_hash : DUMMY_HASH);
+    if (!u || !good) {
+      noteFailure(key); noteFailure(ipKey);
       throw new AuthError(401, 'Wrong username or password.');
     }
     failures.delete(key);

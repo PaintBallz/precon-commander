@@ -40,6 +40,16 @@ app.disable('x-powered-by');
 // Behind a reverse proxy / tunnel on the same host or private network: trust its
 // X-Forwarded-* headers (HTTPS detection for secure cookies, client IPs).
 app.set('trust proxy', 'loopback, uniquelocal');
+// Security headers on everything: no framing by other sites (clickjacking), no
+// MIME sniffing, no full URLs in Referer, and HTTPS-only once served over HTTPS.
+app.use((req, res, next) => {
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Content-Security-Policy', "frame-ancestors 'none'; base-uri 'self'; object-src 'none'; form-action 'self'");
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  if (req.secure) res.setHeader('Strict-Transport-Security', 'max-age=15552000');
+  next();
+});
 app.use(express.json({ limit: '200kb' }));
 
 // Cloudflare gives .js/.css a 4-hour browser cache no matter what we send, so
@@ -600,12 +610,15 @@ app.post('/api/pods/:id/vote/skip', wrap(async (req, res) => {
 // Every pod player gets their packs of the spun set, and every league member
 // who missed the pod gets absentPacks of it too.
 app.post('/api/pods/:id/spin', wrap(async (req, res) => {
-  const pod = requirePod(req.params.id);
-  if (pod.status !== 'awarded') throw new HttpError(409, 'Crown the winner first: the winner spins the wheel.');
-  if (pod.spin) throw new HttpError(409, `This pod already spun ${pod.spin.set.name}. There is only one spin per pod.`);
-  if (pod.vote?.status === 'open') throw new HttpError(409, 'Finish the bonus-pack vote first: the spin hands out everyone\'s packs.');
-  if (!req.user.isAdmin && req.user.id !== pod.winnerId) throw new HttpError(403, `Only the winner, ${findPlayer(pod, pod.winnerId).name}, can spin.`);
-  const league = pod.leagueId ? getLeague(pod.leagueId) : null;
+  const canSpin = pod => {
+    if (pod.status !== 'awarded') throw new HttpError(409, 'Crown the winner first: the winner spins the wheel.');
+    if (pod.spin) throw new HttpError(409, `This pod already spun ${pod.spin.set.name}. There is only one spin per pod.`);
+    if (pod.vote?.status === 'open') throw new HttpError(409, 'Finish the bonus-pack vote first: the spin hands out everyone\'s packs.');
+    if (!req.user.isAdmin && req.user.id !== pod.winnerId) throw new HttpError(403, `Only the winner, ${findPlayer(pod, pod.winnerId).name}, can spin.`);
+  };
+  const before = requirePod(req.params.id);
+  canSpin(before);
+  const league = before.leagueId ? getLeague(before.leagueId) : null;
   const sets = await allSets();
   const wheel = wheelFor(sets, settingsFor(league));
   if (!wheel.length) throw new HttpError(409, 'The wheel is empty. The admin needs to loosen the wheel filters.');
@@ -613,6 +626,10 @@ app.post('/api/pods/:id/spin', wrap(async (req, res) => {
   let r = Math.random() * total, pick = wheel[wheel.length - 1];
   for (const w of wheel) { r -= w.weight; if (r < 0) { pick = w; break; } }
   const set = await setInfo(pick.code);
+  // Check again on a fresh copy: a second tap may have spun while Scryfall
+  // answered. From here to the save nothing awaits, so nothing can slip in.
+  const pod = requirePod(req.params.id);
+  canSpin(pod);
   pod.spin = { id: id(10), setCode: set.code, set, by: req.user.id, at: now(), offset: Math.random() };
   for (const p of pod.players) p.packs = Array.from({ length: p.awarded }, () => newPack(set));
   const absent = rulesOf(pod).absentPacks;
@@ -641,11 +658,13 @@ app.post('/api/pods/:id/packs/:packId/sacrifice', wrap(async (req, res) => {
 }));
 
 app.post('/api/pods/:id/packs/:packId/choose', wrap(async (req, res) => {
+  const set = await setInfo(String(req.body?.setCode || ''));
+  // Load after the await, so the save can't overwrite changes made meanwhile.
   const pod = requirePod(req.params.id);
   const { player, pack } = findPack(pod, req.params.packId);
   requireOwner(player, req.user);
   if (pack.status !== 'choosing') throw new HttpError(409, 'This pack is not waiting for a set choice.');
-  pack.set = await setInfo(String(req.body?.setCode || ''));
+  pack.set = set;
   pack.status = 'ready';
   pack.chosenAt = now();
   res.json({ pod: view(req, commit(pod)), packId: pack.id });

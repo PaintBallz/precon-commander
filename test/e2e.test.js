@@ -92,6 +92,11 @@ test('serves the app shell and assets', async () => {
   assert.match(home.text, /\/app\.js\?v=[0-9a-f]{10}"/, 'script URL carries a content version');
   assert.match(home.text, /\/styles\.css\?v=[0-9a-f]{10}"/, 'stylesheet URL carries a content version');
   assert.equal(home.headers.get('cache-control'), 'no-cache');
+  // Can't be framed by another site (clickjacking), no MIME sniffing.
+  assert.equal(home.headers.get('x-frame-options'), 'DENY');
+  assert.match(home.headers.get('content-security-policy') || '', /frame-ancestors 'none'/);
+  assert.equal(home.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal((await anon.get('/api/state')).headers.get('x-frame-options'), 'DENY', 'API responses too');
   for (const f of ['/app.js', '/styles.css', '/decklist.js', '/favicon.svg']) {
     assert.equal((await anon.get(f)).status, 200, `${f} should be served`);
   }
@@ -378,7 +383,11 @@ test('only the winner spins, once; league members who missed it get a pack of th
   // below don't depend on which of ~180 sets comes up.
   const REAL = ['dom', 'war', 'eld', 'neo'];
   await ok(admin.put('/api/settings', { league: S.league, excluded: S.sets.map(s => s.code).filter(c => !REAL.includes(c)) }));
-  const { pod, spin } = await ok(nick.post(`/api/pods/${S.pod.id}/spin`));
+  // A double tap sends two spins at once: exactly one may land.
+  const taps = await Promise.all([nick.post(`/api/pods/${S.pod.id}/spin`), nick.post(`/api/pods/${S.pod.id}/spin`)]);
+  assert.deepEqual(taps.map(t => t.status).sort(), [200, 409], 'two spins at once: one lands, one is refused');
+  const { pod, spin } = taps.find(t => t.status === 200).json;
+  assert.equal((await ok(nick.get(`/api/pods/${S.pod.id}`))).pod.spin.id, spin.id, 'the stored spin is the one that landed');
   await ok(admin.put('/api/settings', { league: S.league, reset: true }));
   const live = await Promise.race([gotSpin, new Promise(r => setTimeout(() => r(false), 5000))]);
   ctrl.abort();
