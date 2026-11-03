@@ -38,12 +38,12 @@ phones, and every phone sees spins, votes and packs live.
 - **League tab**: standings, players, rules and an activity feed (winners, votes, spins, mythic
   pulls). Leagues can be ended into a read-only archive (seasons).
 - **Suggest a feature**: a footer button sends ideas and bug reports to the site admin's inbox.
+  Players follow theirs on the Account page and see the admin's status (planned / done /
+  declined) and reply.
 - **Privacy and account controls**: a Privacy Policy (`/privacy`) and Terms of Use (`/terms`), a
   required "13 or older and I agree" box at sign-up, and **Delete account** on the Account page
   (the admin can delete accounts too). A deleted player's past pods stay in league history as
   "Deleted player". Fonts are self-hosted, so pages make no third-party requests except Scryfall images.
-  Players follow theirs on the Account page and see the admin's status (planned / done /
-  declined) and reply.
 - **Accounts**: username + email + password sign-up, password change, reset by email (SMTP) or
   by an admin-made link.
 
