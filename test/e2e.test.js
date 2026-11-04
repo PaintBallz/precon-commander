@@ -67,7 +67,7 @@ const player = (pod, who) => pod.players.find(p => p.id === S.u[who].id);
 before(async () => {
   server = spawn(process.execPath, ['--no-warnings', 'server/index.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), DATA_DIR, SMTP_HOST: '', MAIL_FROM: '' },
+    env: { ...process.env, PORT: String(PORT), DATA_DIR, SMTP_HOST: '', MAIL_FROM: '', CF_EMAIL_TOKEN: '' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   server.stdout.on('data', d => { serverLog += d; });
@@ -621,6 +621,77 @@ test('league standings and activity feed', async () => {
   }
 });
 
+test('player pages: stats, rivals and pulls for one league or all of them', async () => {
+  const d = await ok(eve.get(`/api/players/${S.u.Nick.id}?league=${S.league}`));
+  assert.equal(d.player.username, 'Nick');
+  assert.equal(d.league.id, S.league);
+  assert.equal(d.league.rank, 1, 'Nick leads the league');
+  const t = d.stats.totals;
+  assert.deepEqual([t.pods, t.wins, t.streak.best, t.streak.current], [1, 1, 1, 1]);
+  assert.ok(t.packs >= 1 && t.cards >= 10, 'opened packs and cards counted');
+  assert.deepEqual(d.stats.form, [true]);
+  assert.equal(d.stats.nemesis, null, 'nobody has beaten Nick');
+  assert.ok(d.stats.prey, 'someone was at the table when Nick won');
+  assert.ok(d.stats.opponents.some(o => o.id === S.u.Mike.id && o.pods === 1 && o.myWins === 1 && o.theirWins === 0));
+  assert.ok(d.stats.bestPulls.every(c => c.name && c.image), 'best pulls carry card images');
+  assert.ok(d.stats.recent[0].won);
+  const mike = await ok(nick.get(`/api/players/${S.u.Mike.id}?league=${S.league}`));
+  assert.equal(mike.stats.nemesis.id, S.u.Nick.id, "Nick is Mike's nemesis");
+  assert.equal(mike.stats.totals.voteWins, 1);
+  const eveP = await ok(nick.get(`/api/players/${S.u.Eve.id}?league=all`));
+  assert.equal(eveP.league, null, 'all leagues combined');
+  assert.equal(eveP.stats.totals.missed, 1);
+  const adminId = (await ok(admin.get('/api/auth/me'))).user.id;
+  assert.equal((await nick.get(`/api/players/${adminId}`)).status, 404, 'the admin has no player page');
+  assert.equal((await nick.get('/api/players/nope')).status, 404);
+  assert.equal((await anon.get(`/api/players/${S.u.Nick.id}`)).status, 401);
+});
+
+test('season recap: champion, awards, totals and standings', async () => {
+  const r = await ok(joe.get(`/api/leagues/${S.league}/recap`));
+  assert.equal(r.league.id, S.league);
+  assert.equal(r.champion.name, 'Nick');
+  assert.equal(r.totals.pods, 1);
+  assert.equal(r.totals.packs, r.standings.reduce((n, x) => n + x.packs, 0), 'every opened pack in the league counts');
+  assert.ok(r.totals.cards > r.totals.packs);
+  const award = key => r.awards.find(a => a.key === key);
+  assert.deepEqual(award('wins').winners.map(w => w.name), ['Nick']);
+  assert.deepEqual(award('vote').winners.map(w => w.name), ['Mike']);
+  assert.ok(award('iron').winners.length >= 3, 'ties share an award');
+  assert.ok(!r.awards.some(a => a.key === 'streak'), 'no streak award for a single win');
+  assert.equal(r.standings[0].name, 'Nick');
+  assert.doesNotMatch(JSON.stringify(r), /usd|price|"value":\d/i, 'no prices or card values');
+  assert.equal(r.spun[0].times, 1);
+  assert.equal((await joe.get('/api/leagues/nope/recap')).status, 404);
+});
+
+test('deck lists: pasted or linked, looked up on Scryfall, shown on the player page', { skip: !LIVE_SCRYFALL && 'mock Scryfall' }, async () => {
+  assert.equal((await joe.post('/api/deck', { url: 'https://example.com/decks/abc' })).status, 400, 'only Moxfield and Archidekt links');
+  assert.equal((await joe.post('/api/deck', { url: 'http://127.0.0.1/decks/1' })).status, 400);
+  assert.equal((await joe.post('/api/deck', {})).status, 400, 'needs a link or a list');
+  const text = "1 Sol Ring (C21) 263\n2x Command Tower\n1 Arcane Signet (C21) 1\n1 Not A Real Card Name\n\n1 Atraxa, Praetors' Voice";
+  const { deck } = await ok(joe.post('/api/deck', { text }));
+  assert.equal(deck.count, 5, 'quantities add up (the unknown card is left out)');
+  assert.deepEqual(deck.missing, ['Not A Real Card Name']);
+  assert.deepEqual(deck.commanders, ["Atraxa, Praetors' Voice"], 'a trailing legendary is the commander');
+  assert.equal(deck.name, "Atraxa, Praetors' Voice");
+  assert.deepEqual(deck.colors, ['W', 'U', 'B', 'G']);
+  assert.ok(deck.cards.some(c => c.name === 'Arcane Signet'), 'a wrong collector number still finds the named card');
+  const sol = deck.cards.find(c => c.name === 'Sol Ring');
+  assert.deepEqual([sol.set, sol.number, sol.cmc, sol.mana], ['c21', '263', 1, '{1}']);
+  assert.ok(sol.image.startsWith('https://'));
+  assert.equal((await ok(joe.get('/api/auth/me'))).user.precon, "Atraxa, Praetors' Voice", 'a blank precon picks up the deck name');
+  const renamed = (await ok(joe.put('/api/deck', { name: 'Four Color Counters', commanders: [] }))).deck;
+  assert.equal(renamed.name, 'Four Color Counters');
+  assert.deepEqual(renamed.commanders, []);
+  const page = await ok(nick.get(`/api/players/${S.u.Joe.id}`));
+  assert.equal(page.deck.name, 'Four Color Counters', 'others see the deck');
+  await ok(joe.del('/api/deck'));
+  assert.equal((await ok(joe.get('/api/deck'))).deck, null);
+  const again = (await ok(joe.post('/api/deck', { text: "Commander\n1 Atraxa, Praetors' Voice\nDeck\n1 Sol Ring" }))).deck;
+  assert.deepEqual(again.commanders, ["Atraxa, Praetors' Voice"], 'a "Commander" section marks the commander');
+});
+
 test('the admin can skip a stuck vote; a league can turn the vote off', async () => {
   const three = (await ok(eve.post('/api/pods', { players: ['Eve', 'Joe', 'Dan'].map(n => ({ userId: S.u[n].id })) }))).pod;
   await ok(eve.post(`/api/pods/${three.id}/winner`, { playerId: S.u.Eve.id }));
@@ -898,6 +969,7 @@ test('players can delete their account; past pods keep them as "Deleted player"'
   assert.equal((await joe.post('/api/auth/delete', { password: 'wrongpass1' })).status, 400, 'needs the password');
   await ok(joe.post('/api/auth/delete', { password: 'NewJoe2026' })); // set by the reset test
   assert.equal((await joe.get('/api/state')).status, 401, 'signed out');
+  assert.equal((await nick.get(`/api/players/${S.u.Joe.id}`)).status, 404, 'their player page (and deck) is gone');
   assert.equal((await anon.post('/api/auth/login', { username: 'Joe', password: 'NewJoe2026' })).status, 401, 'the login is gone');
   const { pod } = await ok(nick.get(`/api/pods/${joesPod.id}`));
   assert.equal(pod.players.find(p => p.id === S.u.Joe.id).name, 'Deleted player', 'their seat stays, anonymised');

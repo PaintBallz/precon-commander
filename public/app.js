@@ -228,7 +228,7 @@ async function copyText(text, what = 'List') {
 }
 
 // ---------------- routing ----------------
-const ROUTES = ['league', 'pods', 'wheel', 'packs', 'pools', 'sets', 'history', 'fun', 'account'];
+const ROUTES = ['league', 'pods', 'wheel', 'packs', 'pools', 'sets', 'history', 'fun', 'account', 'player', 'recap'];
 function parseRoute() {
   const [r, q] = location.hash.replace(/^#/, '').split('?');
   S.route = ROUTES.includes(r) ? r : 'pods';
@@ -244,10 +244,10 @@ window.addEventListener('hashchange', () => {
 function render() {
   if (!S.me || S.me.mustChange) { showAuth(); return; }
   $('#top').hidden = false;
-  $$('#tabs a').forEach(a => a.classList.toggle('active', a.dataset.tab === S.route));
+  $$('#tabs a').forEach(a => a.classList.toggle('active', a.dataset.tab === (S.route === 'player' || S.route === 'recap' ? 'league' : S.route)));
   const view = $('#view');
   if (S.route !== 'wheel') stopWheelLoop();
-  ({ league: renderLeague, pods: renderPods, wheel: renderWheel, packs: renderPacks, pools: renderPools, sets: renderSets, history: renderHistory, fun: renderFun, account: renderAccount })[S.route](view);
+  ({ league: renderLeague, pods: renderPods, wheel: renderWheel, packs: renderPacks, pools: renderPools, sets: renderSets, history: renderHistory, fun: renderFun, account: renderAccount, player: renderPlayer, recap: renderRecap })[S.route](view);
 }
 
 function confirmBox(title, body, okLabel = 'OK', danger = false) {
@@ -411,11 +411,12 @@ async function renderAccount(view) {
         <button class="btn gold">Change password</button>
       </form>
     </div>
+    ${isAdmin() ? '' : '<div id="deckBox"></div>'}
     <div id="fbBox"></div>
     <div id="adminBox"></div>
     ${isAdmin() ? '' : `<form class="panel grid danger-zone" id="delForm">
       <h2>Delete account</h2>
-      <p class="small muted" style="margin:0">Permanently removes your username, email, password and precon, signs you out everywhere and deletes your suggestions. Pods you played and packs you opened stay in your leagues' history (other players' standings depend on them) under the name <b>Deleted player</b>. See the <a href="/privacy" target="_blank">Privacy Policy</a>.</p>
+      <p class="small muted" style="margin:0">Permanently removes your username, email, password, precon and deck list, signs you out everywhere and deletes your suggestions. Pods you played and packs you opened stay in your leagues' history (other players' standings depend on them) under the name <b>Deleted player</b>. See the <a href="/privacy" target="_blank">Privacy Policy</a>.</p>
       <label>Your password<input name="password" type="password" autocomplete="current-password" required maxlength="128"></label>
       <button class="btn danger">Delete my account</button>
     </form>`}`;
@@ -427,6 +428,7 @@ async function renderAccount(view) {
     try { await post('/auth/delete', f); S.me = null; toast('Your account was deleted.', 'good'); location.hash = ''; location.reload(); } catch (err) { fail(err); }
   });
   renderFeedback($('#fbBox', view));
+  renderDeckPanel($('#deckBox', view));
   $('#profForm', view).onsubmit = async e => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.target));
@@ -542,6 +544,7 @@ async function renderLeague(view) {
         <p>${active ? `Started ${fmtDate(league.createdAt)}${league.createdBy ? ` by ${esc(league.createdBy)}` : ''}.${league.leagueAdmin ? ` League admin: <b>${esc(league.leagueAdmin.username)}</b>.` : ''}` : `Ended ${fmtDate(league.endedAt)}. Its standings, history and pools stay here as an archive.`}
         ${plural(league.members.length, 'player')} of ${lim.max}.</p></div>
       <div class="row">
+        <a class="btn ${active ? '' : 'gold'}" href="#recap?league=${league.id}">${I.crown} ${active ? 'Season so far' : 'Season recap'}</a>
         ${league.code && active ? `<div class="code-box" title="Friends join with this code on the League tab"><span class="small muted">Invite code</span><b>${esc(league.code)}</b><button class="btn sm" id="copyCode">${I.copy} Copy</button></div>` : ''}
         ${league.isMember && active ? `<button class="btn danger sm" id="leaveL">Leave league</button>` : ''}
       </div>
@@ -552,12 +555,12 @@ async function renderLeague(view) {
       <section class="panel" style="overflow-x:auto">
         <h2>Standings</h2>
         ${standings.some(s => s.pods || s.missed) ? `<table class="standings"><thead><tr><th>Player</th><th class="num">Pods</th><th class="num">Wins</th><th class="num">Win %</th><th class="num" title="Bonus-pack votes won">${I.vote}</th><th class="num" title="Pods missed (absent packs)">Missed</th><th class="num">Packs</th><th class="num">Rares</th><th class="num">Mythics</th></tr></thead>
-          <tbody>${standings.map((s, i) => `<tr class="${s.active ? '' : 'dim'}"><td>${i === 0 && s.wins ? `${I.crown} ` : ''}<b>${esc(s.name)}</b>${s.active ? '' : ' <span class="small">(left)</span>'}</td><td class="num">${s.pods}</td><td class="num">${s.wins}</td><td class="num">${s.pods ? Math.round(s.wins / s.pods * 100) + '%' : '—'}</td><td class="num">${s.voteWins}</td><td class="num">${s.missed}</td><td class="num">${s.packs}</td><td class="num">${s.rares}</td><td class="num">${s.mythics}</td></tr>`).join('')}</tbody></table>`
+          <tbody>${standings.map((s, i) => `<tr class="${s.active ? '' : 'dim'}"><td>${i === 0 && s.wins ? `${I.crown} ` : ''}<b>${plink(s.id, s.name)}</b>${s.active ? '' : ' <span class="small">(left)</span>'}</td><td class="num">${s.pods}</td><td class="num">${s.wins}</td><td class="num">${s.pods ? Math.round(s.wins / s.pods * 100) + '%' : '—'}</td><td class="num">${s.voteWins}</td><td class="num">${s.missed}</td><td class="num">${s.packs}</td><td class="num">${s.rares}</td><td class="num">${s.mythics}</td></tr>`).join('')}</tbody></table>`
           : '<p class="muted">No finished pods yet. Standings fill in as pods are finished.</p>'}
       </section>
       <section class="panel">
         <div class="spread"><h2 style="margin:0">Players</h2><span class="small muted">${league.members.length}/${lim.max}</span></div>
-        <div class="member-list">${league.members.map(m => `<div class="member"><div><b>${esc(m.username)}</b>${m.leagueAdmin ? ' <span class="chip gold" title="Started the league: can change its rules and kick players">League admin</span>' : ''}${m.id === S.me.id ? ' <span class="dim small">(you)</span>' : ''}<div class="small muted">${esc(m.precon) || 'No precon set'}</div></div>
+        <div class="member-list">${league.members.map(m => `<div class="member"><div><b>${plink(m.id, m.username)}</b>${m.leagueAdmin ? ' <span class="chip gold" title="Started the league: can change its rules and kick players">League admin</span>' : ''}${m.id === S.me.id ? ' <span class="dim small">(you)</span>' : ''}<div class="small muted">${esc(m.precon) || 'No precon set'}</div></div>
           ${league.canManage && active && m.id !== S.me.id ? `<button class="btn ghost sm" data-rmm="${m.id}" data-name="${esc(m.username)}" title="Kick from the league">✕</button>` : ''}</div>`).join('') || '<p class="muted">Nobody yet.</p>'}</div>
         ${isAdmin() && active ? `<div class="row" style="margin-top:10px">${candidates.length ? `<select class="input" id="addMember"><option value="">Add a player…</option>${candidates.map(c => `<option value="${c.id}">${esc(c.username)}</option>`).join('')}</select><button class="btn sm" id="addMemberBtn">Add</button>` : '<span class="small muted">Every player is already in a league.</span>'}</div>` : ''}
       </section>
@@ -1760,7 +1763,7 @@ async function renderPools(view) {
     <div class="panel pool-head">
       <div>
         <h2 style="margin:0">${esc(pool.username)}'s pool${podName ? ` <span class="muted" style="font-size:.9rem">from ${esc(podName)}</span>` : ''}</h2>
-        <div class="small muted">${pool.precon ? `Precon: <b>${esc(pool.precon)}</b> · ` : ''}${plural(pool.pods.length, 'pod')} · ${plural(packs.length, 'pack')} · ${plural(cards.length, 'card')}</div>
+        <div class="small muted">${pool.precon ? `Precon: <b>${esc(pool.precon)}</b> · ` : ''}${plural(pool.pods.length, 'pod')} · ${plural(packs.length, 'pack')} · ${plural(cards.length, 'card')} · <a href="#player?id=${pool.userId}${S.viewLeague ? `&league=${S.viewLeague}` : ''}">Stats and deck</a></div>
         <div class="row" style="margin-top:8px"><span class="chip gold">★ ${count('mythic')} mythic</span><span class="chip">◆ ${count('rare')} rare</span><span class="chip">${count('uncommon')} uncommon</span><span class="chip">${count('common')} common</span></div>
       </div>
       <div class="row">
@@ -1915,7 +1918,7 @@ async function renderHistory(view) {
   if (!pods.length) { view.innerHTML = `<div class="empty"><h2>No finished pods yet</h2><p>Finish a pod on the Pods tab and it shows up here, with every pack and pull.</p></div>`; return; }
   const stats = new Map();
   for (const g of pods) for (const p of g.players) {
-    const s = stats.get(p.id) || { name: p.name, games: 0, wins: 0, packs: 0, sac: 0, mythics: 0, rares: 0 };
+    const s = stats.get(p.id) || { id: p.id, name: p.name, games: 0, wins: 0, packs: 0, sac: 0, mythics: 0, rares: 0 };
     s.name = p.name;
     s.games++; if (g.winnerId === p.id) s.wins++;
     s.sac += p.sacrificed;
@@ -1932,7 +1935,7 @@ async function renderHistory(view) {
     <div class="panel" style="margin-bottom:22px;overflow-x:auto">
       <h2>Standings</h2>
       <table class="standings"><thead><tr><th>Player</th><th class="num">Pods</th><th class="num">Wins</th><th class="num">Win %</th><th class="num">Packs</th><th class="num">Sacrificed</th><th class="num">Rares</th><th class="num">Mythics</th></tr></thead>
-      <tbody>${table.map((s, i) => `<tr><td>${i === 0 && s.wins ? `${I.crown} ` : ''}<b>${esc(s.name)}</b></td><td class="num">${s.games}</td><td class="num">${s.wins}</td><td class="num">${Math.round(s.wins / s.games * 100)}%</td><td class="num">${s.packs}</td><td class="num">${s.sac}</td><td class="num">${s.rares}</td><td class="num">${s.mythics}</td></tr>`).join('')}</tbody></table>
+      <tbody>${table.map((s, i) => `<tr><td>${i === 0 && s.wins ? `${I.crown} ` : ''}<b>${plink(s.id, s.name)}</b></td><td class="num">${s.games}</td><td class="num">${s.wins}</td><td class="num">${Math.round(s.wins / s.games * 100)}%</td><td class="num">${s.packs}</td><td class="num">${s.sac}</td><td class="num">${s.rares}</td><td class="num">${s.mythics}</td></tr>`).join('')}</tbody></table>
     </div>
     <div class="grid" style="gap:12px">${pods.map(g => {
       const w = g.players.find(p => p.id === g.winnerId);
@@ -1976,6 +1979,223 @@ async function renderHistory(view) {
   });
 }
 
+// =============== PLAYER PAGES, SEASON RECAP, DECK LISTS ===============
+// Player names link to their page. Deleted players have no page.
+const plink = (id, name) => (id && name !== 'Deleted player' ? `<a class="plink" href="#player?id=${encodeURIComponent(id)}${S.viewLeague ? `&league=${encodeURIComponent(S.viewLeague)}` : ''}">${esc(name)}</a>` : esc(name));
+const pctOf = (a, b) => (b ? `${Math.round(a / b * 100)}%` : '—');
+const tile = (value, label, sub = '') => `<div class="fs-tile"><b>${value}</b><span>${label}${sub ? ` <em>${sub}</em>` : ''}</span></div>`;
+const PIP_URL = sym => `https://svgs.scryfall.io/card-symbols/${encodeURIComponent(sym.replace(/\//g, ''))}.svg`;
+const manaHtml = cost => esc(cost || '').replace(/\{([^}]+)\}/g, (_, s) => `<img class="ms" src="${PIP_URL(s)}" alt="{${s}}" loading="lazy">`);
+const colorPips = colors => (colors?.length ? colors : ['C']).map(c => `<img class="ms" src="${PIP_URL(c)}" alt="${c}" title="${({ W: 'White', U: 'Blue', B: 'Black', R: 'Red', G: 'Green', C: 'Colorless' })[c]}">`).join('');
+const pullCard = (c, extra = '') => `<figure class="pull" data-pull="${esc(c.set)}/${esc(c.number)}/${c.foil ? 'f' : ''}">
+    <img src="${esc(c.image)}" alt="${esc(c.name)}" loading="lazy">
+    <figcaption><b>${esc(c.name)}</b><span>${esc(c.rarity)}${c.foil ? ' · foil' : ''}${extra}</span></figcaption></figure>`;
+function wirePulls(view, cards) {
+  $$('[data-pull]', view).forEach(el => el.onclick = () => {
+    const c = cards.find(x => `${x.set}/${x.number}/${x.foil ? 'f' : ''}` === el.dataset.pull);
+    if (c) cardModal(c);
+  });
+}
+
+// ---------- deck lists ----------
+const TYPE_ORDER = ['Creature', 'Planeswalker', 'Battle', 'Instant', 'Sorcery', 'Artifact', 'Enchantment', 'Land'];
+const typeOf = c => { const front = String(c.type).split(' // ')[0]; return TYPE_ORDER.find(t => front.includes(t)) || 'Other'; };
+function deckHtml(deck, { mine = false } = {}) {
+  const cmd = deck.cards.filter(c => c.board === 'commander');
+  const main = deck.cards.filter(c => c.board !== 'commander');
+  const spells = main.filter(c => typeOf(c) !== 'Land');
+  const curve = Array(8).fill(0);
+  for (const c of spells) curve[Math.min(7, Math.floor(c.cmc))] += c.qty;
+  const peak = Math.max(1, ...curve);
+  const groups = TYPE_ORDER.concat('Other').map(t => [t, main.filter(c => typeOf(c) === t).sort((a, b) => a.cmc - b.cmc || a.name.localeCompare(b.name))]).filter(([, l]) => l.length);
+  const avg = spells.length ? spells.reduce((n, c) => n + c.cmc * c.qty, 0) / spells.reduce((n, c) => n + c.qty, 0) : 0;
+  const src = deck.url ? `<a href="${esc(deck.url)}" target="_blank" rel="noopener">${deck.source === 'moxfield' ? 'Moxfield' : 'Archidekt'} ↗</a>` : 'pasted list';
+  return `<div class="deck">
+    <div class="deck-head">
+      ${cmd.map(c => `<img class="deck-cmd" src="${esc(c.image)}" alt="${esc(c.name)}" data-dc="${esc(c.name)}" tabindex="0" role="button">`).join('')}
+      <div class="deck-meta">
+        <h3>${esc(deck.name)}</h3>
+        <div class="deck-colors">${colorPips(deck.colors)}</div>
+        <div class="small muted">${deck.count} cards · avg. mana value ${avg.toFixed(2)} · from ${src} · updated ${fmtDate(deck.updatedAt)}</div>
+        ${cmd.length ? '' : `<div class="small muted">${mine ? 'No commander marked: pick one in your Account page.' : 'No commander marked.'}</div>`}
+        ${deck.missing?.length ? `<div class="small" style="color:var(--accent)">Not found on Scryfall: ${deck.missing.map(esc).join(', ')}</div>` : ''}
+        <div class="row" style="margin-top:8px"><button class="btn sm" id="deckCopy">${I.copy} Copy list</button></div>
+      </div>
+      <div class="deck-curve" aria-label="Mana curve">
+        ${curve.map((n, i) => `<div class="dc-col" title="${n} card${n === 1 ? '' : 's'} at ${i === 7 ? '7+' : i}"><span>${n || ''}</span><i style="height:${Math.round(n / peak * 92)}px"></i><b>${i === 7 ? '7+' : i}</b></div>`).join('')}
+      </div>
+    </div>
+    <div class="deck-types">${groups.map(([t, l]) => `<span class="chip">${t} <b>${l.reduce((n, c) => n + c.qty, 0)}</b></span>`).join('')}</div>
+    <div class="deck-list">${groups.map(([t, l]) => `<div class="deck-group"><h4>${t} <span class="dim">(${l.reduce((n, c) => n + c.qty, 0)})</span></h4>
+      ${l.map(c => `<div class="deck-line" data-dc="${esc(c.name)}" tabindex="0" role="button"><span class="q">${c.qty}</span><span class="n">${esc(c.name)}${c.foil ? ' <span class="dim">✦</span>' : ''}</span><span class="m">${manaHtml(c.mana)}</span></div>`).join('')}</div>`).join('')}</div>
+  </div>`;
+}
+function wireDeck(view, deck) {
+  $$('[data-dc]', view).forEach(el => el.onclick = () => {
+    const c = deck.cards.find(x => x.name === el.dataset.dc);
+    if (c) cardModal({ ...c, id: null });
+  });
+  $('#deckCopy', view)?.addEventListener('click', () => {
+    const line = c => `${c.qty} ${c.name} (${String(c.set).toUpperCase()}) ${c.number}${c.foil ? ' *F*' : ''}`;
+    const cmd = deck.cards.filter(c => c.board === 'commander');
+    const main = deck.cards.filter(c => c.board !== 'commander');
+    copyText([...(cmd.length ? ['Commander', ...cmd.map(line), '', 'Deck'] : []), ...main.map(line)].join('\n'), deck.name);
+  });
+}
+
+// The deck panel on the Account page: import, pick the commander, remove.
+async function renderDeckPanel(box) {
+  if (!box) return;
+  let deck;
+  try { deck = (await api('/deck')).deck; } catch (err) { box.innerHTML = ''; return; }
+  const legends = deck ? deck.cards.filter(c => /legendary|can be your commander/i.test(c.type)) : [];
+  const cmdNames = deck ? deck.cards.filter(c => c.board === 'commander').map(c => c.name) : [];
+  box.innerHTML = `<form class="panel grid" id="deckForm" style="margin-top:18px">
+      <div class="spread"><h2 style="margin:0">Deck list</h2>${deck ? `<a class="btn sm" href="#player?id=${S.me.id}">See it on your page</a>` : ''}</div>
+      <p class="small muted" style="margin:0">Show the deck you play on your player page: paste a public <b>Moxfield</b> or <b>Archidekt</b> link, or paste the list (one card per line, like <code>1 Sol Ring</code>). If a link won't load, use the site's <b>Export</b> option and paste the text. ${deck ? `Importing again replaces <b>${esc(deck.name)}</b> (${deck.count} cards).` : ''}</p>
+      <label>Deck link<input name="url" type="url" placeholder="https://moxfield.com/decks/…" maxlength="300" value="${esc(deck?.url || '')}"></label>
+      <details ${deck?.source === 'text' ? 'open' : ''}><summary class="small">…or paste the list</summary>
+        <textarea name="text" rows="8" maxlength="40000" placeholder="Commander&#10;1 Atraxa, Praetors' Voice&#10;&#10;Deck&#10;1 Sol Ring&#10;1 Command Tower&#10;…"></textarea>
+      </details>
+      <div class="row"><button class="btn gold" id="deckGo">${deck ? 'Update deck' : 'Import deck'}</button>${deck ? `<button type="button" class="btn danger sm" id="deckDel">${I.trash} Remove deck</button>` : ''}</div>
+      ${deck ? `<div class="grid" style="gap:8px;border-top:1px solid var(--line);padding-top:12px">
+        <label>Deck name<input id="deckName" value="${esc(deck.name)}" maxlength="80"></label>
+        ${legends.length ? `<div class="grid" style="gap:6px"><span class="small muted">Commander (tick one, or two for partners)</span><div class="cmd-picks" id="deckCmd">${legends.map(c => `<label class="chip"><input type="checkbox" value="${esc(c.name)}" ${cmdNames.includes(c.name) ? 'checked' : ''}> ${esc(c.name)}</label>`).join('')}</div></div>` : '<p class="small muted" style="margin:0">No legendary cards in this list to make the commander.</p>'}
+        <div><button type="button" class="btn sm" id="deckSave">Save name and commander</button></div>
+      </div>` : ''}
+    </form>`;
+  $('#deckForm', box).onsubmit = async e => {
+    e.preventDefault();
+    const f = Object.fromEntries(new FormData(e.target));
+    const text = (f.text || '').trim();
+    const body = text ? { text } : { url: (f.url || '').trim() };
+    const btn = $('#deckGo', box);
+    btn.disabled = true; btn.textContent = 'Looking up cards…';
+    try {
+      const r = await post('/deck', body);
+      toast(`${esc(r.deck.name)} imported: ${r.deck.count} cards${r.deck.missing?.length ? `, ${r.deck.missing.length} not found` : ''}.`, 'good');
+      await loadState().catch(() => {});
+      renderDeckPanel(box);
+    } catch (err) { fail(err); btn.disabled = false; btn.textContent = deck ? 'Update deck' : 'Import deck'; }
+  };
+  $('#deckDel', box)?.addEventListener('click', async () => {
+    if (!await confirmBox('Remove your deck list?', 'It disappears from your player page. Your precon name stays.', `${I.trash} Remove`, true)) return;
+    try { await del('/deck'); toast('Deck list removed.', 'good'); renderDeckPanel(box); } catch (err) { fail(err); }
+  });
+  $('#deckSave', box)?.addEventListener('click', async () => {
+    const sel = $('#deckCmd', box);
+    const commanders = sel ? $$('input:checked', sel).map(i => i.value) : undefined;
+    if (commanders && commanders.length > 2) { toast('Pick at most two commanders.'); return; }
+    try { await api('/deck', { method: 'PUT', body: { name: $('#deckName', box).value, commanders } }); toast('Deck saved.', 'good'); renderDeckPanel(box); } catch (err) { fail(err); }
+  });
+}
+
+// ---------- player page ----------
+async function renderPlayer(view) {
+  const id = S.params.id;
+  if (!id) { go('#league'); return; }
+  view.innerHTML = '<div class="spinner"></div>';
+  let d;
+  const q = S.params.league ? `?league=${encodeURIComponent(S.params.league)}` : '';
+  try { d = await api(`/players/${encodeURIComponent(id)}${q}`); } catch (err) { view.innerHTML = `<div class="empty"><h2>Player not found</h2><p>${esc(err.message)}</p><p><a href="#league">Back to the league</a></p></div>`; return; }
+  if (S.route !== 'player' || S.params.id !== id) return;
+  const { player, league, stats, deck } = d;
+  const t = stats.totals;
+  const mine = player.id === S.me.id;
+  const scope = league ? league.id : 'all';
+  const leagueTabs = player.leagues.length ? `<div class="row seg-links">${player.leagues.map(l => `<a class="chip ${scope === l.id ? 'gold' : ''}" href="#player?id=${player.id}&league=${l.id}">${esc(l.name)}${l.status === 'ended' ? ' <span class="dim">(ended)</span>' : ''}</a>`).join('')}${player.leagues.length > 1 ? `<a class="chip ${scope === 'all' ? 'gold' : ''}" href="#player?id=${player.id}&league=all">All leagues</a>` : ''}</div>` : '';
+  const opp = stats.opponents;
+  view.innerHTML = `
+    <div class="hero"><div>
+      <h1>${esc(player.username)}${mine ? ' <span class="dim small">(you)</span>' : ''}</h1>
+      <p>${player.precon ? `Plays <b>${esc(player.precon)}</b>. ` : ''}${league?.rank ? `#${league.rank} in ${esc(league.name)}. ` : ''}${league ? '' : 'Every league combined. '}Member since ${fmtDate(player.joined)}.</p>
+    </div>${leagueTabs}</div>
+    ${t.pods || t.packs ? `
+    <div class="fs-tiles">
+      ${tile(t.pods, 'Pods played', t.missed ? `${t.missed} missed` : '')}
+      ${tile(t.wins, 'Wins', t.pods ? pctOf(t.wins, t.pods) : '')}
+      ${tile(t.streak.best, 'Best win streak', t.streak.current > 1 ? `on ${t.streak.current} now` : '')}
+      ${tile(t.voteWins, 'Bonus votes won')}
+      ${tile(t.packs, 'Packs opened', `${t.cards} cards`)}
+      ${tile(t.mythics, 'Mythics', `${t.rares} rares`)}
+      ${tile(t.foils, 'Foils')}
+    </div>
+    ${stats.form.length ? `<div class="panel form-strip"><span class="small muted">Last ${stats.form.length} pods</span>${stats.form.map(w => `<span class="res ${w ? 'w' : 'l'}" title="${w ? 'Won' : 'Lost'}">${w ? 'W' : 'L'}</span>`).join('')}</div>` : ''}
+    <div class="league-grid player-grid">
+      <section class="panel">
+        <h2>Rivals</h2>
+        <div class="rivals">
+          <div class="rival">${I.flame}<div><span class="small muted">Nemesis</span><b>${stats.nemesis ? plink(stats.nemesis.id, stats.nemesis.name) : '—'}</b><span class="small muted">${stats.nemesis ? `won ${plural(stats.nemesis.theirWins, 'pod')} of ${stats.nemesis.pods} together` : 'Nobody has beaten them yet'}</span></div></div>
+          <div class="rival">${I.crown}<div><span class="small muted">Favourite to beat</span><b>${stats.prey ? plink(stats.prey.id, stats.prey.name) : '—'}</b><span class="small muted">${stats.prey ? `at the table for ${plural(stats.prey.myWins, 'win')}` : 'No wins yet'}</span></div></div>
+        </div>
+        ${opp.length ? `<table class="standings"><thead><tr><th>Opponent</th><th class="num">Pods</th><th class="num" title="Pods ${esc(player.username)} won">${esc(player.username)} won</th><th class="num">They won</th></tr></thead>
+          <tbody>${opp.map(o => `<tr><td>${plink(o.id, o.name)}</td><td class="num">${o.pods}</td><td class="num">${o.myWins}</td><td class="num">${o.theirWins}</td></tr>`).join('')}</tbody></table>` : ''}
+      </section>
+      <section class="panel">
+        <h2>Precons played</h2>
+        ${stats.precons.length ? `<table class="standings"><thead><tr><th>Precon</th><th class="num">Pods</th><th class="num">Wins</th><th class="num">Win %</th></tr></thead>
+          <tbody>${stats.precons.map(p => `<tr><td>${esc(p.name)}</td><td class="num">${p.pods}</td><td class="num">${p.wins}</td><td class="num">${pctOf(p.wins, p.pods)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No precon recorded in their pods.</p>'}
+        ${stats.sets.length ? `<h2 style="margin-top:18px">Sets opened</h2><div class="set-bars">${stats.sets.map(s => `<div class="sb"><span>${s.icon ? `<img class="set-icon" src="${esc(s.icon)}" alt="">` : ''}${esc(s.name)}</span><i style="width:${Math.round(s.packs / stats.sets[0].packs * 100)}%"></i><b>${s.packs}</b></div>`).join('')}</div>` : ''}
+      </section>
+    </div>
+    ${stats.bestPulls.length ? `<section class="panel" style="margin-top:16px"><h2>Best pulls</h2><div class="pulls">${stats.bestPulls.map(c => pullCard(c)).join('')}</div></section>` : ''}
+    ${stats.recent.length ? `<section class="panel" style="margin-top:16px;overflow-x:auto"><h2>Recent pods</h2>
+      <table class="standings"><thead><tr><th>Pod</th><th>Result</th><th>Played</th><th>Against</th><th>Spun</th></tr></thead>
+      <tbody>${stats.recent.map(p => `<tr><td><b>${esc(p.name)}</b><div class="small muted">${fmtDate(p.at)}</div></td><td>${p.won ? `<span class="res w">W</span>` : `<span class="res l">L</span> <span class="small muted">${esc(p.winner || '—')}</span>`}${p.vote ? ` ${I.vote}` : ''}</td><td class="small">${esc(p.precon) || '<span class="dim">—</span>'}</td><td class="small">${p.others.map(esc).join(', ')}</td><td class="small">${esc(p.spun || '—')}</td></tr>`).join('')}</tbody></table></section>` : ''}
+    ` : `<div class="panel muted">${league ? `No finished pods in ${esc(league.name)} yet.` : 'No finished pods yet.'}</div>`}
+    <section class="panel" style="margin-top:16px"><h2>Deck</h2>
+      ${deck ? deckHtml(deck, { mine }) : `<p class="muted">${mine ? 'You haven\'t added your deck list yet. <a href="#account">Import it from Moxfield, Archidekt or a pasted list</a>.' : 'No deck list yet.'}</p>`}
+    </section>`;
+  wirePulls(view, stats.bestPulls);
+  if (deck) wireDeck(view, deck);
+}
+
+// ---------- season recap ----------
+async function renderRecap(view) {
+  const id = S.params.league || S.viewLeague;
+  if (!id) { go('#league'); return; }
+  view.innerHTML = '<div class="spinner"></div>';
+  let d;
+  try { d = await api(`/leagues/${encodeURIComponent(id)}/recap`); } catch (err) { fail(err); view.innerHTML = ''; return; }
+  if (S.route !== 'recap') return;
+  const { league, champion, totals: t, awards, topPulls, spun, standings } = d;
+  const over = league.status === 'ended';
+  const span = t.first ? `${fmtDate(t.first)} – ${over ? fmtDate(league.endedAt) : 'today'}` : '';
+  view.innerHTML = `
+    <div class="hero"><div><h1>${esc(league.name)}: ${over ? 'Season recap' : 'Season so far'}</h1><p>${span}${over ? '' : ' · The league is still running, so this can change.'}</p></div>
+      <div class="row"><a class="btn ghost" href="#league">Back to the league</a>${t.pods ? `<button class="btn" id="recapCopy">${I.copy} Copy for Discord</button>` : ''}</div></div>
+    ${!t.pods ? '<div class="empty"><h2>No finished pods yet</h2><p>The recap fills in once pods are finished.</p></div>' : `
+    ${champion ? `<div class="champ">${I.crown}<div><span>${over ? 'League champion' : 'Leading the league'}</span><b>${plink(champion.id, champion.name)}</b><em>${plural(champion.wins, 'win')} in ${plural(champion.pods, 'pod')}</em></div></div>` : ''}
+    <div class="fs-tiles">
+      ${tile(t.pods, 'Pods played')}${tile(t.packs, 'Packs opened')}${tile(t.cards, 'Cards pulled')}${tile(t.mythics, 'Mythics')}${tile(t.foils, 'Foils')}${tile(t.precons, 'Precons used')}
+    </div>
+    <h2>Awards</h2>
+    <div class="awards">${awards.map(a => `<div class="award ${a.key === 'pull' ? 'big' : ''}">
+      ${a.card ? `<img src="${esc(a.card.image)}" alt="${esc(a.card.name)}" data-pull="${esc(a.card.set)}/${esc(a.card.number)}/${a.card.foil ? 'f' : ''}" tabindex="0" role="button">` : ''}
+      <div><span class="aw-title">${esc(a.title)}</span><b>${a.winners.map(w => plink(w.id, w.name)).join(' & ')}</b><span class="aw-val">${esc(a.value)}</span><span class="small muted">${esc(a.blurb)}</span></div></div>`).join('')}</div>
+    ${topPulls.length ? `<section class="panel" style="margin-top:16px"><h2>Top pulls</h2><div class="pulls">${topPulls.map(c => pullCard(c, ` · ${esc(c.owner)}`)).join('')}</div></section>` : ''}
+    <div class="league-grid" style="margin-top:16px">
+      <section class="panel" style="overflow-x:auto"><h2>${over ? 'Final standings' : 'Standings'}</h2>
+        <table class="standings"><thead><tr><th>Player</th><th class="num">Pods</th><th class="num">Wins</th><th class="num">Win %</th><th class="num" title="Longest win streak">Streak</th><th class="num">Mythics</th><th class="num">Foils</th></tr></thead>
+        <tbody>${standings.filter(s => s.pods || s.packs).map((s, i) => `<tr><td>${i === 0 && s.wins ? `${I.crown} ` : ''}<b>${plink(s.id, s.name)}</b></td><td class="num">${s.pods}</td><td class="num">${s.wins}</td><td class="num">${pctOf(s.wins, s.pods)}</td><td class="num">${s.streak}</td><td class="num">${s.mythics}</td><td class="num">${s.foils}</td></tr>`).join('')}</tbody></table>
+      </section>
+      ${spun.length ? `<section class="panel"><h2>Most spun sets</h2><div class="set-bars">${spun.map(s => `<div class="sb"><span>${s.icon ? `<img class="set-icon" src="${esc(s.icon)}" alt="">` : ''}${esc(s.name)}</span><i style="width:${Math.round(s.times / spun[0].times * 100)}%"></i><b>${s.times}</b></div>`).join('')}</div></section>` : ''}
+    </div>`}`;
+  wirePulls(view, [...topPulls, ...awards.filter(a => a.card).map(a => a.card)]);
+  $('#recapCopy', view)?.addEventListener('click', () => {
+    const lines = [
+      `**${league.name}: ${over ? 'Season recap' : 'Season so far'}**`,
+      champion ? `👑 ${over ? 'Champion' : 'Leader'}: ${champion.name} (${plural(champion.wins, 'win')} in ${plural(champion.pods, 'pod')})` : '',
+      `${plural(t.pods, 'pod')} · ${plural(t.packs, 'pack')} · ${plural(t.mythics, 'mythic')} · ${plural(t.foils, 'foil')}`,
+      '',
+      ...awards.map(a => `• ${a.title}: ${a.winners.map(w => w.name).join(' & ')} (${a.value})`),
+      '',
+      `${location.origin}/#recap?league=${league.id}`,
+    ].filter((l, i, all) => l || all[i - 1]);
+    copyText(lines.join('\n'), 'Recap');
+  });
+}
+
 // ---------------- live sync ----------------
 let es = null;
 function connect() {
@@ -2011,6 +2231,8 @@ function connect() {
         if (pod?.players.some(p => p.id === S.me.id)) toast(info.vote === 'tied' ? `${I.vote} ${esc(pod.name)}: tie! Re-vote between the tied players.` : `${I.vote} ${esc(pod.name)}: ${esc(nameIn(pod, pod.vote.winnerId))} wins the bonus pack.`, 'good');
       }
       if (S.spinning || S.opening) return;
+      // Player pages and recaps are snapshots; they refresh when reopened.
+      if (S.route === 'player' || S.route === 'recap') return;
       // Don't yank the page out from under someone mid-reveal or typing.
       const typing = document.activeElement && ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName);
       if (['sets', 'pods', 'account', 'pools', 'league'].includes(S.route) && typing) return;
@@ -2042,7 +2264,7 @@ window.addEventListener('resize', () => { if (S.route === 'wheel' && !S.spinning
 // Keyboard access. Cards and clickable rows aren't buttons, so make them
 // focusable and let Enter/Space click them. Escape closes the dialog (as
 // Cancel, when it asks a question).
-const KEYABLE = '.mcard, [data-card], tr.pickable, tr[data-c]';
+const KEYABLE = '.mcard, [data-card], tr.pickable, tr[data-c], [data-dc], [data-pull]';
 new MutationObserver(() => $$(`:is(${KEYABLE}):not([tabindex])`).forEach(el => { el.tabIndex = 0; el.setAttribute('role', 'button'); }))
   .observe(document.body, { childList: true, subtree: true });
 document.addEventListener('keydown', e => {

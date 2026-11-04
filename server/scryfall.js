@@ -152,3 +152,28 @@ async function lookupExact(idents) {
   }
   return found;
 }
+
+// ---------- full card data (deck lists) ----------
+// identifiers: Scryfall's own shapes ({id} | {set, collector_number} | {name}).
+// Returns one entry per identifier, in order: the raw card, or null if Scryfall
+// doesn't know it. Not cached: callers keep what they need.
+const norm = s => String(s || '').toLowerCase();
+function matches(c, ident) {
+  if (ident.id) return c.id === ident.id;
+  if (ident.collector_number) return norm(c.set) === norm(ident.set) && norm(c.collector_number) === norm(ident.collector_number);
+  const n = norm(ident.name);
+  return norm(c.name) === n || norm(c.name).startsWith(n + ' // ') || (c.card_faces || []).some(f => norm(f.name) === n);
+}
+export async function fetchCollection(identifiers) {
+  const out = new Array(identifiers.length).fill(null);
+  for (let i = 0; i < identifiers.length; i += 75) {
+    const batch = identifiers.slice(i, i + 75);
+    const json = await sfFetch('/cards/collection', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifiers: batch }),
+    });
+    const found = json?.data || [];
+    batch.forEach((ident, n) => { out[i + n] = found.find(c => matches(c, ident)) || null; });
+  }
+  return out;
+}
+

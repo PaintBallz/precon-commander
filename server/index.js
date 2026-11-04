@@ -23,11 +23,13 @@ import {
 import {
   LEAGUE_MIN, LEAGUE_MAX, DEFAULT_RULES, RULE_LIMITS, getLeague, leagueByCode, listLeagues, activeLeagueOf,
   leagueMembers, isMember, addMember, removeMember, wasKicked, createLeague, updateLeague, newLeagueCode, endLeague, deleteLeague,
-  logEvent, leagueEvents, migrateToLeagues,
+  logEvent, leagueEvents, migrateToLeagues, leaguesOf,
 } from './leagues.js';
 import { getBoosterSets, BOOSTER_SET_TYPES } from './scryfall.js';
 import { openPack, hasRealPack, realPackKind, localPackSets, sheetOdds } from './packs.js';
-import { requireAuth, requireAdmin, authRoutes, seedAdmin, listUsers, getUser } from './auth.js';
+import { requireAuth, requireAdmin, authRoutes, seedAdmin, listUsers, getUser, setPrecon } from './auth.js';
+import { importDeck, editDeck, getDeck, deleteDeck, DeckError } from './decks.js';
+import { playerStats, seasonRecap } from './stats.js';
 import { feedbackRoutes, newFeedbackCount } from './feedback.js';
 
 const PORT = Number(process.env.PORT || 3000);
@@ -848,6 +850,50 @@ app.get('/api/pools', wrap(async (req, res) => {
   }
   res.json({ leagueId: league.id, pools: [...pools.values()].sort((a, b) => a.username.localeCompare(b.username)) });
 }));
+
+// ---------- player pages, season recaps, deck lists ----------
+// A player page: their stats in one league (?league=…, default: the league
+// on screen) or across every league they've been in (?league=all), plus
+// their deck. Any signed-in player can look at any other player.
+app.get('/api/players/:id', wrap(async (req, res) => {
+  const u = getUser(req.params.id);
+  if (!u || u.is_admin) throw new HttpError(404, 'Player not found');
+  const theirs = leaguesOf(u.id).map(getLeague).filter(Boolean);
+  const all = req.query.league === 'all';
+  const league = all ? null : (req.query.league ? requireLeague(String(req.query.league)) : (viewLeague(req) && theirs.find(l => l.id === viewLeague(req).id)) || theirs[0] || null);
+  const stats = await playerStats(u.id, league?.id || null);
+  const rank = league ? standings(league.id).findIndex(s => s.id === u.id) : -1;
+  res.json({
+    player: { id: u.id, username: u.username, precon: u.precon || '', joined: u.created_at, leagues: theirs.map(l => ({ id: l.id, name: l.name, status: l.status })) },
+    league: league ? { id: league.id, name: league.name, status: league.status, rank: rank >= 0 ? rank + 1 : null } : null,
+    stats, deck: getDeck(u.id),
+  });
+}));
+app.get('/api/leagues/:id/recap', wrap(async (req, res) => {
+  const league = requireLeague(req.params.id);
+  res.json({ league: { id: league.id, name: league.name, status: league.status, createdAt: league.createdAt, endedAt: league.endedAt }, ...(await seasonRecap(league.id, standings(league.id))) });
+}));
+
+const deckFail = err => { if (err instanceof DeckError) throw new HttpError(err.status, err.message); throw err; };
+const deckImports = new Map();
+app.get('/api/deck', (req, res) => res.json({ deck: getDeck(req.user.id) }));
+app.post('/api/deck', wrap(async (req, res) => {
+  // Each import asks Scryfall (and maybe a deck site) for up to ~4 lookups.
+  const recent = (deckImports.get(req.user.id) || []).filter(t => Date.now() - t < 3600e3);
+  if (recent.length >= 15) throw new HttpError(429, 'That\'s a lot of imports. Try again in an hour.');
+  deckImports.set(req.user.id, [...recent, Date.now()]);
+  const b = req.body || {};
+  const deck = await importDeck(req.user.id, { url: b.url, text: b.text, name: b.name }).catch(deckFail);
+  // A precon field left blank picks up the deck's name.
+  if (!getUser(req.user.id).precon) setPrecon(req.user.id, deck.name);
+  broadcast('state');
+  res.json({ deck });
+}));
+app.put('/api/deck', wrap(async (req, res) => {
+  const deck = await Promise.resolve().then(() => editDeck(req.user.id, req.body || {})).catch(deckFail);
+  res.json({ deck });
+}));
+app.delete('/api/deck', wrap(async (req, res) => { deleteDeck(req.user.id); res.json({ ok: true }); }));
 
 seedAdmin();
 migrateToLeagues(globalSettings());

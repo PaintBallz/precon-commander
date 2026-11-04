@@ -61,6 +61,7 @@ export function publicUser(r) {
   return r && { id: r.id, username: r.username, email: r.email || '', isAdmin: !!r.is_admin, mustChange: !!r.must_change, precon: r.precon || '', createdAt: r.created_at };
 }
 export const getUser = id => db.prepare(`SELECT ${userCols} FROM users WHERE id = ?`).get(id);
+export const setPrecon = (id, precon) => db.prepare('UPDATE users SET precon = ? WHERE id = ?').run(String(precon).trim().slice(0, 80), id);
 export const listUsers = () => db.prepare(`SELECT ${userCols} FROM users ORDER BY username COLLATE NOCASE`).all();
 const byLogin = login => db.prepare('SELECT * FROM users WHERE username = ? OR email = ?').get(login, login);
 

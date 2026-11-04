@@ -37,6 +37,18 @@ phones, and every phone sees spins, votes and packs live.
   foils included (`1 Name (SET) 123 *F*` / `1x Name (set) 123 *F*`).
 - **League tab**: standings, players, rules and an activity feed (winners, votes, spins, mythic
   pulls). Leagues can be ended into a read-only archive (seasons).
+- **Player pages**: tap any name for that player's stats in one league or all of them: pods,
+  wins, win streaks, bonus votes, packs, mythics and foils, their last results, precons played,
+  rivals (their nemesis, who they beat most, a head-to-head table), sets opened, best pulls and
+  recent pods. No prices or card values anywhere.
+- **Season recap**: "Season so far" while a league runs, "Season recap" once it ends: the
+  champion, league totals, awards (Most Wins, Sharpest Shooter, Hot Streak, Kingslayer, Iron
+  Commander, Crowd Favourite, Pack Rat, Mythic Magnet, Foil Hunter, Sacrificial Lamb; ties
+  share), top pulls, most-spun sets and final standings, plus **Copy for Discord**.
+- **Deck lists**: each player can add the deck they play from a public Moxfield or Archidekt
+  link, or a pasted list (Moxfield/Archidekt/MTGA export text). Cards are looked up on Scryfall
+  once; the player page shows the commander, colour identity, mana curve, type counts and the
+  list by type, with card zoom and Copy list.
 - **Suggest a feature**: a footer button sends ideas and bug reports to the site admin's inbox.
   Players follow theirs on the Account page and see the admin's status (planned / done /
   declined) and reply.
@@ -44,8 +56,8 @@ phones, and every phone sees spins, votes and packs live.
   required "13 or older and I agree" box at sign-up, and **Delete account** on the Account page
   (the admin can delete accounts too). A deleted player's past pods stay in league history as
   "Deleted player". Fonts are self-hosted, so pages make no third-party requests except Scryfall images.
-- **Accounts**: username + email + password sign-up, password change, reset by email (SMTP) or
-  by an admin-made link.
+- **Accounts**: username + email + password sign-up, password change, reset by email
+  (Cloudflare Email Sending or SMTP) or by an admin-made link.
 
 ## Roles
 
@@ -113,7 +125,9 @@ players sign up, and one of them starts a league on the **League** tab.
 | `PORT` | `3000` | HTTP port. |
 | `DATA_DIR` | `./data` | Where the SQLite database (`app.db`) lives. |
 | `PUBLIC_URL` | `http://localhost:$PORT` | The site's public address, used in password-reset links. Set it in production. |
-| `SMTP_HOST`, `SMTP_PORT` (`587`), `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` | unset | Turns on password-reset emails. Without them, "Forgot password" tells players to ask the admin, who makes a reset link on the Account page. |
+| `CF_EMAIL_ACCOUNT_ID`, `CF_EMAIL_TOKEN`, `MAIL_FROM` | unset | Password-reset emails through Cloudflare Email Sending (the token needs the Email Sending permission; `MAIL_FROM` must be on a domain with Email Sending enabled). Used first when set. |
+| `SMTP_HOST`, `SMTP_PORT` (`587`), `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` | unset | Password-reset emails through any SMTP server. With neither option set, "Forgot password" tells players to ask the admin, who makes a reset link on the Account page. |
+| `MAIL_FROM_NAME` | `Pre-Con Commander` | Sender name on reset emails. |
 | `SCRYFALL_USER_AGENT` | `PreconCommander/1.0 (+repo URL)` | User-Agent for Scryfall API calls. Put your own contact or site in it. |
 | `SCRYFALL_BASE` | `https://api.scryfall.com` | Scryfall API base URL (point it at a mock for testing). |
 
@@ -186,7 +200,9 @@ server/
   packs.js     booster generation
   scryfall.js  rate-limited, cached Scryfall client
   feedback.js  feature suggestions and the admin inbox
-  mail.js      optional SMTP for reset emails
+  mail.js      optional reset emails (Cloudflare Email Sending or SMTP)
+  stats.js     player pages and season recaps
+  decks.js     deck-list import (Moxfield, Archidekt, pasted text)
 public/        the app: plain ES modules, no build step
 packs/         real booster print-sheet data (see packs/NOTICE.md)
 scripts/       import-mtgjson-boosters.mjs: add sets' sheets from MTGJSON
