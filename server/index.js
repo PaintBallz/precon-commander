@@ -30,6 +30,8 @@ import { openPack, hasRealPack, realPackKind, localPackSets, sheetOdds } from '.
 import { requireAuth, requireAdmin, authRoutes, seedAdmin, listUsers, getUser, setPrecon } from './auth.js';
 import { importDeck, editDeck, getDeck, deleteDeck, DeckError } from './decks.js';
 import { playerStats, seasonRecap } from './stats.js';
+import { cached, cachedSync, clearCache } from './cache.js';
+import { rateLimit, streamSlot } from './ratelimit.js';
 import { feedbackRoutes, newFeedbackCount } from './feedback.js';
 
 const PORT = Number(process.env.PORT || 3000);
@@ -52,6 +54,8 @@ app.use((req, res, next) => {
   if (req.secure) res.setHeader('Strict-Transport-Security', 'max-age=15552000');
   next();
 });
+// Per-IP limits on every request (see ratelimit.js).
+app.use(rateLimit);
 app.use(express.json({ limit: '200kb' }));
 
 // Cloudflare gives .js/.css a 4-hour browser cache no matter what we send, so
@@ -64,10 +68,32 @@ const ASSET_VERSION = crypto.createHash('sha1')
 const INDEX_HTML = fs.readFileSync(path.join(PUBLIC, 'index.html'), 'utf8')
   .replace('/styles.css"', `/styles.css?v=${ASSET_VERSION}"`)
   .replace('/app.js"', `/app.js?v=${ASSET_VERSION}"`);
+// app.js imports decklist.js; give that import the same version stamp so it
+// can be cached as long as app.js.
+const APP_JS = fs.readFileSync(path.join(PUBLIC, 'app.js'), 'utf8')
+  .replace("from './decklist.js'", `from './decklist.js?v=${ASSET_VERSION}'`);
 app.get(['/', '/index.html'], (req, res) => {
   res.set('Cache-Control', 'no-cache').type('html').send(INDEX_HTML);
 });
-app.use(express.static(PUBLIC, { extensions: ['html'], maxAge: 0 }));
+// How long browsers and Cloudflare may keep each kind of file:
+//   ?v=<hash> URLs (app.js, styles.css, decklist.js)  1 year, immutable (a deploy changes the URL)
+//   fonts                                              1 year, immutable (the files never change)
+//   favicon / images                                   7 days
+//   privacy, terms                                     10 minutes
+//   anything else (unversioned scripts)                5 minutes
+const YEAR = 'public, max-age=31536000, immutable';
+function cacheFor(req, file) {
+  if (req.query.v || /[\\/]fonts[\\/]/.test(file)) return YEAR;
+  if (/\.(svg|png|ico|webp|jpg)$/i.test(file)) return 'public, max-age=604800';
+  if (/\.html$/i.test(file)) return 'public, max-age=600';
+  return 'public, max-age=300';
+}
+app.get('/app.js', (req, res) => {
+  res.set('Cache-Control', cacheFor(req, 'app.js')).type('js').send(APP_JS);
+});
+app.use((req, res, next) => {
+  express.static(PUBLIC, { extensions: ['html'], cacheControl: false, setHeaders: (r, file) => r.setHeader('Cache-Control', cacheFor(req, file)) })(req, res, next);
+});
 
 const id = (n = 8) => crypto.randomBytes(n).toString('base64url').slice(0, n);
 const now = () => new Date().toISOString();
@@ -90,16 +116,19 @@ const clients = new Set();
 let version = Date.now();
 function broadcast(kind = 'state', data = {}) {
   version = Date.now();
+  clearCache();
   const msg = `event: ${kind}\ndata: ${JSON.stringify({ version, ...data })}\n\n`;
   for (const res of clients) res.write(msg);
 }
 app.get('/api/events', (req, res) => {
+  const release = streamSlot(req);
+  if (!release) return res.status(429).json({ error: 'Too many open live-update connections from your connection. Close some tabs and reload.' });
   res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
   res.flushHeaders();
   res.write(`event: hello\ndata: ${JSON.stringify({ version })}\n\n`);
   clients.add(res);
   const ping = setInterval(() => res.write(': ping\n\n'), 25000);
-  req.on('close', () => { clearInterval(ping); clients.delete(res); });
+  req.on('close', () => { clearInterval(ping); clients.delete(res); release(); });
 });
 
 // ---------- which league a request is about ----------
@@ -127,9 +156,12 @@ const DEFAULT_SETTINGS = { minYear: 1993, maxYear: 2100, types: [...BOOSTER_SET_
 function globalSettings() { return { ...DEFAULT_SETTINGS, ...kvGet('wheel_settings', {}) }; }
 function settingsFor(league) { return league ? { ...DEFAULT_SETTINGS, ...league.wheel } : globalSettings(); }
 
+// The booster set list changes when Wizards releases a set: cached for 10 minutes.
 async function allSets() {
-  const sets = await getBoosterSets(localPackSets());
-  return sets.map(s => ({ ...s, realPack: hasRealPack(s.code), packKind: realPackKind(s.code) }));
+  return cached('sets', 10 * 60e3, async () => {
+    const sets = await getBoosterSets(localPackSets());
+    return sets.map(s => ({ ...s, realPack: hasRealPack(s.code), packKind: realPackKind(s.code) }));
+  });
 }
 
 function wheelFor(sets, settings) {
@@ -212,7 +244,8 @@ const leagueList = () => listLeagues().map(l => ({ id: l.id, name: l.name, statu
 
 // Standings for a league: from its finished pods, plus how many pods each
 // member missed (and the packs that earned them).
-function standings(leagueId) {
+const standings = leagueId => cachedSync(`standings:${leagueId}`, 10 * 60e3, () => computeStandings(leagueId));
+function computeStandings(leagueId) {
   const rows = new Map(leagueMembers(leagueId, { former: true }).map(m => [m.id, {
     id: m.id, name: m.username, active: !m.leftAt, pods: 0, wins: 0, voteWins: 0, packs: 0, sacrificed: 0, rares: 0, mythics: 0, missed: 0,
   }]));
@@ -813,7 +846,10 @@ app.get('/api/fun/odds/:code', wrap(async (req, res) => {
   const code = String(req.params.code || '').toLowerCase();
   const set = (await allSets()).find(s => s.code === code);
   if (!set) throw new HttpError(404, 'Unknown set.');
-  res.json((await sheetOdds(code)) || { real: false });
+  const odds = (await sheetOdds(code)) || { real: false };
+  // Print sheets only change with a deploy: let the browser keep complete odds for an hour.
+  if (!odds.unresolved) res.set('Cache-Control', 'private, max-age=3600');
+  res.json(odds);
 }));
 
 // ---------- feedback ----------
@@ -861,7 +897,7 @@ app.get('/api/players/:id', wrap(async (req, res) => {
   const theirs = leaguesOf(u.id).map(getLeague).filter(Boolean);
   const all = req.query.league === 'all';
   const league = all ? null : (req.query.league ? requireLeague(String(req.query.league)) : (viewLeague(req) && theirs.find(l => l.id === viewLeague(req).id)) || theirs[0] || null);
-  const stats = await playerStats(u.id, league?.id || null);
+  const stats = await cached(`player:${u.id}:${league?.id || 'all'}`, 10 * 60e3, () => playerStats(u.id, league?.id || null));
   const rank = league ? standings(league.id).findIndex(s => s.id === u.id) : -1;
   res.json({
     player: { id: u.id, username: u.username, precon: u.precon || '', joined: u.created_at, leagues: theirs.map(l => ({ id: l.id, name: l.name, status: l.status })) },
@@ -871,7 +907,7 @@ app.get('/api/players/:id', wrap(async (req, res) => {
 }));
 app.get('/api/leagues/:id/recap', wrap(async (req, res) => {
   const league = requireLeague(req.params.id);
-  res.json({ league: { id: league.id, name: league.name, status: league.status, createdAt: league.createdAt, endedAt: league.endedAt }, ...(await seasonRecap(league.id, standings(league.id))) });
+  res.json({ league: { id: league.id, name: league.name, status: league.status, createdAt: league.createdAt, endedAt: league.endedAt }, ...(await cached(`recap:${league.id}`, 10 * 60e3, () => seasonRecap(league.id, standings(league.id)))) });
 }));
 
 const deckFail = err => { if (err instanceof DeckError) throw new HttpError(err.status, err.message); throw err; };

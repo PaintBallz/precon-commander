@@ -208,7 +208,24 @@ for (const [table, col, def] of [
 ]) {
   if (!db.prepare(`SELECT 1 FROM pragma_table_info('${table}') WHERE name = ?`).get(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
 }
-db.exec('CREATE INDEX IF NOT EXISTS pods_league ON pods(league_id, status)');
+// One index per filter or sort the app runs (see EXPLAIN QUERY PLAN checks in
+// the e2e test). Primary keys and UNIQUE columns (users.username/email,
+// leagues.code, sessions.token, reset_tokens.token, kv/card_cache/set_pool
+// keys) are indexed by SQLite already.
+db.exec(`
+  CREATE INDEX IF NOT EXISTS pods_league ON pods(league_id, status);
+  CREATE INDEX IF NOT EXISTS pods_league_finished ON pods(league_id, status, finished_at);
+  CREATE INDEX IF NOT EXISTS pods_league_created ON pods(league_id, created_at);
+  CREATE INDEX IF NOT EXISTS pod_packs_user ON pod_packs(user_id, status);
+  CREATE INDEX IF NOT EXISTS pool_cards_pod ON pool_cards(pod_id, pack_id, seq);
+  CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
+  CREATE INDEX IF NOT EXISTS sessions_expires ON sessions(expires_at);
+  CREATE INDEX IF NOT EXISTS reset_tokens_user ON reset_tokens(user_id);
+  CREATE INDEX IF NOT EXISTS reset_tokens_expires ON reset_tokens(expires_at);
+  CREATE INDEX IF NOT EXISTS users_admin ON users(is_admin, created_at);
+  CREATE INDEX IF NOT EXISTS feedback_status ON feedback(status, id);
+  CREATE INDEX IF NOT EXISTS leagues_status ON leagues(status, created_at);
+`);
 
 export function kvGet(key, fallback = null) {
   const row = db.prepare('SELECT value FROM kv WHERE key = ?').get(key);

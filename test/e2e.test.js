@@ -67,7 +67,9 @@ const player = (pod, who) => pod.players.find(p => p.id === S.u[who].id);
 before(async () => {
   server = spawn(process.execPath, ['--no-warnings', 'server/index.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), DATA_DIR, SMTP_HOST: '', MAIL_FROM: '', CF_EMAIL_TOKEN: '' },
+    env: { ...process.env, PORT: String(PORT), DATA_DIR, SMTP_HOST: '', MAIL_FROM: '', CF_EMAIL_TOKEN: '',
+      // The whole suite runs from one IP; the last test checks the heavy limit.
+      RATE_ALL_PER_MIN: '100000', RATE_API_PER_MIN: '100000', RATE_HEAVY_PER_MIN: '200' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   server.stdout.on('data', d => { serverLog += d; });
@@ -842,7 +844,14 @@ test('only the admin can delete pods; history and pools follow', async () => {
   assert.equal((await ok(eve.get('/api/state'))).pods.length, 0, 'running pod is gone');
   assert.equal((await ok(eve.get('/api/pools'))).pools.find(p => p.username === 'Eve').packs.length, 1, 'its cards left the pool');
 
+  // Standings and player pages are cached; a change must show up right away.
+  const nickRow = async () => (await ok(eve.get(`/api/leagues/${S.league}`))).standings.find(s => s.name === 'Nick');
+  const nickPage = async () => (await ok(eve.get(`/api/players/${S.u.Nick.id}?league=${S.league}`))).stats.totals.pods;
+  const [rowBefore, pageBefore] = [(await nickRow()).pods, await nickPage()];
+  assert.equal((await nickRow()).pods, rowBefore, 'served from cache');
   await ok(admin.del(`/api/pods/${S.pod.id}`));
+  assert.equal((await nickRow()).pods, rowBefore - 1, 'cached standings refresh after a change');
+  assert.equal(await nickPage(), pageBefore - 1, 'cached player pages refresh after a change');
   assert.equal((await ok(eve.get('/api/history'))).pods.length, 0, 'finished pod left History');
   assert.ok((await ok(eve.get('/api/pools'))).pools.every(p => !p.packs.length && !p.pods.length), 'and every pool');
 
@@ -987,4 +996,56 @@ test('players can delete their account; past pods keep them as "Deleted player"'
 test('logging out ends the session', async () => {
   await ok(eve.post('/api/auth/logout'));
   assert.equal((await eve.get('/api/state')).status, 401);
+});
+
+test('every filter and sort the app runs has an index', async () => {
+  const db = new DatabaseSync(path.join(DATA_DIR, 'app.db'), { readOnly: true });
+  try {
+    const plan = (sql, ...args) => db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args).map(r => r.detail).join(' | ');
+    const checks = [
+      ["SELECT * FROM pods WHERE status = 'done' AND league_id = ? ORDER BY finished_at DESC", 'pods_league_finished'],
+      ["SELECT * FROM pod_packs WHERE user_id = ? AND status != 'opened'", 'pod_packs_user'],
+      ['SELECT * FROM pool_cards WHERE pod_id IN (?, ?) ORDER BY pack_id, seq', 'pool_cards_pod'],
+      ['DELETE FROM sessions WHERE user_id = ?', 'sessions_user'],
+      ['DELETE FROM reset_tokens WHERE user_id = ?', 'reset_tokens_user'],
+      ['DELETE FROM reset_tokens WHERE expires_at < ?', 'reset_tokens_expires'],
+      ['SELECT id FROM users WHERE is_admin = 1', 'users_admin'],
+      ["SELECT * FROM feedback WHERE status = 'new' ORDER BY id DESC", 'feedback_status'],
+      ['SELECT * FROM league_events WHERE league_id = ? ORDER BY id DESC LIMIT 60', 'league_events_league'],
+      ['SELECT * FROM league_members WHERE user_id = ? AND left_at IS NULL', 'league_members_user'],
+      ['SELECT * FROM users WHERE username = ? OR email = ?', 'sqlite_autoindex_users'],
+    ];
+    for (const [sql, index] of checks) {
+      const p = plan(sql, ...Array((sql.match(/\?/g) || []).length).fill('x'));
+      assert.match(p, new RegExp(index), `${sql}\n  should use ${index}, plan: ${p}`);
+      assert.doesNotMatch(p, /^SCAN \w+$|\| SCAN \w+$/, `no full table scan: ${p}`);
+    }
+  } finally { db.close(); }
+});
+
+test('static files carry long cache headers; the page itself is never cached', async () => {
+  const home = await anon.get('/');
+  assert.equal(home.headers.get('cache-control'), 'no-cache');
+  const appUrl = home.text.match(/\/app\.js\?v=\w+/)[0];
+  const app = await anon.get(appUrl);
+  assert.match(app.headers.get('cache-control'), /max-age=31536000, immutable/);
+  assert.match(app.text, /from '\.\/decklist\.js\?v=\w+'/, 'its import is versioned too');
+  assert.match((await anon.get(home.text.match(/\/styles\.css\?v=\w+/)[0])).headers.get('cache-control'), /immutable/);
+  assert.match((await anon.get('/fonts/barlow-400.woff2')).headers.get('cache-control'), /max-age=31536000, immutable/);
+  assert.match((await anon.get('/favicon.svg')).headers.get('cache-control'), /max-age=604800/);
+  assert.match((await anon.get('/privacy')).headers.get('cache-control'), /max-age=600/);
+  assert.match(app.text, /srcset=/, 'card images offer Scryfall\'s small size');
+});
+
+// Last: these use up this test run's per-minute allowance.
+test('per-IP rate limits: heavy endpoints, then everything, answer 429 with Retry-After', async () => {
+  const limited = client();
+  const r1 = await limited.get('/api/state');
+  assert.ok(r1.headers.get('ratelimit-limit'), 'API answers say the limit');
+  let res;
+  for (let i = 0; i < 250; i++) { res = await limited.get(`/api/players/${S.u.Nick.id}`); if (res.status === 429) break; }
+  assert.equal(res.status, 429, 'heavy lookups are limited per minute');
+  assert.ok(Number(res.headers.get('retry-after')) > 0);
+  assert.match(res.json.error, /limit 200 a minute/);
+  assert.equal((await limited.get('/healthz')).status, 200, 'other requests still go through');
 });

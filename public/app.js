@@ -5,6 +5,15 @@ import { listText, SITES } from './decklist.js';
 const $ = (sel, el = document) => el.querySelector(sel);
 const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+// Card images come from Scryfall's CDN at several sizes: "small" (146px wide,
+// ~15 KB) and "normal" (488px, ~70-100 KB). srcset lets each browser download
+// the smallest one that's sharp for the slot (thumbnails get "small", even on
+// high-density phone screens).
+const smallOf = url => String(url || '').replace('/normal/', '/small/').replace('version=normal', 'version=small');
+const cardSrc = (url, sizes) => {
+  const big = esc(url), small = esc(smallOf(url));
+  return small === big ? `src="${big}" decoding="async"` : `src="${big}" srcset="${small} 146w, ${big} 488w" sizes="${sizes}" decoding="async"`;
+};
 const store = {
   get(k, d) { try { const v = localStorage.getItem('pcc:' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem('pcc:' + k, JSON.stringify(v)); } catch { /* private mode */ } },
@@ -1255,7 +1264,7 @@ function sortForReveal(cards) {
 function cardHtml(c, i, down, qty = 0) {
   return `<div class="mcard r-${esc(c.rarity)} ${c.foil ? 'foil' : ''} ${down ? 'down' : ''}" data-i="${i}">
     <div class="flip">
-      <div class="face"><img src="${esc(c.image)}" alt="${esc(c.name)}" loading="lazy"></div>
+      <div class="face"><img ${cardSrc(c.image, '(max-width: 500px) 46vw, 200px')} alt="${esc(c.name)}" loading="lazy"></div>
       <div class="backface"></div>
     </div>
     ${qty > 1 ? `<span class="qty">×${qty}</span>` : ''}
@@ -1949,7 +1958,7 @@ async function renderHistory(view) {
           <div class="spread"><div><b>${g.winnerId === p.id ? `${I.crown} ` : ''}${esc(p.name)}</b> ${p.precon ? `<span class="muted small">· ${esc(p.precon)}</span>` : ''}</div>
           ${pulls.length ? `<button class="btn sm" data-copy="${g.id}:${p.id}">${I.copy} Copy ${pulls.length} pulls</button>` : ''}</div>
           <div class="row small muted" style="margin-top:6px">${p.packs.map(k => `<span class="chip">${k.status === 'choosing' ? '' : icon(k.set)}${k.status === 'choosing' ? 'unchosen' : esc(k.set.name)}${k.source === 'sacrifice' ? ` ${I.flame}` : ''}${k.status !== 'opened' ? ' (unopened)' : ` · ${k.cards.length}`}${isAdmin() ? `<button class="chip-x" data-delpack="${g.id}:${p.id}:${k.id}" title="Admin: delete this pack and its pulls">✕</button>` : ''}</span>`).join('') || 'No packs'}${p.sacrificed ? `<span class="chip">${I.flame} ${p.sacrificed} sacrificed</span>` : ''}</div>
-          ${hits.length ? `<div class="mini-cards">${hits.map(c => `<img src="${esc(c.image)}" alt="${esc(c.name)}" title="${esc(c.name)}" loading="lazy" data-card="${g.id}:${p.id}:${esc(c.set)}/${esc(c.number)}">`).join('')}</div>` : ''}
+          ${hits.length ? `<div class="mini-cards">${hits.map(c => `<img ${cardSrc(c.image, '72px')} alt="${esc(c.name)}" title="${esc(c.name)}" loading="lazy" data-card="${g.id}:${p.id}:${esc(c.set)}/${esc(c.number)}">`).join('')}</div>` : ''}
         </div>`;
       }).join('')}</div></details>`;
     }).join('')}</div>`;
@@ -1988,7 +1997,7 @@ const PIP_URL = sym => `https://svgs.scryfall.io/card-symbols/${encodeURICompone
 const manaHtml = cost => esc(cost || '').replace(/\{([^}]+)\}/g, (_, s) => `<img class="ms" src="${PIP_URL(s)}" alt="{${s}}" loading="lazy">`);
 const colorPips = colors => (colors?.length ? colors : ['C']).map(c => `<img class="ms" src="${PIP_URL(c)}" alt="${c}" title="${({ W: 'White', U: 'Blue', B: 'Black', R: 'Red', G: 'Green', C: 'Colorless' })[c]}">`).join('');
 const pullCard = (c, extra = '') => `<figure class="pull" data-pull="${esc(c.set)}/${esc(c.number)}/${c.foil ? 'f' : ''}">
-    <img src="${esc(c.image)}" alt="${esc(c.name)}" loading="lazy">
+    <img ${cardSrc(c.image, '(max-width: 500px) 46vw, 140px')} alt="${esc(c.name)}" loading="lazy">
     <figcaption><b>${esc(c.name)}</b><span>${esc(c.rarity)}${c.foil ? ' · foil' : ''}${extra}</span></figcaption></figure>`;
 function wirePulls(view, cards) {
   $$('[data-pull]', view).forEach(el => el.onclick = () => {
@@ -2012,7 +2021,7 @@ function deckHtml(deck, { mine = false } = {}) {
   const src = deck.url ? `<a href="${esc(deck.url)}" target="_blank" rel="noopener">${deck.source === 'moxfield' ? 'Moxfield' : 'Archidekt'} ↗</a>` : 'pasted list';
   return `<div class="deck">
     <div class="deck-head">
-      ${cmd.map(c => `<img class="deck-cmd" src="${esc(c.image)}" alt="${esc(c.name)}" data-dc="${esc(c.name)}" tabindex="0" role="button">`).join('')}
+      ${cmd.map(c => `<img class="deck-cmd" ${cardSrc(c.image, '150px')} alt="${esc(c.name)}" data-dc="${esc(c.name)}" tabindex="0" role="button">`).join('')}
       <div class="deck-meta">
         <h3>${esc(deck.name)}</h3>
         <div class="deck-colors">${colorPips(deck.colors)}</div>

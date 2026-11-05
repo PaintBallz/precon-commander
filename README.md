@@ -128,6 +128,10 @@ players sign up, and one of them starts a league on the **League** tab.
 | `CF_EMAIL_ACCOUNT_ID`, `CF_EMAIL_TOKEN`, `MAIL_FROM` | unset | Password-reset emails through Cloudflare Email Sending (the token needs the Email Sending permission; `MAIL_FROM` must be on a domain with Email Sending enabled). Used first when set. |
 | `SMTP_HOST`, `SMTP_PORT` (`587`), `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` | unset | Password-reset emails through any SMTP server. With neither option set, "Forgot password" tells players to ask the admin, who makes a reset link on the Account page. |
 | `MAIL_FROM_NAME` | `Pre-Con Commander` | Sender name on reset emails. |
+| `RATE_ALL_PER_MIN` | `600` | Requests per IP per minute, every URL (pages, scripts, fonts, API). |
+| `RATE_API_PER_MIN` | `240` | Requests per IP per minute to `/api/*`. |
+| `RATE_HEAVY_PER_MIN` | `30` | Per IP per minute for heavy calls: player pages, recaps, deck imports, fun packs, pack opening, sheet odds. |
+| `RATE_STREAMS_PER_IP` | `8` | Live-update connections one IP may hold open. |
 | `SCRYFALL_USER_AGENT` | `PreconCommander/1.0 (+repo URL)` | User-Agent for Scryfall API calls. Put your own contact or site in it. |
 | `SCRYFALL_BASE` | `https://api.scryfall.com` | Scryfall API base URL (point it at a mock for testing). |
 
@@ -202,12 +206,33 @@ server/
   feedback.js  feature suggestions and the admin inbox
   mail.js      optional reset emails (Cloudflare Email Sending or SMTP)
   stats.js     player pages and season recaps
+  cache.js     in-memory cache, cleared on every change
+  ratelimit.js per-IP request limits
   decks.js     deck-list import (Moxfield, Archidekt, pasted text)
 public/        the app: plain ES modules, no build step
 packs/         real booster print-sheet data (see packs/NOTICE.md)
 scripts/       import-mtgjson-boosters.mjs: add sets' sheets from MTGJSON
 test/          end-to-end suite
 ```
+
+## Performance and limits
+
+- **Indexes** on every column the app filters or sorts by (pods by league/status/finish time,
+  packs by player, cards by pod, sessions and reset links by user and expiry, feedback by status…).
+  The e2e suite checks the query plans so a new query can't silently scan a table.
+- **Caching**: standings, player pages, season recaps and the booster-set list are kept in memory
+  and cleared on every change (the same moment phones get a live update). Versioned scripts and
+  fonts are cached for a year (`immutable`), images for a week, the legal pages for 10 minutes;
+  the page itself is never cached, so a deploy shows up at once. Scryfall card data, set pools and
+  print-sheet odds are cached in SQLite.
+- **Images**: card art comes from Scryfall's CDN, which offers ready-made sizes. Every card image
+  has a `srcset` with the 146px "small" (~15 KB) and 488px "normal" (~100 KB) versions, so
+  thumbnails download the small one. Text responses are brotli-compressed by Cloudflare.
+  (Cloudflare's free image transformations stop at 5,000 unique images a month and then fail
+  for third-party images, which a league's card pool would hit quickly, so they aren't used.)
+- **Rate limits** per IP per minute on every request, tighter on `/api` and tighter again on heavy
+  calls (see Configuration); 429 answers carry `Retry-After`, API answers `RateLimit-*` headers.
+  Login, sign-up, resets, feedback, deck imports and fun packs keep their own limits on top.
 
 ## Security notes
 

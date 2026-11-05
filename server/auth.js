@@ -3,6 +3,7 @@
 import crypto from 'node:crypto';
 import { db } from './db.js';
 import { sendMail, mailEnabled } from './mail.js';
+import { clientIp } from './ratelimit.js';
 
 const COOKIE = 'pcc_sid';
 const SESSION_DAYS = 30;
@@ -115,10 +116,7 @@ const WINDOW = 15 * 60e3, MAX_FAILS = 10;
 const MAX_IP_FAILS = 30;
 // New accounts per IP: a handful per hour is plenty for a friend group.
 const SIGNUP_WINDOW = 60 * 60e3, MAX_SIGNUPS = 10;
-// Behind a local proxy (e.g. cloudflared) the real client IP comes from
-// CF-Connecting-IP; a request straight from the internet can't set it.
-const PRIVATE_PEER = /^(::ffff:)?(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)|^::1$|^f[cd]/i;
-const clientIp = req => (PRIVATE_PEER.test(req.socket.remoteAddress || '') && req.get('cf-connecting-ip')) || req.ip;
+// (clientIp, from ratelimit.js, reads CF-Connecting-IP only from the local tunnel.)
 function throttled(key, windowMs = WINDOW, max = MAX_FAILS) {
   const list = (failures.get(key) || []).filter(t => t > Date.now() - windowMs);
   failures.set(key, list);
