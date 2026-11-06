@@ -17,7 +17,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import {
-  savePod, loadPod, activePods, finishedPods, pendingPacks, deletePod, deleteHistory, poolCard, deletePoolCard,
+  savePod, loadPod, activePods, finishedPods, grantsPods, grantsPod, grantsPodId, pendingPacks, deletePod, deleteHistory, poolCard, deletePoolCard,
   poolCards, poolPods, setInfoFor, kvGet, kvSet,
 } from './db.js';
 import {
@@ -32,6 +32,9 @@ import { importDeck, editDeck, getDeck, deleteDeck, DeckError } from './decks.js
 import { playerStats, seasonRecap } from './stats.js';
 import { cached, cachedSync, clearCache } from './cache.js';
 import { rateLimit, streamSlot } from './ratelimit.js';
+import { adminRoutes, currentAnnouncement } from './admin.js';
+import { logAdmin, podRows, packRows, cardRows, leagueRows } from './adminlog.js';
+import { db } from './db.js';
 import { feedbackRoutes, newFeedbackCount } from './feedback.js';
 
 const PORT = Number(process.env.PORT || 3000);
@@ -252,7 +255,7 @@ function computeStandings(leagueId) {
   const row = (id, name) => rows.get(id) || rows.set(id, { id, name, active: false, pods: 0, wins: 0, voteWins: 0, packs: 0, sacrificed: 0, rares: 0, mythics: 0, missed: 0 }).get(id);
   const count = (s, packs) => {
     for (const k of packs) if (k.status === 'opened') {
-      s.packs++;
+      if (k.kind !== 'trade') s.packs++; // a trade pack only carries a moved card
       for (const c of k.cards) { if (c.rarity === 'mythic') s.mythics++; if (c.rarity === 'rare') s.rares++; }
     }
   };
@@ -267,6 +270,8 @@ function computeStandings(leagueId) {
     }
     for (const a of pod.absentees) { const s = row(a.id, a.name); s.missed++; count(s, a.packs); }
   }
+  // Packs from the admin and moved cards count toward packs and pulls, not pods.
+  for (const pod of grantsPods(leagueId)) for (const a of pod.absentees) count(row(a.id, a.name), a.packs);
   return [...rows.values()].sort((a, b) => b.wins - a.wins || (b.wins / (b.pods || 1)) - (a.wins / (a.pods || 1)) || b.pods - a.pods || a.name.localeCompare(b.name));
 }
 
@@ -413,6 +418,7 @@ app.post('/api/leagues/:id/end', wrap(async (req, res) => {
   const running = activePods(league.id);
   if (running.length) throw new HttpError(409, `Finish or discard ${names(running.map(p => p.name))} first.`);
   endLeague(league.id);
+  logAdmin(req, { action: 'end-league', summary: `Ended ${league.name}.`, leagueId: league.id });
   logEvent(league.id, 'end', req.user.id, `${league.name} ended. Its standings, history and pools stay as an archive.`);
   broadcast('state', { leagueId: league.id });
   res.json({ ok: true });
@@ -420,7 +426,9 @@ app.post('/api/leagues/:id/end', wrap(async (req, res) => {
 app.delete('/api/leagues/:id', wrap(async (req, res) => {
   requireAdmin(req);
   const league = requireLeague(req.params.id);
+  const rows = leagueRows(league.id);
   deleteLeague(league.id);
+  logAdmin(req, { action: 'delete-league', summary: `Deleted the league ${league.name}.`, reason: req.body?.reason, undo: { type: 'restore', rows } });
   broadcast('state', { leagueId: league.id, deleted: true });
   res.json({ ok: true, deleted: { id: league.id, name: league.name } });
 }));
@@ -527,6 +535,7 @@ app.get('/api/state', wrap(async (req, res) => {
   const openPodIds = [...new Set(pending.filter(k => k.podStatus === 'done').map(k => k.podId))];
   res.json({
     version, me: req.user, myLeagueId: mine?.id || null,
+    announcement: currentAnnouncement(), viewAs: req.realUser ? { admin: req.realUser.username } : null,
     league: leagueView(req, league), leagues: leagueList(),
     pods: running.map(p => view(req, p)),
     openPods: openPodIds.map(id => view(req, loadPod(id))).filter(Boolean),
@@ -605,6 +614,7 @@ app.post('/api/pods/:id/award', wrap(async (req, res) => {
     }
   } else if (delta < 0 && p.awarded < 1) throw new HttpError(409, `${p.name} has no packs to remove.`);
   p.awarded = Math.max(0, p.awarded + delta);
+  if (delta) logAdmin(req, { action: 'award', summary: `${delta > 0 ? 'Gave' : 'Took'} ${p.name} one ${delta > 0 ? 'more' : 'fewer'} pack in ${pod.name}.`, leagueId: pod.leagueId });
   res.json({ pod: view(req, commit(pod)) });
 }));
 
@@ -638,6 +648,7 @@ app.post('/api/pods/:id/vote/skip', wrap(async (req, res) => {
   if (pod.vote?.status !== 'open') throw new HttpError(409, 'There is no vote in progress.');
   pod.vote.status = 'skipped';
   pod.vote.decidedAt = now();
+  logAdmin(req, { action: 'skip-vote', summary: `Skipped ${pod.name}'s bonus-pack vote.`, leagueId: pod.leagueId });
   res.json({ pod: view(req, commit(pod)) });
 }));
 
@@ -695,7 +706,8 @@ app.post('/api/pods/:id/packs/:packId/sacrifice', wrap(async (req, res) => {
 app.post('/api/pods/:id/packs/:packId/choose', wrap(async (req, res) => {
   const set = await setInfo(String(req.body?.setCode || ''));
   // Load after the await, so the save can't overwrite changes made meanwhile.
-  const pod = requirePod(req.params.id);
+  // (Finished pods too: admin "their choice" packs and late choices.)
+  const pod = requirePod(req.params.id, { opened: true });
   const { player, pack } = findPack(pod, req.params.packId);
   requireOwner(player, req.user);
   if (pack.status !== 'choosing') throw new HttpError(409, 'This pack is not waiting for a set choice.');
@@ -763,7 +775,9 @@ app.delete('/api/pods/:id', wrap(async (req, res) => {
   requireAdmin(req);
   const pod = loadPod(req.params.id);
   if (!pod) throw new HttpError(404, 'Pod not found');
+  const rows = podRows([pod.id]);
   deletePod(pod.id);
+  logAdmin(req, { action: 'delete-pod', summary: `Deleted ${pod.name}.`, reason: req.body?.reason, leagueId: pod.leagueId, undo: { type: 'restore', rows } });
   broadcast('state', { podId: pod.id, leagueId: pod.leagueId, deleted: true });
   res.json({ ok: true, deleted: { id: pod.id, name: pod.name } });
 }));
@@ -774,10 +788,13 @@ app.delete('/api/pods/:id/packs/:packId', wrap(async (req, res) => {
   const pod = loadPod(req.params.id);
   if (!pod) throw new HttpError(404, 'Pod not found');
   const { player, pack } = findPack(pod, req.params.packId);
+  const rows = packRows([pack.id]);
   player.packs.splice(player.packs.indexOf(pack), 1);
   if (player.awarded != null) player.awarded = Math.max(0, player.awarded - 1);
   pod.updatedAt = now();
   savePod(pod);
+  const what = pack.status === 'opened' ? `opened ${pack.set?.name || ''} pack (${plural(pack.cards?.length || 0, 'card')})` : `unopened ${pack.set?.name || 'choose-a-set'} pack`;
+  logAdmin(req, { action: 'delete-pack', summary: `Took ${player.name}'s ${what} from ${pod.name}.`, reason: req.body?.reason, leagueId: pod.leagueId, undo: { type: 'restore', rows } });
   broadcast('state', { podId: pod.id, leagueId: pod.leagueId });
   res.json({ ok: true, pod: view(req, loadPod(pod.id)), removed: { packId: pack.id, cards: pack.cards?.length || 0 } });
 }));
@@ -787,7 +804,9 @@ app.delete('/api/pool-cards/:cardId', wrap(async (req, res) => {
   requireAdmin(req);
   const card = poolCard(Number(req.params.cardId));
   if (!card) throw new HttpError(404, 'Card not found');
+  const rows = cardRows([card.id]);
   deletePoolCard(card.id);
+  logAdmin(req, { action: 'delete-card', summary: `Removed ${card.name} from ${getUser(card.user_id)?.username || 'a player'}'s pool (${card.pod_name}).`, reason: req.body?.reason, undo: { type: 'restore', rows } });
   broadcast('state', { podId: card.pod_id });
   res.json({ ok: true, removed: { id: card.id, name: card.name, podId: card.pod_id } });
 }));
@@ -798,8 +817,11 @@ app.delete('/api/history', wrap(async (req, res) => {
   requireAdmin(req);
   const league = viewLeague(req);
   if (!league) throw new HttpError(404, 'No league to clear.');
+  const ids = db.prepare("SELECT id FROM pods WHERE status IN ('done', 'discarded') AND kind = 'pod' AND league_id = ?").all(league.id).map(r => r.id);
+  const rows = podRows(ids);
   const n = deleteHistory(league.id);
   logEvent(league.id, 'clear', req.user.id, `League history was cleared (${plural(n, 'pod')}).`);
+  logAdmin(req, { action: 'clear-history', summary: `Cleared ${league.name}'s history (${plural(n, 'pod')}).`, reason: req.body?.reason, leagueId: league.id, undo: n ? { type: 'restore', rows } : null });
   broadcast('state', { leagueId: league.id });
   res.json({ ok: true, deletedPods: n });
 }));
@@ -878,7 +900,7 @@ app.get('/api/pools', wrap(async (req, res) => {
     if ((only && r.pod_id !== only) || hidden.has(r.user_id)) continue;
     let k = packs.get(r.pack_id);
     if (!k) {
-      k = { packId: r.pack_id, podId: r.pod_id, podName: r.pod_name, at: r.opened_at, set: setInfoFor(r.pack_set), source: r.source, absent: r.role === 'absent', cards: [] };
+      k = { packId: r.pack_id, podId: r.pod_id, podName: r.pod_name, at: r.opened_at, set: setInfoFor(r.pack_set), source: r.source, absent: r.role === 'absent', ...(r.pack_kind ? { kind: r.pack_kind, note: r.pack_note || '' } : {}), cards: [] };
       packs.set(r.pack_id, k);
       ensure(r.user_id).packs.push(k);
     }
@@ -930,6 +952,8 @@ app.put('/api/deck', wrap(async (req, res) => {
   res.json({ deck });
 }));
 app.delete('/api/deck', wrap(async (req, res) => { deleteDeck(req.user.id); res.json({ ok: true }); }));
+
+adminRoutes(app, { wrap, HttpError, broadcast, viewLeague, requireLeague, allSets, wheelFor, settingsFor, setInfo });
 
 seedAdmin();
 migrateToLeagues(globalSettings());

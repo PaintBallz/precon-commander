@@ -183,6 +183,21 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS feedback_user ON feedback(user_id, created_at);
 
+  -- Every admin action. undo holds what's needed to reverse it (a snapshot
+  -- of deleted rows, or the old values) for 30 days, then it's cleared.
+  CREATE TABLE IF NOT EXISTS admin_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    admin_id TEXT,
+    action TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    league_id TEXT,
+    undo TEXT,
+    undone_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS admin_log_at ON admin_log(at);
+
   CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -205,6 +220,13 @@ for (const [table, col, def] of [
   ['pod_players', 'role', "TEXT NOT NULL DEFAULT 'player'"],
   ['league_members', 'kicked', 'INTEGER NOT NULL DEFAULT 0'],
   ['users', 'terms_accepted_at', 'TEXT'],
+  // 'pod' (a game) or 'grants' (one per league: holds packs the admin hands out and cards moved between pools)
+  ['pods', 'kind', "TEXT NOT NULL DEFAULT 'pod'"],
+  // 'grant' (handed out by the admin) or 'trade' (carries a card moved between pools; not counted as a pack)
+  ['pod_packs', 'kind', 'TEXT'], ['pod_packs', 'note', 'TEXT'], ['pod_packs', 'granted_by', 'TEXT'],
+  ['users', 'suspended_at', 'TEXT'], ['users', 'suspended_reason', 'TEXT'],
+  // The admin's "view as player" (read-only) for this session.
+  ['sessions', 'view_as', 'TEXT'],
 ]) {
   if (!db.prepare(`SELECT 1 FROM pragma_table_info('${table}') WHERE name = ?`).get(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
 }
@@ -269,7 +291,7 @@ export function savePod(pod) {
                   spin_by = excluded.spin_by, spin_at = excluded.spin_at, spin_offset = excluded.spin_offset`)
       .run(pod.id, pod.name, pod.status, pod.createdAt, pod.createdBy || null, pod.winnerId || null, pod.wonAt || null, pod.finishedAt || null,
         pod.updatedAt || null, pod.spin?.id || null, putSet(pod.spin?.set), pod.spin?.by || null, pod.spin?.at || null, pod.spin?.offset ?? null);
-    db.prepare('UPDATE pods SET league_id = ?, rules = ? WHERE id = ?').run(pod.leagueId || null, pod.rules ? JSON.stringify(pod.rules) : null, pod.id);
+    db.prepare('UPDATE pods SET league_id = ?, rules = ?, kind = ? WHERE id = ?').run(pod.leagueId || null, pod.rules ? JSON.stringify(pod.rules) : null, pod.kind || 'pod', pod.id);
     const v = pod.vote;
     db.prepare('UPDATE pods SET vote_status = ?, vote_round = ?, vote_winner_id = ?, vote_decided_at = ? WHERE id = ?')
       .run(v?.status || null, v?.round ?? null, v?.winnerId || null, v?.decidedAt || null, pod.id);
@@ -289,13 +311,15 @@ export function savePod(pod) {
     const addCard = db.prepare(`INSERT INTO pool_cards (pod_id, pack_id, user_id, seq, name, set_code, number, rarity, type, foil, image, back, uri)
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const keepPacks = [];
-    const people = [...pod.players.map(p => ({ ...p, role: 'player' })), ...(pod.absentees || []).map(p => ({ ...p, role: 'absent' }))];
+    const people = [...pod.players.map(p => ({ ...p, role: 'player' })), ...(pod.absentees || []).map(p => ({ ...p, role: p.grant ? 'grant' : 'absent' }))];
+    const packExtras = db.prepare('UPDATE pod_packs SET kind = ?, note = ?, granted_by = ? WHERE id = ?');
     people.forEach((p, seat) => {
       upPlayer.run(pod.id, p.id, seat, p.name, p.precon || '', p.awarded || 0, p.sacrificed || 0, p.role);
       p.packs.forEach((k, seq) => {
         keepPacks.push(k.id);
         upPack.run(k.id, pod.id, p.id, seq, k.status, k.source, putSet(k.set), putSet(k.wheelSet), k.boosterType || null,
           k.generated == null ? null : Number(!!k.generated), k.sacrificedAt || null, k.chosenAt || null, k.openedAt || null);
+        if (k.kind || k.note || k.grantedBy) packExtras.run(k.kind || null, k.note || null, k.grantedBy || null, k.id);
         // Opened cards never change, so they're written once.
         if (k.status === 'opened' && k.cards?.length && !hasCards.get(k.id)) {
           k.cards.forEach((c, i) => addCard.run(pod.id, k.id, p.id, i, c.name, c.set, String(c.number), c.rarity, c.type || null,
@@ -343,13 +367,14 @@ function assemble(rows) {
       boosterType: k.booster_type || undefined, generated: k.generated == null ? undefined : !!k.generated,
       sacrificedAt: k.sacrificed_at || undefined, chosenAt: k.chosen_at || undefined, openedAt: k.opened_at || undefined,
       cards: k.status === 'opened' ? cardsByPack.get(k.id) || [] : null,
+      ...(k.kind ? { kind: k.kind } : {}), ...(k.note ? { note: k.note } : {}), ...(k.granted_by ? { grantedBy: k.granted_by } : {}),
     });
   }
   const playersBy = new Map(), absentBy = new Map();
   for (const p of players) {
     const packs = packsBy.get(`${p.pod_id}|${p.user_id}`) || [];
-    if (p.role === 'absent') {
-      (absentBy.get(p.pod_id) || absentBy.set(p.pod_id, []).get(p.pod_id)).push({ id: p.user_id, name: p.name, packs });
+    if (p.role === 'absent' || p.role === 'grant') {
+      (absentBy.get(p.pod_id) || absentBy.set(p.pod_id, []).get(p.pod_id)).push({ id: p.user_id, name: p.name, packs, ...(p.role === 'grant' ? { grant: true } : {}) });
       continue;
     }
     (playersBy.get(p.pod_id) || playersBy.set(p.pod_id, []).get(p.pod_id)).push({
@@ -357,7 +382,7 @@ function assemble(rows) {
     });
   }
   return rows.map(r => ({
-    id: r.id, leagueId: r.league_id || null, rules: r.rules ? JSON.parse(r.rules) : null,
+    id: r.id, leagueId: r.league_id || null, rules: r.rules ? JSON.parse(r.rules) : null, kind: r.kind || 'pod',
     name: r.name, status: r.status, createdAt: r.created_at, createdBy: r.created_by, winnerId: r.winner_id,
     wonAt: r.won_at || undefined, finishedAt: r.finished_at || undefined, updatedAt: r.updated_at || undefined,
     spin: r.spin_id ? { id: r.spin_id, setCode: r.spin_set_code, set: getSet(r.spin_set_code, sets), by: r.spin_by, at: r.spin_at, offset: r.spin_offset } : null,
@@ -376,20 +401,25 @@ export function activePods(leagueId) {
   const [where, args] = inLeague(leagueId);
   return assemble(db.prepare(`SELECT * FROM pods WHERE status IN ('playing','awarded') ${where} ORDER BY created_at`).all(...args));
 }
+// The "Admin packs" containers (one per league, or every league).
+export function grantsPods(leagueId) {
+  const [where, args] = inLeague(leagueId);
+  return assemble(db.prepare(`SELECT * FROM pods WHERE kind = 'grants' ${where}`).all(...args));
+}
 export function finishedPods(leagueId) {
   const [where, args] = inLeague(leagueId);
-  return assemble(db.prepare(`SELECT * FROM pods WHERE status = 'done' ${where} ORDER BY finished_at DESC`).all(...args));
+  return assemble(db.prepare(`SELECT * FROM pods WHERE status = 'done' AND kind = 'pod' ${where} ORDER BY finished_at DESC`).all(...args));
 }
 // A player's unopened packs in a league, wherever they are: pods they played
 // (running or finished) and pods they missed.
 export function pendingPacks(userId, leagueId) {
   return db.prepare(`
-    SELECT k.id AS pack_id, k.status, k.set_code, p.id AS pod_id, p.name AS pod_name, p.status AS pod_status, pp.role
+    SELECT k.id AS pack_id, k.status, k.set_code, k.note, p.id AS pod_id, p.name AS pod_name, p.status AS pod_status, pp.role
     FROM pod_packs k JOIN pods p ON p.id = k.pod_id
     JOIN pod_players pp ON pp.pod_id = k.pod_id AND pp.user_id = k.user_id
     WHERE k.user_id = ? AND p.league_id = ? AND k.status != 'opened' AND p.status IN ('playing', 'awarded', 'done')
     ORDER BY p.created_at, k.seq`).all(userId, leagueId)
-    .map(r => ({ packId: r.pack_id, status: r.status, set: getSet(r.set_code, new Map()), podId: r.pod_id, podName: r.pod_name, podStatus: r.pod_status, absent: r.role === 'absent' }));
+    .map(r => ({ packId: r.pack_id, status: r.status, set: getSet(r.set_code, new Map()), podId: r.pod_id, podName: r.pod_name, podStatus: r.pod_status, absent: r.role === 'absent', ...(r.role === 'grant' ? { grant: true, note: r.note || '' } : {}) }));
 }
 export function deletePod(id) {
   return db.prepare('DELETE FROM pods WHERE id = ?').run(id).changes > 0;
@@ -397,7 +427,7 @@ export function deletePod(id) {
 // Clearing league history removes every finished and discarded pod; running pods stay.
 export function deleteHistory(leagueId) {
   const [where, args] = inLeague(leagueId);
-  return db.prepare(`DELETE FROM pods WHERE status IN ('done', 'discarded') ${where}`).run(...args).changes;
+  return db.prepare(`DELETE FROM pods WHERE status IN ('done', 'discarded') AND kind = 'pod' ${where}`).run(...args).changes;
 }
 export function poolCard(id) {
   return db.prepare('SELECT c.*, p.name AS pod_name FROM pool_cards c JOIN pods p ON p.id = c.pod_id WHERE c.id = ?').get(id) || null;
@@ -411,7 +441,7 @@ export function deletePoolCard(id) {
 // and pack it came from.
 export function poolCards(leagueId) {
   return db.prepare(`
-    SELECT c.*, k.set_code AS pack_set, k.source, k.opened_at, p.name AS pod_name, p.status AS pod_status, pp.role
+    SELECT c.*, k.set_code AS pack_set, k.source, k.opened_at, k.kind AS pack_kind, k.note AS pack_note, p.name AS pod_name, p.status AS pod_status, pp.role
     FROM pool_cards c
     JOIN pod_packs k ON k.id = c.pack_id
     JOIN pods p ON p.id = c.pod_id
@@ -424,10 +454,24 @@ export function poolPods(leagueId) {
   return db.prepare(`
     SELECT pp.user_id, pp.role, p.id, p.name, p.status, p.created_at
     FROM pod_players pp JOIN pods p ON p.id = pp.pod_id
-    WHERE p.status IN ('playing', 'awarded', 'done') AND p.league_id = ?
+    WHERE p.status IN ('playing', 'awarded', 'done') AND p.kind = 'pod' AND p.league_id = ?
     ORDER BY p.created_at`).all(leagueId);
 }
 export const setInfoFor = code => getSet(code, new Map());
+
+// ---------- the league's "Admin packs" container ----------
+// Packs the admin hands out (and cards moved between pools) live in one
+// pod-shaped row per league with kind 'grants', so opening, pools and the
+// pending-packs banner work the same as for any pod. It never counts as a
+// game: standings, History and the recap only read kind = 'pod'.
+export const grantsPodId = leagueId => `grants-${leagueId}`;
+export function grantsPod(leagueId, { create = false } = {}) {
+  const existing = loadPod(grantsPodId(leagueId));
+  if (existing || !create) return existing;
+  const at = new Date().toISOString();
+  return { id: grantsPodId(leagueId), leagueId, kind: 'grants', name: 'Admin packs', status: 'done', createdAt: at, finishedAt: at, updatedAt: at,
+    createdBy: null, winnerId: null, rules: null, spin: null, vote: null, players: [], absentees: [] };
+}
 
 // ---------- one-time import of pre-table pods ----------
 if (legacyPods) {

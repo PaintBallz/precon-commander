@@ -33,7 +33,7 @@ export const leagueByCode = code => leagueOf(db.prepare('SELECT * FROM leagues W
 export function listLeagues() {
   return db.prepare(`
     SELECT l.*, (SELECT count(*) FROM league_members m WHERE m.league_id = l.id AND m.left_at IS NULL) AS members,
-           (SELECT count(*) FROM pods p WHERE p.league_id = l.id AND p.status != 'discarded') AS pods
+           (SELECT count(*) FROM pods p WHERE p.league_id = l.id AND p.status != 'discarded' AND p.kind = 'pod') AS pods
     FROM leagues l ORDER BY l.status = 'ended', l.created_at DESC`).all()
     .map(r => ({ ...leagueOf(r), members: r.members, pods: r.pods }));
 }

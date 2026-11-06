@@ -56,6 +56,23 @@ phones, and every phone sees spins, votes and packs live.
   required "13 or older and I agree" box at sign-up, and **Delete account** on the Account page
   (the admin can delete accounts too). A deleted player's past pods stay in league history as
   "Deleted player". Fonts are self-hosted, so pages make no third-party requests except Scryfall images.
+- **Admin tab** (site admin only):
+  - **Dashboard**: players, leagues, running pods, unopened packs, new suggestions, reset-email
+    health, last backup, and a "needs attention" list (stuck pods, piles of unopened packs,
+    failing email, rate-limit hits, missing backups).
+  - **Give packs** to one or more league members at any time: a set you pick, one spin of the
+    league wheel, or "their choice"; with a reason that shows in the feed. They land in the
+    league's hidden "Admin packs" container, show up in each player's waiting-packs banner and
+    count in pools and stats (not as pods played). **Take back** any unopened pack.
+  - **Fix a finished pod** (History tab): name, winner, precons, or who sat in a seat (its packs
+    and cards move with it). **Move a card** to another player's pool from the card zoom.
+  - **Players**: rename, suspend / un-suspend, sign out everywhere, reset link, delete, and
+    **View as** (see the site exactly as that player, read-only).
+  - **Announcement** banner for every player, with an optional end date.
+  - **Admin log** of every admin action with its reason; deletes, grants, moves, fixes, renames
+    and suspensions can be **undone for 30 days** (deleted rows are kept as a snapshot).
+  - **Backups**: automatic every 24 hours (newest 14 kept) in `data/backups`, plus "Back up now"
+    and download.
 - **Accounts**: username + email + password sign-up, password change, reset by email
   (Cloudflare Email Sending or SMTP) or by an admin-made link.
 
@@ -130,7 +147,7 @@ players sign up, and one of them starts a league on the **League** tab.
 | `MAIL_FROM_NAME` | `Pre-Con Commander` | Sender name on reset emails. |
 | `RATE_ALL_PER_MIN` | `600` | Requests per IP per minute, every URL (pages, scripts, fonts, API). |
 | `RATE_API_PER_MIN` | `240` | Requests per IP per minute to `/api/*`. |
-| `RATE_HEAVY_PER_MIN` | `30` | Per IP per minute for heavy calls: player pages, recaps, deck imports, fun packs, pack opening, sheet odds. |
+| `RATE_HEAVY_PER_MIN` | `60` | Per IP per minute for heavy calls: player pages, recaps, deck imports, fun packs, sheet odds. (Opening league packs is left out: friends at one house share an IP.) |
 | `RATE_STREAMS_PER_IP` | `8` | Live-update connections one IP may hold open. |
 | `SCRYFALL_USER_AGENT` | `PreconCommander/1.0 (+repo URL)` | User-Agent for Scryfall API calls. Put your own contact or site in it. |
 | `SCRYFALL_BASE` | `https://api.scryfall.com` | Scryfall API base URL (point it at a mock for testing). |
@@ -208,6 +225,9 @@ server/
   stats.js     player pages and season recaps
   cache.js     in-memory cache, cleared on every change
   ratelimit.js per-IP request limits
+  admin.js     Admin tab: dashboard, packs, card moves, pod fixes, player tools, announcements, backups
+  adminlog.js  admin log, snapshots and undo
+  backup.js    daily database backups
   decks.js     deck-list import (Moxfield, Archidekt, pasted text)
 public/        the app: plain ES modules, no build step
 packs/         real booster print-sheet data (see packs/NOTICE.md)

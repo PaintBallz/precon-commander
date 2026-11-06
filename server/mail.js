@@ -14,7 +14,13 @@ const viaCloudflare = () => Boolean(CF_EMAIL_ACCOUNT_ID && CF_EMAIL_TOKEN && MAI
 export const mailEnabled = () => viaCloudflare() || Boolean(SMTP_HOST && MAIL_FROM);
 const fromName = MAIL_FROM_NAME || 'Pre-Con Commander';
 
-export async function sendMail({ to, subject, text, html }) {
+// The last send, for the admin dashboard (no addresses kept).
+export const lastMail = { at: null, ok: null, error: null };
+export async function sendMail(msg) {
+  try { await send(msg); Object.assign(lastMail, { at: new Date().toISOString(), ok: true, error: null }); }
+  catch (err) { Object.assign(lastMail, { at: new Date().toISOString(), ok: false, error: err.message }); throw err; }
+}
+async function send({ to, subject, text, html }) {
   if (!mailEnabled()) throw new Error('Email is not configured');
   if (viaCloudflare()) {
     const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(CF_EMAIL_ACCOUNT_ID)}/email/sending/send`, {

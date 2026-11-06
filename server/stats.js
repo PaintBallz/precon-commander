@@ -1,7 +1,7 @@
 // Player stats pages and season recaps. Everything is worked out from finished
 // pods (the same pods the standings count). No prices or card values anywhere:
 // best pulls rank by rarity, foils first.
-import { finishedPods } from './db.js';
+import { finishedPods, grantsPods } from './db.js';
 
 const pl = (v, word) => `${v} ${word}${v === 1 ? '' : 's'}`;
 const RARITY = { mythic: 4, rare: 3, special: 3, uncommon: 2, common: 1 };
@@ -57,10 +57,12 @@ export async function playerStats(userId, leagueId) {
     recent.push({ id: pod.id, name: pod.name, at: pod.finishedAt || pod.createdAt, won, precon, winner: winner?.name || null, winnerPrecon: winner?.precon || '',
       spun: pod.spin?.set?.name || null, others: pod.players.filter(x => x.id !== userId).map(x => x.name), vote: pod.vote?.winnerId === userId });
   }
-  const pulls = [...played, ...missed].flatMap(pod => pullsOf(pod, userId));
-  for (const pod of [...played, ...missed]) {
+  // Packs the admin handed out (and cards moved in from other pools).
+  const given = grantsPods(leagueId || undefined).filter(p => p.absentees.some(x => x.id === userId));
+  const pulls = [...played, ...missed, ...given].flatMap(pod => pullsOf(pod, userId));
+  for (const pod of [...played, ...missed, ...given]) {
     const who = [...pod.players, ...pod.absentees].find(p => p.id === userId);
-    for (const k of who.packs) if (k.status === 'opened') {
+    for (const k of who.packs) if (k.status === 'opened' && k.kind !== 'trade') {
       t.packs++;
       const name = k.set?.name || k.set?.code || '?';
       const r = sets.get(name) || sets.set(name, { name, icon: k.set?.icon || '', packs: 0 }).get(name);
@@ -111,6 +113,7 @@ export async function seasonRecap(leagueId, standings) {
     if (champion && winner && winner.id !== champion.id && pod.players.some(x => x.id === champion.id)) person(winner.id, winner.name).kingslayer++;
     for (const p of [...pod.players, ...pod.absentees]) for (const c of pullsOf(pod, p.id)) allPulls.push({ ...c, owner: p.name, ownerId: p.id });
   }
+  for (const pod of grantsPods(leagueId)) for (const p of pod.absentees) for (const c of pullsOf(pod, p.id)) allPulls.push({ ...c, owner: p.name, ownerId: p.id });
   for (const c of allPulls) if (c.foil) person(c.ownerId, c.owner).foils++;
 
   const rows = standings.map(s => ({ ...s, ...people.get(s.id), name: s.name, streak: streaks(people.get(s.id)?.results || []).best }));

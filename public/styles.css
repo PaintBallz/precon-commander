@@ -654,3 +654,33 @@ form .fb-filter label.chip { display: inline-flex; gap: 6px; cursor: pointer; co
   .deck-cmd { width: 140px; }
   .champ b { font-size: 1.7rem; }
 }
+
+/* ---------- admin tab, banners ---------- */
+.banners:empty { display: none; }
+.banners { max-width: 1240px; margin: 14px auto 0; padding: 0 20px; display: grid; gap: 8px; }
+@media (max-width: 760px) { .banners { padding: 0 12px; } }
+.banner { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: 1px solid var(--line); background: var(--panel); }
+.banner > .i { color: var(--accent); flex: none; }
+.banner > span { flex: 1; }
+.banner.ann { border-left: 4px solid var(--accent); background: linear-gradient(90deg, var(--accent-soft), transparent 60%), var(--panel); }
+.banner.viewas { border-left: 4px solid var(--cyan); }
+.banner.viewas > .i { color: var(--cyan); }
+.admin-grid { margin-top: 16px; }
+@media (min-width: 1100px) { .admin-grid > section:first-child { grid-column: auto; } }
+.admin-attn { margin-bottom: 0; }
+.admin-attn .rules-list a { color: var(--accent2); }
+.admin-packs { display: grid; gap: 10px; }
+.admin-pk .row { margin-top: 4px; gap: 6px; }
+.admin-users td { vertical-align: top; }
+.admin-acts { text-align: right; white-space: normal; }
+.admin-acts .btn { margin: 2px 0 2px 4px; }
+.admin-log { display: grid; gap: 2px; max-height: 520px; overflow-y: auto; }
+.al-item { display: grid; grid-template-columns: 112px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 8px 4px; border-bottom: 1px solid var(--line); font-size: .9rem; }
+.al-item.undone > div:nth-child(2) { text-decoration: line-through; color: var(--dim); }
+@media (max-width: 600px) { .al-item { grid-template-columns: minmax(0, 1fr) auto; } .al-item > span:first-child { grid-column: 1 / -1; } }
+.admin-backups { display: grid; gap: 6px; }
+.admin-backups .spread { padding: 6px 0; border-bottom: 1px solid var(--line); }
+#fixForm fieldset legend { padding: 0 4px; }
+
+/* Elements with the hidden attribute stay hidden whatever their display style. */
+[hidden] { display: none !important; }

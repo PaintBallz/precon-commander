@@ -54,7 +54,9 @@ async function loadState() {
   S.league = st.league; S.leagues = st.leagues || []; S.myLeagueId = st.myLeagueId;
   S.viewLeague = st.league?.id || null;
   S.feedbackNew = st.feedbackNew || 0;
+  S.announcement = st.announcement || null; S.viewAs = st.viewAs || null;
   paintMe();
+  paintBanners();
   paintLeaguePicker();
 }
 // Switch the whole app to another league (header picker, joining, creating…).
@@ -115,6 +117,7 @@ function paintMe() {
   $('#meBtn').innerHTML = S.me ? `${isAdmin() ? '<span class="chip gold">admin</span>' : ''}${fb}<span>${esc(S.me.username)}</span>` : '';
   const inApp = !!S.me && !S.me.mustChange;
   $('#fbBtn').hidden = !inApp; $('#fbOr').hidden = !inApp;
+  $('#adminTab').hidden = !isAdmin();
 }
 const soundBtn = $('#soundBtn');
 const paintSound = () => { soundBtn.innerHTML = S.sound ? I.sound : I.mute; };
@@ -237,7 +240,7 @@ async function copyText(text, what = 'List') {
 }
 
 // ---------------- routing ----------------
-const ROUTES = ['league', 'pods', 'wheel', 'packs', 'pools', 'sets', 'history', 'fun', 'account', 'player', 'recap'];
+const ROUTES = ['league', 'pods', 'wheel', 'packs', 'pools', 'sets', 'history', 'fun', 'account', 'player', 'recap', 'admin'];
 function parseRoute() {
   const [r, q] = location.hash.replace(/^#/, '').split('?');
   S.route = ROUTES.includes(r) ? r : 'pods';
@@ -256,7 +259,7 @@ function render() {
   $$('#tabs a').forEach(a => a.classList.toggle('active', a.dataset.tab === (S.route === 'player' || S.route === 'recap' ? 'league' : S.route)));
   const view = $('#view');
   if (S.route !== 'wheel') stopWheelLoop();
-  ({ league: renderLeague, pods: renderPods, wheel: renderWheel, packs: renderPacks, pools: renderPools, sets: renderSets, history: renderHistory, fun: renderFun, account: renderAccount, player: renderPlayer, recap: renderRecap })[S.route](view);
+  ({ league: renderLeague, pods: renderPods, wheel: renderWheel, packs: renderPacks, pools: renderPools, sets: renderSets, history: renderHistory, fun: renderFun, account: renderAccount, player: renderPlayer, recap: renderRecap, admin: renderAdmin })[S.route](view);
 }
 
 function confirmBox(title, body, okLabel = 'OK', danger = false) {
@@ -451,33 +454,7 @@ async function renderAccount(view) {
     try { await post('/auth/password', f); e.target.reset(); toast('Password changed. Other devices were logged out.', 'good'); } catch (err) { fail(err); }
   };
   if (!isAdmin()) return;
-  let d;
-  try { d = await api('/admin/users'); } catch (err) { fail(err); return; }
-  if (S.route !== 'account') return;
-  $('#adminBox', view).innerHTML = `<div class="panel" style="margin-top:18px;overflow-x:auto">
-      <h2>League members</h2>
-      <p class="small muted">${d.emailEnabled ? 'Password-reset emails are on.' : 'Password-reset emails are <b>off</b> (no SMTP server configured). Use <b>Reset link</b> and send the link to the player yourself.'}</p>
-      <table class="standings"><thead><tr><th>Username</th><th>Email</th><th>Precon</th><th>Joined</th><th></th></tr></thead>
-      <tbody>${d.users.map(u => `<tr><td><b>${esc(u.username)}</b>${u.isAdmin ? ' <span class="chip gold">admin</span>' : ''}</td><td class="small">${esc(u.email) || '<span class="dim">—</span>'}</td><td class="small muted">${esc(u.precon) || '—'}</td><td class="small muted">${new Date(u.createdAt).toLocaleDateString()}</td>
-        <td style="text-align:right;white-space:nowrap">${u.id === me.id ? '' : `<button class="btn sm" data-reset="${u.id}" data-name="${esc(u.username)}">Reset link</button> <button class="btn sm danger" data-deluser="${u.id}" data-name="${esc(u.username)}">${I.trash} Delete</button>`}</td></tr>`).join('')}</tbody></table>
-    </div>`;
-  $$('[data-deluser]', view).forEach(b => b.onclick = async () => {
-    if (!await confirmBox(`Delete ${esc(b.dataset.name)}?`, `Removes their login, email and suggestions for good. Their past pods stay in league history as <b>Deleted player</b>. This can't be undone.`, `${I.trash} Delete account`, true)) return;
-    try { await del(`/admin/users/${b.dataset.deluser}`); toast(`${esc(b.dataset.name)}'s account was deleted.`, 'good'); renderAccount(view); } catch (err) { fail(err); }
-  });
-  $$('[data-reset]', view).forEach(b => b.onclick = async () => {
-    try {
-      const r = await post(`/admin/users/${b.dataset.reset}/reset-link`);
-      const m = $('#modal');
-      m.innerHTML = `<div class="box"><div class="dialog"><h2>Reset link for ${esc(b.dataset.name)}</h2>
-        <p class="muted">Send this to ${esc(b.dataset.name)}. It works once, for ${r.minutes} minutes.</p>
-        <pre class="list" style="white-space:pre-wrap;word-break:break-all">${esc(r.link)}</pre>
-        <div class="row" style="justify-content:flex-end"><button class="btn gold" id="cpy">${I.copy} Copy link</button><button class="btn ghost" id="cls">Close</button></div></div></div>`;
-      m.hidden = false;
-      $('#cpy', m).onclick = async () => { await navigator.clipboard.writeText(r.link).catch(() => {}); toast(`${I.copy} Reset link copied`, 'good'); };
-      $('#cls', m).onclick = () => { m.hidden = true; };
-    } catch (err) { fail(err); }
-  });
+  $('#adminBox', view).innerHTML = `<div class="panel" style="margin-top:18px"><h2>Admin</h2><p class="muted" style="margin:0 0 10px">Players, packs, announcements, the admin log and backups are on the Admin tab.</p><a class="btn gold" href="#admin">Open the Admin tab</a></div>`;
 }
 
 // =============== LEAGUE TAB ===============
@@ -637,7 +614,7 @@ async function renderLeague(view) {
     try { await post(`/leagues/${league.id}/end`); await refreshLeague(); } catch (err) { fail(err); }
   });
   $('#delL', view)?.addEventListener('click', async () => {
-    if (!await typedConfirm(`Delete ${esc(league.name)}?`, 'This permanently deletes the league with every pod, pack, vote and pool card in it.', 'DELETE', `${I.trash} Delete league`)) return;
+    if (!await typedConfirm(`Delete ${esc(league.name)}?`, 'This deletes the league with every pod, pack, vote and pool card in it. You can undo it for 30 days from <b>Admin → Admin log</b>.', 'DELETE', `${I.trash} Delete league`)) return;
     try { await del(`/leagues/${league.id}`); S.viewLeague = null; await refreshLeague(); toast('League deleted.', 'good'); } catch (err) { fail(err); }
   });
 }
@@ -648,7 +625,7 @@ function pendingBanner() {
   if (!S.pending.length || S.viewLeague !== S.myLeagueId) return '';
   return `<div class="panel pending">
     <h3 style="margin:0 0 8px">${I.pack} ${plural(S.pending.length, 'pack')} waiting for you</h3>
-    <div class="row">${S.pending.map(k => `<a class="chip" href="#packs?pod=${k.podId}&player=${S.me.id}&pack=${k.packId}">${k.status === 'choosing' ? `${I.question}` : icon(k.set)} ${k.status === 'choosing' ? 'Choose a set' : esc(k.set?.name || '')} <span class="dim">· ${esc(k.podName)}${k.absent ? ' (missed)' : ''}</span></a>`).join('')}</div>
+    <div class="row">${S.pending.map(k => `<a class="chip" href="#packs?pod=${k.podId}&player=${S.me.id}&pack=${k.packId}">${k.status === 'choosing' ? `${I.question}` : icon(k.set)} ${k.status === 'choosing' ? 'Choose a set' : esc(k.set?.name || '')} <span class="dim">· ${k.grant ? `from the admin${k.note ? `: ${esc(k.note)}` : ''}` : `${esc(k.podName)}${k.absent ? ' (missed)' : ''}`}</span></a>`).join('')}</div>
   </div>`;
 }
 
@@ -783,11 +760,11 @@ async function afterAdminDelete(msg) {
 async function deletePackFlow(podId, pack, owner) {
   const n = pack.cards?.length || 0;
   if (!await confirmBox(`Delete ${esc(owner.name)}'s ${esc(pack.set?.name || '')} pack?`,
-    `The pack is removed from the pod${n ? ` and its <b>${n} cards</b> leave ${esc(owner.name)}'s pool` : ''}. It can't be undone.`, `${I.trash} Delete pack`, true)) return;
+    `The pack is removed from the pod${n ? ` and its <b>${n} cards</b> leave ${esc(owner.name)}'s pool` : ''}. ${UNDO_NOTE}`, `${I.trash} Delete pack`, true)) return;
   try { await del(`/pods/${podId}/packs/${pack.id}`); await afterAdminDelete('Pack deleted.'); } catch (err) { fail(err); }
 }
 async function deleteCardFlow(c) {
-  if (!await confirmBox(`Remove ${esc(c.name)}?`, `One copy of <b>${esc(c.name)}</b>${c.foil ? ' (foil)' : ''} is removed from the player's pool and from its pack's pulls. It can't be undone.`, `${I.trash} Remove card`, true)) return;
+  if (!await confirmBox(`Remove ${esc(c.name)}?`, `One copy of <b>${esc(c.name)}</b>${c.foil ? ' (foil)' : ''} is removed from the player's pool and from its pack's pulls. ${UNDO_NOTE}`, `${I.trash} Remove card`, true)) return;
   try { await del(`/pool-cards/${c.id}`); $('#modal').hidden = true; await afterAdminDelete(`${esc(c.name)} removed.`); } catch (err) { fail(err); }
 }
 
@@ -830,7 +807,7 @@ function votePanel(pod) {
 async function deletePodFlow(pod) {
   const cards = pod.players.reduce((s, p) => s + p.packs.reduce((t, k) => t + (k.cards?.length || 0), 0), 0);
   if (!await confirmBox(`Delete ${esc(pod.name)} for good?`,
-    `This permanently removes ${esc(pod.name)}${pod.status === 'done' ? ' from History' : ''}, its spin and every pack in it${cards ? `, and takes its <b>${cards} opened cards</b> out of the players' pools` : ''}. It can't be undone.`,
+    `This removes ${esc(pod.name)}${pod.status === 'done' ? ' from History' : ''}, its spin and every pack in it${cards ? `, and takes its <b>${cards} opened cards</b> out of the players' pools` : ''}. ${UNDO_NOTE}`,
     `${I.trash} Delete pod`, true)) return;
   try { await del(`/pods/${pod.id}`); S.history = null; S.pools = null; await loadState(); render(); toast(`${esc(pod.name)} deleted.`, 'good'); } catch (err) { fail(err); }
 }
@@ -851,7 +828,7 @@ function podPanel(pod) {
         ${pod.spin ? `<a class="btn gold" href="#packs?pod=${pod.id}">Open packs →</a>` : ''}
         ${member && pod.status === 'awarded' ? `<button class="btn" data-finish="${pod.id}">Finish pod</button>` : ''}
         ${member ? `<button class="btn danger sm" data-discard="${pod.id}">Discard</button>` : ''}
-        ${isAdmin() ? `<button class="btn danger sm" data-delete="${pod.id}" title="Admin: delete this pod permanently">${I.trash} Delete</button>` : ''}
+        ${isAdmin() ? `<button class="btn danger sm" data-delete="${pod.id}" title="Admin: delete this pod (undo-able for 30 days)">${I.trash} Delete</button>` : ''}
       </div>
     </div>
     ${votePanel(pod)}
@@ -1050,7 +1027,7 @@ function restOn(spin) {
 function podSwitcher(pod, route) {
   const list = route === 'packs' ? [...S.pods, ...S.openPods] : S.pods;
   if (list.length < 2) return '';
-  return `<div class="player-tabs">${list.map(x => `<a href="#${route}?pod=${x.id}" class="${x.id === pod.id ? 'sel' : ''}">${esc(x.name)}${x.status === 'done' ? ' (finished)' : ''}${people(x).some(p => p.id === S.me.id) ? ' ★' : ''}</a>`).join('')}</div>`;
+  return `<div class="player-tabs">${list.map(x => `<a href="#${route}?pod=${x.id}" class="${x.id === pod.id ? 'sel' : ''}">${esc(x.name)}${x.status === 'done' && x.kind !== 'grants' ? ' (finished)' : ''}${people(x).some(p => p.id === S.me.id) ? ' ★' : ''}</a>`).join('')}</div>`;
 }
 
 function renderWheel(view) {
@@ -1221,7 +1198,7 @@ async function sacrifice(pod, player, packId) {
 function renderPacks(view) {
   const pod = currentPod();
   if (!pod) { view.innerHTML = `<div class="empty"><h2>No pods running</h2><p>Opened cards live in <a href="#pools">Pools</a> and <a href="#history">History</a>.</p></div>`; return; }
-  if (!pod.spin) { view.innerHTML = `${podSwitcher(pod, 'packs')}<div class="empty"><h2>${esc(pod.name)} hasn't spun yet</h2><p>${pod.status === 'playing' ? 'Finish the game and crown the winner first.' : 'The winner spins the wheel once, then everyone opens their packs here.'}</p><a class="btn gold" href="#${pod.status === 'playing' ? 'pods' : `wheel?pod=${pod.id}`}">${pod.status === 'playing' ? 'Go to Pods' : 'Go to the wheel'}</a></div>`; return; }
+  if (!pod.spin && pod.kind !== 'grants') { view.innerHTML = `${podSwitcher(pod, 'packs')}<div class="empty"><h2>${esc(pod.name)} hasn't spun yet</h2><p>${pod.status === 'playing' ? 'Finish the game and crown the winner first.' : 'The winner spins the wheel once, then everyone opens their packs here.'}</p><a class="btn gold" href="#${pod.status === 'playing' ? 'pods' : `wheel?pod=${pod.id}`}">${pod.status === 'playing' ? 'Go to Pods' : 'Go to the wheel'}</a></div>`; return; }
   if (S.params.player) S.packsPlayer = S.params.player;
   const p = people(pod).find(x => x.id === S.packsPlayer) || people(pod).find(x => x.id === S.me.id) || pod.players[0];
   S.packsPlayer = p.id;
@@ -1229,14 +1206,14 @@ function renderPacks(view) {
   const pulls = p.packs.filter(k => k.status === 'opened').flatMap(k => k.cards);
   view.innerHTML = `
     ${podSwitcher(pod, 'packs')}
-    <div class="player-tabs">${people(pod).map(x => `<a href="#packs?pod=${pod.id}&player=${x.id}" class="${x.id === p.id ? 'sel' : ''}">${pod.winnerId === x.id ? `${I.crown} ` : ''}${esc(x.name)}${pod.absentees?.includes(x) ? ' <span class="dim">· missed</span>' : ''}</a>`).join('')}</div>
+    <div class="player-tabs">${people(pod).map(x => `<a href="#packs?pod=${pod.id}&player=${x.id}" class="${x.id === p.id ? 'sel' : ''}">${pod.winnerId === x.id ? `${I.crown} ` : ''}${esc(x.name)}${x.grant ? ' <span class="dim">· from the admin</span>' : pod.absentees?.includes(x) ? ' <span class="dim">· missed</span>' : ''}</a>`).join('')}</div>
     <div class="packs-layout">
       <aside class="grid" style="gap:12px">
         <div class="pack-list">
           ${p.packs.map(k => `<button class="pack-item ${k.id === sel?.id ? 'sel' : ''}" data-k="${k.id}">
               ${k.status === 'choosing' ? I.question : icon(k.set)}
               <span><div class="t">${k.status === 'choosing' ? 'Pick a set…' : esc(k.set.name)}</div>
-              <div class="s">${k.status === 'opened' ? `Opened · ${k.cards.length} cards` : k.status === 'choosing' ? `${I.flame} Sacrificed: choose a set` : 'Unopened'}${k.source === 'sacrifice' && k.status !== 'choosing' ? ` · ${I.flame} chosen` : ''}</div></span>
+              <div class="s">${k.kind === 'trade' ? `Moved card · ${esc(k.note || '')}` : k.status === 'opened' ? `Opened · ${k.cards.length} cards` : k.status === 'choosing' ? (k.kind === 'grant' ? `${I.pack} From the admin: choose a set` : `${I.flame} Sacrificed: choose a set`) : 'Unopened'}${k.source === 'sacrifice' && k.status !== 'choosing' ? ` · ${I.flame} chosen` : ''}${k.kind === 'grant' && k.status !== 'choosing' ? ` · ${I.pack} from the admin` : ''}${k.kind === 'grant' && k.note ? ` · ${esc(k.note)}` : ''}</div></span>
             </button>`).join('') || `<div class="panel muted small">No packs.</div>`}
           ${p.sacrificed ? `<div class="small dim" style="padding:4px 8px">${I.flame} ${plural(p.sacrificed, 'pack')} sacrificed</div>` : ''}
         </div>
@@ -1276,13 +1253,13 @@ function renderPackView(el, pack, owner, pod) {
   if (!pack) { el.innerHTML = `<div class="empty"><h2>No packs</h2></div>`; return; }
   const mine = canAct(owner);
   if (pack.status === 'choosing') {
-    el.innerHTML = `<div class="panel empty"><h2>${I.flame} Pack sacrificed</h2><p>${mine ? `Choose any set for ${esc(owner.name)}'s pack.` : `Waiting for ${esc(owner.name)} to choose a set.`}</p>${mine ? `<a class="btn gold" href="#sets?pod=${pod.id}&choose=${pack.id}">Choose a set →</a>` : ''}</div>`;
+    el.innerHTML = `<div class="panel empty"><h2>${pack.kind === 'grant' ? `${I.pack} A pack of your choice` : `${I.flame} Pack sacrificed`}</h2><p>${pack.kind === 'grant' ? `From the admin${pack.note ? ` (${esc(pack.note)})` : ''}. ` : ''}${mine ? `Choose any set for ${esc(owner.name)}'s pack.` : `Waiting for ${esc(owner.name)} to choose a set.`}</p>${mine ? `<a class="btn gold" href="#sets?pod=${pod.id}&choose=${pack.id}">Choose a set →</a>` : ''}</div>`;
     return;
   }
   const meta = S.setsByCode.get(pack.set.code);
   if (pack.status === 'ready') {
     const sp = spunPacks(owner);
-    const canSac = mine && pack.source === 'wheel' && sp.length >= 2;
+    const canSac = mine && pack.source === 'wheel' && sp.length >= 2 && pod.kind !== 'grants';
     el.innerHTML = `
       <div class="booster" id="booster">
         ${icon(pack.set, 'lg')}
@@ -1727,13 +1704,14 @@ function cardModal(c) {
         ${c.back ? `<button class="btn sm" id="flipBtn">↻ Flip</button>` : ''}
         <a class="btn sm" href="${esc(c.uri)}" target="_blank" rel="noopener">Scryfall ↗</a>
         <button class="btn sm" id="copyOne" title="Formatted for ${siteName()}">${I.copy} Copy (${siteName()})</button>
-        ${isAdmin() && c.id ? `<button class="btn sm danger" id="delOne">${I.trash} Remove</button>` : ''}
+        ${isAdmin() && c.id ? `<button class="btn sm" id="moveOne">Move to…</button><button class="btn sm danger" id="delOne">${I.trash} Remove</button>` : ''}
         <button class="btn sm ghost" id="closeM">Close</button>
       </div></div>`;
     $('#flipBtn', m)?.addEventListener('click', e => { e.stopPropagation(); showBack = !showBack; paint(); });
     $('#copyOne', m).onclick = e => { e.stopPropagation(); copyText(listFor([c]), c.name); };
     $('#closeM', m).onclick = () => { m.hidden = true; };
     $('#delOne', m)?.addEventListener('click', e => { e.stopPropagation(); deleteCardFlow(c); });
+    $('#moveOne', m)?.addEventListener('click', e => { e.stopPropagation(); moveCardFlow(c); });
   };
   paint();
   m.hidden = false;
@@ -1792,7 +1770,7 @@ async function renderPools(view) {
     </div>
     <div class="cards" id="poolCards"></div>
     <details class="panel" style="margin-top:18px"><summary class="muted" style="cursor:pointer">Packs in this pool (${packs.length})</summary>
-      <div class="row" style="margin-top:10px">${packs.map(k => `<span class="chip">${icon(k.set)}${esc(k.set.name)}${k.source === 'sacrifice' ? ` ${I.flame}` : ''} <span class="dim">· ${esc(k.podName)}${k.absent ? ' (missed)' : ''} · ${k.cards.length}</span>${isAdmin() ? `<button class="chip-x" data-delpack="${k.podId}:${k.packId}" title="Admin: delete this pack and its pulls">✕</button>` : ''}</span>`).join('')}</div>
+      <div class="row" style="margin-top:10px">${packs.map(k => `<span class="chip">${icon(k.set)}${esc(k.set.name)}${k.source === 'sacrifice' ? ` ${I.flame}` : ''} <span class="dim">· ${k.kind === 'trade' ? esc(k.note || 'moved card') : k.kind === 'grant' ? `from the admin${k.note ? `: ${esc(k.note)}` : ''}` : `${esc(k.podName)}${k.absent ? ' (missed)' : ''}`} · ${k.cards.length}</span>${isAdmin() ? `<button class="chip-x" data-delpack="${k.podId}:${k.packId}" title="Admin: delete this pack and its pulls">✕</button>` : ''}</span>`).join('')}</div>
       ${isAdmin() ? `<p class="small dim" style="margin:10px 0 0">Admin: ✕ deletes a whole pack; open a card and use ${I.trash} Remove to delete a single copy.</p>` : ''}
     </details>` : `<div class="empty"><p>${pool.userId === S.me.id ? 'Your' : `${esc(pool.username)}'s`} pool is empty. Cards show up here as soon as packs are opened.</p></div>`}`;
   $('#copyPool', view)?.addEventListener('click', () => copyText(listFor(cards), `${pool.username}'s pool${podName ? ` from ${podName}` : ''} (${cards.length} cards)`));
@@ -1951,7 +1929,7 @@ async function renderHistory(view) {
       return `<details class="hgame"><summary>
         <div><b class="hname">${esc(g.name)} · ${fmtDate(g.finishedAt || g.createdAt)}</b> <span class="muted">· ${I.crown} ${esc(w?.name || '—')}${w?.precon ? ` with ${esc(w.precon)}` : ''}${g.spin ? ` · spun ${esc(g.spin.set.name)}` : ''}${g.vote?.winnerId ? ` · ${I.vote} ${esc(nameIn(g, g.vote.winnerId))}` : ''}</span></div>
         <div class="row">${g.spin ? icon(g.spin.set) : ''}${g.players.flatMap(p => p.packs).filter(k => k.source === 'sacrifice' && k.status !== 'choosing').slice(0, 8).map(k => icon(k.set)).join('')}</div>
-      </summary><div class="body">${isAdmin() ? `<div class="spread small muted" style="margin-bottom:8px"><span>Admin: deleting removes this pod from History and its cards from the pools.</span><button class="btn danger sm" data-hdel="${g.id}">${I.trash} Delete pod</button></div>` : ''}${g.players.map(p => {
+      </summary><div class="body">${isAdmin() ? `<div class="spread small muted" style="margin-bottom:8px"><span>Admin: fix a mistake (winner, precons, who played), or delete the pod (undo-able for 30 days).</span><span class="row"><button class="btn sm" data-hfix="${g.id}">Fix pod</button><button class="btn danger sm" data-hdel="${g.id}">${I.trash} Delete pod</button></span></div>` : ''}${g.players.map(p => {
         const pulls = p.packs.filter(k => k.status === 'opened').flatMap(k => k.cards);
         const hits = sortForReveal(pulls).reverse().filter(c => c.rarity === 'mythic' || c.rarity === 'rare');
         return `<div class="hplayer">
@@ -1964,6 +1942,7 @@ async function renderHistory(view) {
     }).join('')}</div>`;
   const lookup = key => { const [gid, pid] = key.split(':'); const g = pods.find(x => x.id === gid); return g?.players.find(p => p.id === pid); };
   $$('[data-hdel]', view).forEach(b => b.onclick = () => deletePodFlow(pods.find(x => x.id === b.dataset.hdel)));
+  $$('[data-hfix]', view).forEach(b => b.onclick = () => fixPodFlow(pods.find(x => x.id === b.dataset.hfix)));
   $$('[data-delpack]', view).forEach(b => b.onclick = e => {
     e.preventDefault(); e.stopPropagation();
     const [gid, pid, kid] = b.dataset.delpack.split(':');
@@ -1972,7 +1951,7 @@ async function renderHistory(view) {
   });
   $('#clearHist', view)?.addEventListener('click', async () => {
     const cards = pods.reduce((s, g) => s + g.players.reduce((t, p) => t + p.packs.reduce((u, k) => u + (k.cards?.length || 0), 0), 0), 0);
-    if (!await typedConfirm('Clear league history?', `This permanently deletes all <b>${plural(pods.length, 'finished pod')}</b> (and any discarded ones), the standings built from them, and their <b>${cards} cards</b> from everyone's pools. Running pods are not touched.`, 'DELETE', `${I.trash} Clear history`)) return;
+    if (!await typedConfirm('Clear league history?', `This deletes all <b>${plural(pods.length, 'finished pod')}</b> (and any discarded ones), the standings built from them, and their <b>${cards} cards</b> from everyone's pools. Running pods are not touched. ${UNDO_NOTE}`, 'DELETE', `${I.trash} Clear history`)) return;
     try { const r = await del('/history' + lq()); await afterAdminDelete(`League history cleared (${plural(r.deletedPods, 'pod')} deleted).`); } catch (err) { fail(err); }
   });
   $$('[data-copy]', view).forEach(b => b.onclick = () => {
@@ -2205,6 +2184,277 @@ async function renderRecap(view) {
   });
 }
 
+// =============== ADMIN TAB ===============
+// Dashboard, announcement, pack manager, players, admin log (undo), backups.
+const UNDO_NOTE = 'You can undo it for 30 days from <b>Admin → Admin log</b>.';
+// A small form dialog: fields = [{ name, label, value, type, options, placeholder }]. Resolves to the values, or null.
+function formBox(title, body, fields, okLabel = 'Save', danger = false) {
+  return new Promise(resolve => {
+    const m = $('#modal');
+    m.innerHTML = `<div class="box"><div class="dialog"><form id="fbx" class="grid" style="gap:10px">
+      <h2 style="margin:0">${title}</h2>${body ? `<p class="muted" style="margin:0">${body}</p>` : ''}
+      ${fields.map(f => `<label>${f.label}${f.type === 'select'
+        ? `<select class="input" name="${f.name}">${f.options.map(o => `<option value="${esc(o.value)}" ${o.value === f.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>`
+        : `<input name="${f.name}" type="${f.type || 'text'}" value="${esc(f.value ?? '')}" placeholder="${esc(f.placeholder || '')}" maxlength="${f.max || 300}" ${f.required ? 'required' : ''}>`}</label>`).join('')}
+      <div class="row" style="justify-content:flex-end"><button type="button" class="btn ghost" data-r="0">Cancel</button><button class="btn ${danger ? 'danger' : 'gold'}">${okLabel}</button></div>
+    </form></div></div>`;
+    m.hidden = false;
+    const done = v => { m.hidden = true; m.innerHTML = ''; resolve(v); };
+    $('[data-r="0"]', m).onclick = () => done(null);
+    m.onclick = e => { if (e.target === m) done(null); };
+    $('#fbx', m).onsubmit = e => { e.preventDefault(); done(Object.fromEntries(new FormData(e.target))); };
+    $('input, select', m)?.focus();
+  });
+}
+const ago = iso => {
+  if (!iso) return 'never';
+  const s = (Date.now() - Date.parse(iso)) / 1000;
+  if (s < 90) return 'just now';
+  if (s < 5400) return `${Math.round(s / 60)} min ago`;
+  if (s < 129600) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} days ago`;
+};
+const kb = n => (n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.round(n / 1e3)} KB`);
+
+async function renderAdmin(view) {
+  if (!isAdmin()) { view.innerHTML = '<div class="empty"><h2>Admins only</h2></div>'; return; }
+  view.innerHTML = '<div class="spinner"></div>';
+  let o, users, packs, log, backups;
+  try {
+    [o, users, packs, log, backups] = await Promise.all([
+      api('/admin/overview'), api('/admin/users'), api('/admin/packs' + lq()), api('/admin/log?limit=60'), api('/admin/backups'),
+    ]);
+  } catch (err) { fail(err); return; }
+  if (S.route !== 'admin') return;
+  const c = o.counts;
+  const league = S.league;
+  const members = S.members || [];
+  const ann = o.announcement;
+  const lastBackup = o.backups.latest;
+  const refused = Object.values(o.limits.refused24h).reduce((a, b) => a + b, 0);
+  const attention = [
+    ...o.stuck.map(p => `${I.play} <a href="#pods?pod=${p.id}">${esc(p.name)}</a> (${esc(p.league)}) hasn't changed since ${ago(p.since)}.`),
+    ...o.piles.filter(p => p.count >= 3).map(p => `${I.pack} ${esc(p.name)} has ${plural(p.count, 'unopened pack')} in ${esc(p.league)}.`),
+    ...(c.feedbackNew ? [`${I.bulb} ${plural(c.feedbackNew, 'new suggestion')} on <a href="#account">your Account page</a>.`] : []),
+    ...(!o.email.enabled ? [`${I.x} Password-reset emails are off.`] : o.email.last.ok === false ? [`${I.x} The last reset email failed ${ago(o.email.last.at)}: ${esc(o.email.last.error)}`] : []),
+    ...(refused ? [`${I.flag} ${plural(refused, 'request')} hit a rate limit in the last 24 hours.`] : []),
+    ...(!lastBackup || Date.now() - Date.parse(lastBackup.at) > 2 * 864e5 ? [`${I.x} No backup in the last 2 days.`] : []),
+  ];
+  view.innerHTML = `
+    <div class="hero"><div><h1>Admin</h1><p>Site tools. Changes here show in the league's activity feed where players would care, and every action is in the admin log below, most with <b>Undo</b> for 30 days.</p></div></div>
+    <div class="fs-tiles">
+      ${tile(c.players, 'Players', c.suspended ? `${c.suspended} suspended` : '')}${tile(c.activeLeagues, 'Active leagues')}${tile(c.runningPods, 'Running pods')}
+      ${tile(c.unopenedPacks, 'Unopened packs')}${tile(c.feedbackNew, 'New suggestions')}
+      ${tile(o.email.enabled ? (o.email.last.ok === false ? 'Failing' : 'On') : 'Off', 'Reset emails', o.email.last.at ? `last ${ago(o.email.last.at)}` : '')}
+      ${tile(lastBackup ? ago(lastBackup.at) : 'none', 'Last backup', `${o.backups.count} kept`)}
+    </div>
+    <section class="panel admin-attn"><h2>Needs attention</h2>${attention.length ? `<ul class="rules-list">${attention.map(a => `<li>${a}</li>`).join('')}</ul>` : '<p class="muted" style="margin:0">Nothing. All quiet.</p>'}
+      <p class="small muted" style="margin:10px 0 0">Rate limits per IP per minute: ${o.limits.limits.all} requests, ${o.limits.limits.api} API calls, ${o.limits.limits.heavy} heavy lookups, ${o.limits.limits.streams} live connections. Refused in the last 24 h: ${Object.entries(o.limits.refused24h).map(([k, v]) => `${k} ${v}`).join(', ')}.</p></section>
+
+    <div class="league-grid admin-grid">
+      <section class="panel">
+        <h2>${I.pack} Give packs</h2>
+        ${league && league.status === 'active' ? `<form id="grantForm" class="grid" style="gap:10px">
+          <p class="small muted" style="margin:0">To players in <b>${esc(league.name)}</b> (switch leagues with the picker at the top). They show up in each player's "packs waiting for you" and count in their pool and stats, not as pods played.</p>
+          <div class="cmd-picks">${members.map(m => `<label class="chip"><input type="checkbox" name="u" value="${m.id}"> ${esc(m.username)}</label>`).join('')}</div>
+          <div class="row" style="gap:8px"><button type="button" class="btn sm ghost" id="grantAll">Everyone</button><button type="button" class="btn sm ghost" id="grantNone">Nobody</button></div>
+          <div class="rules-grid">
+            <label>Packs each<input type="number" name="count" min="1" max="10" value="1"></label>
+            <label>Which set<select class="input" name="mode"><option value="set">A set I pick</option><option value="wheel">Spin the league wheel</option><option value="choice">Their choice</option></select></label>
+          </div>
+          <label id="grantSetRow">Set<select class="input" name="setCode">${S.sets.map(s => `<option value="${s.code}">${esc(s.name)} (${s.year})</option>`).join('')}</select></label>
+          <label>Reason <span class="dim small">(shown in the feed)</span><input name="reason" maxlength="300" placeholder="e.g. make-up for a missed pod"></label>
+          <button class="btn gold">${I.pack} Give packs</button>
+        </form>` : '<p class="muted">Pick an active league with the league picker at the top first.</p>'}
+      </section>
+      <section class="panel">
+        <h2>Unopened packs</h2>
+        <p class="small muted" style="margin:0 0 10px">Every unopened pack in ${esc(league?.name || 'this league')}. ✕ takes one back (${'undo-able'}).</p>
+        <div class="admin-packs">${packs.players.filter(p => p.packs.length).map(p => `<div class="admin-pk"><b>${plink(p.id, p.username)}</b><div class="row">${p.packs.map(k => `<span class="chip">${k.status === 'choosing' ? I.question : icon(k.set)} ${k.status === 'choosing' ? 'Their choice' : esc(k.set?.name || '')} <span class="dim">· ${esc(k.podName)}</span><button class="chip-x" data-take="${k.podId}:${k.packId}" data-who="${esc(p.username)}" title="Take this pack back">✕</button></span>`).join('')}</div></div>`).join('') || '<p class="muted">None.</p>'}</div>
+      </section>
+    </div>
+
+    <section class="panel" style="margin-top:16px">
+      <h2>${I.flag} Announcement</h2>
+      <form id="annForm" class="grid" style="gap:10px">
+        <p class="small muted" style="margin:0">A banner at the top of the site for every signed-in player. Players can hide it for themselves.${ann?.text ? ` Showing now${ann.until ? ` until ${fmtDate(ann.until)}` : ''}.` : ''}</p>
+        <label>Message<input name="text" maxlength="280" value="${esc(ann?.text || '')}" placeholder="e.g. Pod night Friday at 7pm!"></label>
+        <label>Show until <span class="dim small">(optional)</span><input name="until" type="date" value="${ann?.until ? ann.until.slice(0, 10) : ''}"></label>
+        <div class="row"><button class="btn gold">Save announcement</button>${ann?.text ? '<button type="button" class="btn danger sm" id="annClear">Clear</button>' : ''}</div>
+      </form>
+    </section>
+
+    <section class="panel" style="margin-top:16px;overflow-x:auto">
+      <h2>${I.user} Players</h2>
+      <p class="small muted">${users.emailEnabled ? 'Password-reset emails are on.' : 'Password-reset emails are <b>off</b>: use <b>Reset link</b> and send the link yourself.'} <b>View as</b> shows the site exactly as that player sees it, read-only.</p>
+      <table class="standings admin-users"><thead><tr><th>Player</th><th>Email</th><th>Joined</th><th></th></tr></thead>
+      <tbody>${users.users.map(u => `<tr class="${u.suspended ? 'dim' : ''}"><td><b>${u.isAdmin ? esc(u.username) : plink(u.id, u.username)}</b>${u.isAdmin ? ' <span class="chip gold">admin</span>' : ''}${u.suspended ? ` <span class="chip" title="${esc(u.suspendedReason)}">suspended</span>` : ''}<div class="small muted">${esc(u.precon) || ''}</div></td>
+        <td class="small">${esc(u.email) || '<span class="dim">—</span>'}</td><td class="small muted">${new Date(u.createdAt).toLocaleDateString()}</td>
+        <td class="admin-acts">${u.id === S.me.id ? '' : `
+          <button class="btn sm" data-ua="view" data-id="${u.id}" data-name="${esc(u.username)}">View as</button>
+          <button class="btn sm" data-ua="rename" data-id="${u.id}" data-name="${esc(u.username)}">Rename</button>
+          <button class="btn sm" data-ua="reset" data-id="${u.id}" data-name="${esc(u.username)}">Reset link</button>
+          <button class="btn sm" data-ua="signout" data-id="${u.id}" data-name="${esc(u.username)}">Sign out</button>
+          <button class="btn sm ${u.suspended ? 'gold' : ''}" data-ua="${u.suspended ? 'unsuspend' : 'suspend'}" data-id="${u.id}" data-name="${esc(u.username)}">${u.suspended ? 'Un-suspend' : 'Suspend'}</button>
+          <button class="btn sm danger" data-ua="delete" data-id="${u.id}" data-name="${esc(u.username)}">${I.trash} Delete</button>`}</td></tr>`).join('')}</tbody></table>
+    </section>
+
+    <div class="league-grid admin-grid" style="margin-top:16px">
+      <section class="panel">
+        <h2>Admin log</h2>
+        <div class="admin-log">${log.entries.map(e => `<div class="al-item ${e.undoneAt ? 'undone' : ''}"><span class="small dim">${fmtWhen(e.at)}</span>
+          <div><div>${esc(e.summary)}</div>${e.reason ? `<div class="small muted">Reason: ${esc(e.reason)}</div>` : ''}${e.undoneAt ? `<div class="small dim">Undone ${fmtWhen(e.undoneAt)}</div>` : ''}</div>
+          ${e.canUndo ? `<button class="btn sm" data-undo="${e.id}">Undo</button>` : '<span></span>'}</div>`).join('') || '<p class="muted">Nothing yet.</p>'}</div>
+      </section>
+      <section class="panel">
+        <div class="spread"><h2 style="margin:0">Backups</h2><button class="btn sm gold" id="backupNow">Back up now</button></div>
+        <p class="small muted">A full copy of the database is made every 24 hours (the newest 14 are kept) in <code>pre-con-commander/data/backups</code> on the server. Downloads hold every account's email and password hash: keep them private.</p>
+        <div class="admin-backups">${backups.backups.map(b => `<div class="spread small"><span>${fmtWhen(b.at)} · ${b.auto ? 'automatic' : 'manual'} · ${kb(b.size)}</span><a class="btn sm" href="/api/admin/backups/${encodeURIComponent(b.name)}" download>Download</a></div>`).join('') || '<p class="muted">No backups yet. The first automatic one is made a minute after the site starts.</p>'}</div>
+      </section>
+    </div>`;
+
+  // ---- give packs ----
+  const gf = $('#grantForm', view);
+  if (gf) {
+    const syncMode = () => { $('#grantSetRow', gf).hidden = gf.mode.value !== 'set'; };
+    gf.mode.onchange = syncMode; syncMode();
+    $('#grantAll', gf).onclick = () => $$('input[name=u]', gf).forEach(i => { i.checked = true; });
+    $('#grantNone', gf).onclick = () => $$('input[name=u]', gf).forEach(i => { i.checked = false; });
+    gf.onsubmit = async e => {
+      e.preventDefault();
+      const userIds = $$('input[name=u]:checked', gf).map(i => i.value);
+      if (!userIds.length) return toast('Pick at least one player.', 'err');
+      try {
+        const r = await post('/admin/grants', { league: league.id, userIds, count: Number(gf.count.value), mode: gf.mode.value, setCode: gf.setCode.value, reason: gf.reason.value });
+        toast(`${I.pack} Gave ${plural(r.packIds.length, 'pack')}${r.set ? ` of ${esc(r.set.name)}` : ''}.`, 'good');
+        renderAdmin(view);
+      } catch (err) { fail(err); }
+    };
+  }
+  $$('[data-take]', view).forEach(b => b.onclick = async () => {
+    const [podId, packId] = b.dataset.take.split(':');
+    const f = await formBox(`Take back ${esc(b.dataset.who)}'s pack?`, `The unopened pack is removed. ${UNDO_NOTE}`, [{ name: 'reason', label: 'Reason (optional)' }], `${I.trash} Take it back`, true);
+    if (!f) return;
+    try { await api(`/pods/${podId}/packs/${packId}`, { method: 'DELETE', body: { reason: f.reason } }); toast('Pack taken back.', 'good'); renderAdmin(view); } catch (err) { fail(err); }
+  });
+  // ---- announcement ----
+  $('#annForm', view).onsubmit = async e => {
+    e.preventDefault();
+    const f = e.target;
+    try { await api('/admin/announcement', { method: 'PUT', body: { text: f.text.value, until: f.until.value ? `${f.until.value}T23:59:59` : null } }); toast(f.text.value.trim() ? 'Announcement is up.' : 'Announcement cleared.', 'good'); await loadState(); renderAdmin(view); } catch (err) { fail(err); }
+  };
+  $('#annClear', view)?.addEventListener('click', async () => {
+    try { await api('/admin/announcement', { method: 'PUT', body: { text: '' } }); toast('Announcement cleared.', 'good'); await loadState(); renderAdmin(view); } catch (err) { fail(err); }
+  });
+  // ---- players ----
+  $$('[data-ua]', view).forEach(b => b.onclick = async () => {
+    const { id, name } = b.dataset;
+    const who = esc(name);
+    try {
+      switch (b.dataset.ua) {
+        case 'view':
+          await post(`/admin/view-as/${id}`);
+          location.hash = '#league'; location.reload();
+          return;
+        case 'rename': {
+          const f = await formBox(`Rename ${who}`, 'Their new name shows everywhere, past pods and the feed included.', [{ name: 'username', label: 'New username', value: name, required: true, max: 20 }]);
+          if (!f) return;
+          await api(`/admin/users/${id}`, { method: 'PUT', body: { username: f.username } });
+          toast(`${who} is now ${esc(f.username)}.`, 'good'); await loadState(); break;
+        }
+        case 'reset': {
+          const r = await post(`/admin/users/${id}/reset-link`);
+          const m = $('#modal');
+          m.innerHTML = `<div class="box"><div class="dialog"><h2>Reset link for ${who}</h2>
+            <p class="muted">Send this to ${who}. It works once, for ${r.minutes} minutes.</p>
+            <pre class="list" style="white-space:pre-wrap;word-break:break-all">${esc(r.link)}</pre>
+            <div class="row" style="justify-content:flex-end"><button class="btn gold" id="cpy">${I.copy} Copy link</button><button class="btn ghost" id="cls">Close</button></div></div></div>`;
+          m.hidden = false;
+          $('#cpy', m).onclick = async () => { await navigator.clipboard.writeText(r.link).catch(() => {}); toast(`${I.copy} Reset link copied`, 'good'); };
+          $('#cls', m).onclick = () => { m.hidden = true; };
+          return;
+        }
+        case 'signout':
+          if (!await confirmBox(`Sign ${who} out everywhere?`, 'Every device they\'re signed in on has to log in again. Their account is untouched.', 'Sign out')) return;
+          await post(`/admin/users/${id}/signout`); toast(`${who} was signed out everywhere.`, 'good'); break;
+        case 'suspend': {
+          const f = await formBox(`Suspend ${who}?`, `They're signed out and can't log in until you un-suspend them. Nothing is deleted; their pods and pool stay. ${UNDO_NOTE}`, [{ name: 'reason', label: 'Reason (shown to them when they try to log in)' }], 'Suspend', true);
+          if (!f) return;
+          await post(`/admin/users/${id}/suspend`, { suspended: true, reason: f.reason }); toast(`${who} is suspended.`, 'good'); break;
+        }
+        case 'unsuspend':
+          await post(`/admin/users/${id}/suspend`, { suspended: false }); toast(`${who} can log in again.`, 'good'); break;
+        case 'delete': {
+          if (!await typedConfirm(`Delete ${who}'s account?`, `Removes their login, email, deck list and suggestions <b>for good</b> (this one can't be undone; consider <b>Suspend</b> instead). Their past pods stay in league history as <b>Deleted player</b>.`, 'DELETE', `${I.trash} Delete account`)) return;
+          await del(`/admin/users/${id}`); toast(`${who}'s account was deleted.`, 'good'); break;
+        }
+      }
+      renderAdmin(view);
+    } catch (err) { fail(err); }
+  });
+  // ---- log ----
+  $$('[data-undo]', view).forEach(b => b.onclick = async () => {
+    if (!await confirmBox('Undo this?', 'It goes back to how it was before the action.', 'Undo')) return;
+    try { await post(`/admin/log/${b.dataset.undo}/undo`); toast('Undone.', 'good'); S.history = null; S.pools = null; S.leagueDetail = null; await loadState(); renderAdmin(view); } catch (err) { fail(err); }
+  });
+  // ---- backups ----
+  $('#backupNow', view).onclick = async () => {
+    try { await post('/admin/backups'); toast('Backup made.', 'good'); renderAdmin(view); } catch (err) { fail(err); }
+  };
+}
+
+// Admin, History tab: fix a finished pod (name, winner, precons, who sat in a seat).
+async function fixPodFlow(pod) {
+  const seats = [...pod.players, ...(pod.absentees || [])];
+  const others = (S.members || []).filter(m => !seats.some(s => s.id === m.id));
+  const m = $('#modal');
+  m.innerHTML = `<div class="box"><div class="dialog"><form id="fixForm" class="grid" style="gap:10px">
+    <h2 style="margin:0">Fix ${esc(pod.name)}</h2>
+    <p class="muted small" style="margin:0">Standings, player pages and the recap follow the change. Packs aren't recounted: use <b>Admin → Give packs</b> or take one back if the winner change should move a pack. ${UNDO_NOTE}</p>
+    <label>Pod name<input name="name" value="${esc(pod.name)}" maxlength="40" required></label>
+    <label>Winner<select class="input" name="winnerId">${pod.players.map(p => `<option value="${p.id}" ${p.id === pod.winnerId ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
+    ${pod.players.map(p => `<label>${esc(p.name)}'s precon<input name="precon:${p.id}" value="${esc(p.precon || '')}" maxlength="80"></label>`).join('')}
+    ${others.length ? `<fieldset class="grid" style="gap:8px;border:1px solid var(--line);padding:10px"><legend class="small muted">Wrong person recorded? Give a seat (with its packs and cards) to someone else</legend>
+      <div class="rules-grid"><label>Seat<select class="input" name="swapFrom"><option value="">No change</option>${seats.map(s => `<option value="${s.id}">${esc(s.name)}${pod.absentees?.includes(s) ? ' (missed it)' : ''}</option>`).join('')}</select></label>
+      <label>Give it to<select class="input" name="swapTo">${others.map(o => `<option value="${o.id}">${esc(o.username)}</option>`).join('')}</select></label></div></fieldset>` : ''}
+    <label>Reason <span class="dim small">(shown in the feed)</span><input name="reason" maxlength="300"></label>
+    <div class="row" style="justify-content:flex-end"><button type="button" class="btn ghost" data-r="0">Cancel</button><button class="btn gold">Save fix</button></div>
+  </form></div></div>`;
+  m.hidden = false;
+  const close = () => { m.hidden = true; m.innerHTML = ''; };
+  $('[data-r="0"]', m).onclick = close;
+  $('#fixForm', m).onsubmit = async e => {
+    e.preventDefault();
+    const f = Object.fromEntries(new FormData(e.target));
+    const precons = Object.fromEntries(Object.entries(f).filter(([k]) => k.startsWith('precon:')).map(([k, v]) => [k.slice(7), v]));
+    const body = { name: f.name, winnerId: f.winnerId, precons, reason: f.reason, ...(f.swapFrom ? { swap: { from: f.swapFrom, to: f.swapTo } } : {}) };
+    try { await api(`/admin/pods/${pod.id}`, { method: 'PUT', body }); close(); toast(`${esc(f.name)} fixed.`, 'good'); S.history = null; S.leagueDetail = null; render(); } catch (err) { fail(err); }
+  };
+}
+
+// Admin, card zoom: move a card to another player's pool (a trade).
+async function moveCardFlow(c) {
+  const f = await formBox(`Move ${esc(c.name)}`, `It leaves its current pool and joins the other player's, with a note in the feed. ${UNDO_NOTE}`, [
+    { name: 'to', label: 'To', type: 'select', options: (S.members || []).map(m => ({ value: m.id, label: m.username })) },
+    { name: 'reason', label: 'Reason (optional)', placeholder: 'e.g. traded for Sol Ring' },
+  ], 'Move card');
+  if (!f) return;
+  try { await post(`/admin/pool-cards/${c.id}/move`, { toUserId: f.to, reason: f.reason }); toast(`${esc(c.name)} moved.`, 'good'); S.pools = null; S.history = null; render(); } catch (err) { fail(err); }
+}
+
+// Banners: the admin's announcement, and "viewing as" while the admin looks through a player's eyes.
+function paintBanners() {
+  const box = $('#banners');
+  if (!box) return;
+  const a = S.announcement;
+  let hidden = null;
+  try { hidden = localStorage.getItem('pcc:annHidden'); } catch { /* private mode */ }
+  box.innerHTML = `${S.viewAs ? `<div class="banner viewas">${I.user}<span>Viewing the site as <b>${esc(S.me.username)}</b> (read-only). Nothing can be changed until you stop.</span><button class="btn sm gold" id="stopViewAs">Stop viewing</button></div>` : ''}
+    ${a?.text && hidden !== a.id ? `<div class="banner ann">${I.flag}<span>${esc(a.text)}</span><button class="chip-x" id="annHide" title="Hide this message" aria-label="Hide this message">✕</button></div>` : ''}`;
+  $('#stopViewAs', box)?.addEventListener('click', async () => { try { await post('/admin/view-as/stop'); location.hash = '#admin'; location.reload(); } catch (err) { fail(err); } });
+  $('#annHide', box)?.addEventListener('click', () => { try { localStorage.setItem('pcc:annHidden', a.id); } catch { /* private mode */ } paintBanners(); });
+}
+
 // ---------------- live sync ----------------
 let es = null;
 function connect() {
@@ -2241,7 +2491,7 @@ function connect() {
       }
       if (S.spinning || S.opening) return;
       // Player pages and recaps are snapshots; they refresh when reopened.
-      if (S.route === 'player' || S.route === 'recap') return;
+      if (S.route === 'player' || S.route === 'recap' || S.route === 'admin') return;
       // Don't yank the page out from under someone mid-reveal or typing.
       const typing = document.activeElement && ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName);
       if (['sets', 'pods', 'account', 'pools', 'league'].includes(S.route) && typing) return;

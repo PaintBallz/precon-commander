@@ -49,9 +49,10 @@
 
     <h2>How long data is kept</h2>
     <p>Account and league data stay until you delete your account (or the admin removes it). Sign-in sessions end after 30 days; password-reset links expire after 60 minutes.</p>
+    <p>When the admin deletes league data (a pod, a pack, a card), a copy is kept in the admin log for 30 days so mistakes can be undone, then dropped. The admin log itself records admin actions (what was done, to which player, and an optional reason). The whole database is backed up once a day and the last 14 daily backups are kept on the server, so anything deleted can linger in a backup for up to 14 days.</p>
 
     <h2>Deleting your data</h2>
-    <p>Go to <b>Account → Delete account</b>. This permanently removes your username, email, password, precon name and deck list, signs you out everywhere and deletes your feature suggestions. Leagues are shared games, so the pods you played and the packs you opened stay in their history (other players' standings depend on them), but your name there is replaced with <b>Deleted player</b>. If you'd rather everything you were part of were removed, ask the admin.</p>
+    <p>Go to <b>Account → Delete account</b>. This permanently removes your username, email, password, precon name and deck list, signs you out everywhere and deletes your feature suggestions (copies in the daily backups are gone within 14 days). Leagues are shared games, so the pods you played and the packs you opened stay in their history (other players' standings depend on them), but your name there is replaced with <b>Deleted player</b>. If you'd rather everything you were part of were removed, ask the admin.</p>
 
     <h2>Children</h2>
     <p>The site isn't meant for anyone under 13, and sign-up requires confirming you're 13 or older. If a child under 13 has signed up, contact the admin and the account will be deleted.</p>

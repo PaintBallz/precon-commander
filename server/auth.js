@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { db } from './db.js';
 import { sendMail, mailEnabled } from './mail.js';
 import { clientIp } from './ratelimit.js';
+import { logAdmin } from './adminlog.js';
 
 const COOKIE = 'pcc_sid';
 const SESSION_DAYS = 30;
@@ -26,7 +27,7 @@ export function passwordProblem(pw) {
   if (!/[A-Za-z]/.test(pw) || !/[0-9]/.test(pw)) return 'Password needs at least one letter and one number.';
   return null;
 }
-function checkUsername(u) {
+export function checkUsername(u) {
   if (!USERNAME_RE.test(u)) throw new AuthError(400, 'Username must be 3–20 letters, numbers, _ or -.');
 }
 function checkEmail(e) {
@@ -57,9 +58,10 @@ const DUMMY_HASH = hashPassword(crypto.randomBytes(16).toString('hex'));
 const now = () => new Date().toISOString();
 
 // ---------- users ----------
-const userCols = 'id, username, email, is_admin, must_change, precon, created_at';
+const userCols = 'id, username, email, is_admin, must_change, precon, created_at, suspended_at, suspended_reason';
 export function publicUser(r) {
-  return r && { id: r.id, username: r.username, email: r.email || '', isAdmin: !!r.is_admin, mustChange: !!r.must_change, precon: r.precon || '', createdAt: r.created_at };
+  return r && { id: r.id, username: r.username, email: r.email || '', isAdmin: !!r.is_admin, mustChange: !!r.must_change, precon: r.precon || '', createdAt: r.created_at,
+    ...(r.suspended_at ? { suspended: true, suspendedAt: r.suspended_at, suspendedReason: r.suspended_reason || '' } : {}) };
 }
 export const getUser = id => db.prepare(`SELECT ${userCols} FROM users WHERE id = ?`).get(id);
 export const setPrecon = (id, precon) => db.prepare('UPDATE users SET precon = ? WHERE id = ?').run(String(precon).trim().slice(0, 80), id);
@@ -101,13 +103,26 @@ function endSession(req, res) {
   if (t) db.prepare('DELETE FROM sessions WHERE token = ?').run(t);
   res.setHeader('Set-Cookie', `${COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
 }
-function sessionUser(req) {
-  const t = parseCookies(req.headers.cookie)[COOKIE];
+export const sessionToken = req => parseCookies(req.headers.cookie)[COOKIE] || null;
+// The signed-in user and their session. A suspended account has no session.
+function sessionOf(req) {
+  const t = sessionToken(req);
   if (!t) return null;
-  const s = db.prepare('SELECT user_id, expires_at FROM sessions WHERE token = ?').get(t);
+  const s = db.prepare('SELECT user_id, expires_at, view_as FROM sessions WHERE token = ?').get(t);
   if (!s || s.expires_at < Date.now()) { if (s) db.prepare('DELETE FROM sessions WHERE token = ?').run(t); return null; }
-  return getUser(s.user_id) || null;
+  const user = getUser(s.user_id);
+  if (!user || user.suspended_at) return null;
+  return { token: t, user, viewAs: user.is_admin && s.view_as ? getUser(s.view_as) : null };
 }
+const sessionUser = req => sessionOf(req)?.user || null;
+// The admin's "view as player": this session sees the site as that player,
+// read-only, until the admin stops.
+export function setViewAs(req, userId) {
+  const t = sessionToken(req);
+  if (t) db.prepare('UPDATE sessions SET view_as = ? WHERE token = ?').run(userId || null, t);
+}
+// Signs a player out on every device.
+export const endAllSessions = userId => db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId).changes;
 
 // ---------- login throttling ----------
 const failures = new Map();   // key -> [timestamps]
@@ -128,13 +143,21 @@ const noteFailure = key => failures.set(key, [...(failures.get(key) || []), Date
 // Every /api route except the ones below needs a signed-in user. An account
 // still on its default password can only reach /api/auth/* until it's changed.
 const OPEN = new Set(['/auth/me', '/auth/login', '/auth/signup', '/auth/forgot', '/auth/reset', '/auth/logout']);
+// The only changes allowed while the admin views the site as a player.
+const VIEW_AS_WRITES = new Set(['/admin/view-as/stop', '/auth/logout']);
 export function requireAuth(req, res, next) {
   if (req.method !== 'GET' && !req.is('application/json')) return res.status(415).json({ error: 'Send JSON.' });
   if (OPEN.has(req.path)) return next();
-  const u = sessionUser(req);
-  if (!u) return res.status(401).json({ error: 'Please log in.', loggedOut: true });
-  req.user = publicUser(u);
+  const s = sessionOf(req);
+  if (!s) return res.status(401).json({ error: 'Please log in.', loggedOut: true });
+  req.user = publicUser(s.user);
   if (req.user.mustChange && !req.path.startsWith('/auth/')) return res.status(403).json({ error: 'Change your password first.', mustChange: true });
+  if (s.viewAs) {
+    // Viewing as a player: every answer is what they'd see; nothing can be changed.
+    req.realUser = req.user;
+    req.user = { ...publicUser(s.viewAs), viewAs: true };
+    if (req.method !== 'GET' && !VIEW_AS_WRITES.has(req.path)) return res.status(403).json({ error: `You're viewing the site as ${req.user.username} (read-only). Stop viewing to make changes.`, viewAs: true });
+  }
   next();
 }
 export function requireAdmin(req) {
@@ -144,8 +167,9 @@ export function requireAdmin(req) {
 // ---------- routes (mounted under /api) ----------
 export function authRoutes(app, wrap, onChange = () => {}) {
   app.get('/api/auth/me', (req, res) => {
-    const u = sessionUser(req);
-    res.json({ user: publicUser(u), passwordRules: PASSWORD_RULES, emailEnabled: mailEnabled() });
+    const s = sessionOf(req);
+    const user = s?.viewAs ? { ...publicUser(s.viewAs), viewAs: true } : publicUser(s?.user) || null;
+    res.json({ user, ...(s?.viewAs ? { viewAs: { admin: s.user.username } } : {}), passwordRules: PASSWORD_RULES, emailEnabled: mailEnabled() });
   });
 
   app.post('/api/auth/signup', wrap(async (req, res) => {
@@ -180,6 +204,7 @@ export function authRoutes(app, wrap, onChange = () => {}) {
       noteFailure(key); noteFailure(ipKey);
       throw new AuthError(401, 'Wrong username or password.');
     }
+    if (u.suspended_at) throw new AuthError(403, `This account is suspended${u.suspended_reason ? `: ${u.suspended_reason}` : ''}. Ask the admin.`);
     failures.delete(key);
     startSession(req, res, u.id);
     res.json({ user: publicUser(getUser(u.id)) });
@@ -265,14 +290,18 @@ export function authRoutes(app, wrap, onChange = () => {}) {
   app.delete('/api/admin/users/:id', wrap(async (req, res) => {
     requireAdmin(req);
     if (req.params.id === req.user.id) throw new AuthError(409, 'You can\'t delete your own admin account.');
+    const target = getUser(req.params.id);
     if (!deleteAccount(req.params.id)) throw new AuthError(404, 'User not found');
+    logAdmin(req, { action: 'delete-user', summary: `Deleted ${target.username}'s account (can't be undone).`, reason: req.body?.reason });
     onChange();
     res.json({ ok: true });
   }));
   // A reset link the admin can hand over directly (works without email).
   app.post('/api/admin/users/:id/reset-link', wrap(async (req, res) => {
     requireAdmin(req);
-    if (!getUser(req.params.id)) throw new AuthError(404, 'User not found');
+    const target = getUser(req.params.id);
+    if (!target) throw new AuthError(404, 'User not found');
+    logAdmin(req, { action: 'reset-link', summary: `Made a password-reset link for ${target.username}.` });
     res.json({ link: createResetLink(req.params.id), minutes: RESET_MINUTES });
   }));
 }

@@ -694,6 +694,174 @@ test('deck lists: pasted or linked, looked up on Scryfall, shown on the player p
   assert.deepEqual(again.commanders, ["Atraxa, Praetors' Voice"], 'a "Commander" section marks the commander');
 });
 
+test('admin log: a deleted card is kept for undo and comes back exactly', async () => {
+  assert.equal((await nick.get('/api/admin/log')).status, 403, 'players can\'t read the admin log');
+  const pool = (await ok(nick.get('/api/pools'))).pools.find(p => p.username === 'Nick');
+  const card = pool.packs[0].cards[0];
+  await ok(admin.del(`/api/pool-cards/${card.id}`));
+  const has = async id => (await ok(nick.get('/api/pools'))).pools.find(p => p.username === 'Nick').packs.some(k => k.cards.some(c => c.id === id));
+  assert.equal(await has(card.id), false);
+  const entry = (await ok(admin.get('/api/admin/log'))).entries.find(e => e.summary.includes(card.name) && e.canUndo);
+  assert.ok(entry, 'the delete is in the log with Undo');
+  assert.equal((await nick.post(`/api/admin/log/${entry.id}/undo`)).status, 403);
+  await ok(admin.post(`/api/admin/log/${entry.id}/undo`));
+  assert.equal(await has(card.id), true, 'same card, same id, back in the pool');
+  assert.equal((await admin.post(`/api/admin/log/${entry.id}/undo`)).status, 409, 'only once');
+  assert.ok((await ok(admin.get('/api/admin/log'))).entries.some(e => e.summary.startsWith('Undid:')));
+});
+
+test('pack manager: give packs (a set, the wheel, their choice), open them, take back, undo', async () => {
+  const set = S.sets.find(s => s.realPack) || S.sets[0];
+  const standing = async name => (await ok(eve.get(`/api/leagues/${S.league}`))).standings.find(s => s.name === name);
+  const historyBefore = (await ok(nick.get('/api/history'))).pods.length;
+  const mikeBefore = await standing('Mike');
+  assert.equal((await nick.post('/api/admin/grants', { league: S.league, userIds: [S.u.Mike.id], mode: 'set', setCode: set.code })).status, 403);
+  assert.equal((await admin.post('/api/admin/grants', { league: S.league, userIds: [S.u.Gus.id], mode: 'set', setCode: set.code })).status, 400, 'only league members');
+  assert.equal((await admin.post('/api/admin/grants', { league: S.league, userIds: [S.u.Mike.id], count: 11, mode: 'set', setCode: set.code })).status, 400);
+  const g = await ok(admin.post('/api/admin/grants', { league: S.league, userIds: [S.u.Mike.id, S.u.Eve.id], count: 2, mode: 'set', setCode: set.code, reason: 'league prize' }));
+  assert.equal(g.packIds.length, 4);
+  const pending = (await ok(mike.get('/api/state'))).pending.filter(k => k.grant);
+  assert.equal(pending.length, 2, 'Mike sees his two packs waiting');
+  assert.equal(pending[0].note, 'league prize');
+  const { pack } = await ok(mike.post(`/api/pods/${pending[0].podId}/packs/${pending[0].packId}/open`));
+  assert.ok(pack.cards.length >= 10, 'opens like any pack');
+  const mikeAfter = await standing('Mike');
+  assert.equal(mikeAfter.pods, mikeBefore.pods, 'not counted as a pod played');
+  assert.equal(mikeAfter.packs, mikeBefore.packs + 1, 'counted as an opened pack');
+  assert.equal((await ok(nick.get('/api/history'))).pods.length, historyBefore, 'History is unchanged');
+  assert.ok((await ok(mike.get('/api/pools'))).pools.find(p => p.username === 'Mike').packs.some(k => k.kind === 'grant'), 'the pulls are in his pool');
+  const feed = (await ok(nick.get(`/api/leagues/${S.league}`))).events.map(e => e.text).join('\n');
+  assert.match(feed, /The admin gave Mike and Eve 2 .+ packs each \(league prize\)\./);
+  // Take one back, then undo it.
+  await ok(admin.del(`/api/pods/${pending[1].podId}/packs/${pending[1].packId}`));
+  assert.equal((await ok(mike.get('/api/state'))).pending.filter(k => k.grant).length, 0);
+  const took = (await ok(admin.get('/api/admin/log'))).entries.find(e => e.summary.startsWith("Took Mike's unopened"));
+  await ok(admin.post(`/api/admin/log/${took.id}/undo`));
+  assert.equal((await ok(mike.get('/api/state'))).pending.filter(k => k.grant).length, 1, 'the pack is back');
+  // Their choice: the player picks the set.
+  await ok(admin.post('/api/admin/grants', { league: S.league, userIds: [S.u.Fay.id], mode: 'choice' }));
+  const choice = (await ok(fay.get('/api/state'))).pending.find(k => k.grant);
+  assert.equal(choice.status, 'choosing');
+  await ok(fay.post(`/api/pods/${choice.podId}/packs/${choice.packId}/choose`, { setCode: set.code }));
+  assert.equal((await ok(fay.get('/api/state'))).pending.find(k => k.packId === choice.packId).status, 'ready');
+  // The wheel: one spin of the league's wheel.
+  const w = await ok(admin.post('/api/admin/grants', { league: S.league, userIds: [S.u.Dan.id], mode: 'wheel' }));
+  assert.ok(w.set?.code, 'the wheel picked a set');
+  const wheelGrant = (await ok(admin.get('/api/admin/log'))).entries.find(e => e.summary.includes('spun on the wheel'));
+  await ok(admin.post(`/api/admin/log/${wheelGrant.id}/undo`));
+  assert.equal((await ok(dan.get('/api/state'))).pending.filter(k => k.grant).length, 0, 'undoing a grant removes its unopened packs');
+  const unopened = await ok(admin.get(`/api/admin/packs?league=${S.league}`));
+  assert.ok(unopened.players.find(p => p.username === 'Eve').packs.length >= 2, 'the admin sees every unopened pack');
+});
+
+test('move a card to another player\'s pool, and undo', async () => {
+  const pools = async () => (await ok(nick.get('/api/pools'))).pools;
+  const card = (await pools()).find(p => p.username === 'Nick').packs.find(k => !k.kind).cards[0];
+  const danPacks = (await ok(eve.get(`/api/leagues/${S.league}`))).standings.find(s => s.name === 'Dan').packs;
+  assert.equal((await admin.post(`/api/admin/pool-cards/${card.id}/move`, { toUserId: S.u.Nick.id })).status, 400, 'already theirs');
+  assert.equal((await admin.post(`/api/admin/pool-cards/${card.id}/move`, { toUserId: S.u.Gus.id })).status, 400, 'same league only');
+  await ok(admin.post(`/api/admin/pool-cards/${card.id}/move`, { toUserId: S.u.Dan.id, reason: 'trade' }));
+  let p = await pools();
+  assert.ok(!p.find(x => x.username === 'Nick').packs.some(k => k.cards.some(c => c.id === card.id)), 'gone from Nick\'s pool');
+  const moved = p.find(x => x.username === 'Dan').packs.find(k => k.cards.some(c => c.id === card.id));
+  assert.equal(moved.kind, 'trade');
+  assert.match(moved.note, /From Nick \(trade\)/);
+  assert.equal((await ok(eve.get(`/api/leagues/${S.league}`))).standings.find(s => s.name === 'Dan').packs, danPacks, 'a moved card isn\'t an opened pack');
+  const entry = (await ok(admin.get('/api/admin/log'))).entries.find(e => e.summary.startsWith(`The admin moved ${card.name}`));
+  await ok(admin.post(`/api/admin/log/${entry.id}/undo`));
+  p = await pools();
+  assert.ok(p.find(x => x.username === 'Nick').packs.some(k => k.cards.some(c => c.id === card.id)), 'back with Nick');
+});
+
+test('fix a finished pod: winner, precons and who sat in a seat; undo restores it', async () => {
+  const hal = client();
+  S.u.Hal = (await ok(hal.post('/api/auth/signup', { agree: true, username: 'Hal', email: 'hal@example.com', password: PW }))).user;
+  S.hal = hal;
+  await ok(admin.post(`/api/leagues/${S.league}/members`, { userId: S.u.Hal.id }));
+  const row = async name => (await ok(eve.get(`/api/leagues/${S.league}`))).standings.find(s => s.name === name) || { wins: 0, packs: 0 };
+  const [nickWins, mikeWins, fayPacks] = [(await row('Nick')).wins, (await row('Mike')).wins, (await row('Fay')).packs];
+  assert.equal((await nick.put(`/api/admin/pods/${S.pod.id}`, { winnerId: S.u.Mike.id })).status, 403);
+  assert.equal((await admin.put(`/api/admin/pods/${S.pod.id}`, { winnerId: S.u.Eve.id })).status, 400, 'the winner must have played');
+  assert.equal((await admin.put(`/api/admin/pods/${S.pod.id}`, { swap: { from: S.u.Fay.id, to: S.u.Joe.id } })).status, 409, 'not someone already in the pod');
+  await ok(admin.put(`/api/admin/pods/${S.pod.id}`, { winnerId: S.u.Mike.id, precons: { [S.u.Mike.id]: 'Fixed Precon' }, swap: { from: S.u.Fay.id, to: S.u.Hal.id }, reason: 'scorekeeping' }));
+  assert.equal((await row('Nick')).wins, nickWins - 1, 'standings follow');
+  assert.equal((await row('Mike')).wins, mikeWins + 1);
+  const { pod } = await ok(nick.get(`/api/pods/${S.pod.id}`));
+  assert.equal(pod.winnerId, S.u.Mike.id);
+  assert.equal(pod.players.find(p => p.id === S.u.Mike.id).precon, 'Fixed Precon');
+  assert.ok(pod.absentees.some(a => a.id === S.u.Hal.id && a.name === 'Hal') && !pod.absentees.some(a => a.id === S.u.Fay.id), 'Fay\'s seat is Hal\'s now');
+  assert.equal((await row('Hal')).packs, 1, 'with its pack');
+  assert.match((await ok(nick.get(`/api/leagues/${S.league}`))).events[0].text, /The admin fixed Pod 1: winner is now Mike.+\(scorekeeping\)/);
+  const entry = (await ok(admin.get('/api/admin/log'))).entries.find(e => e.summary.startsWith('The admin fixed Pod 1'));
+  await ok(admin.post(`/api/admin/log/${entry.id}/undo`));
+  const back = (await ok(nick.get(`/api/pods/${S.pod.id}`))).pod;
+  assert.equal(back.winnerId, S.u.Nick.id, 'undo puts the old pod back');
+  assert.ok(back.absentees.some(a => a.id === S.u.Fay.id));
+  assert.equal((await row('Fay')).packs, fayPacks);
+  await ok(admin.del(`/api/leagues/${S.league}/members/${S.u.Hal.id}`));
+});
+
+test('player tools: rename, suspend, sign out everywhere, view as (read-only)', async () => {
+  const hal = S.hal;
+  await ok(admin.put(`/api/admin/users/${S.u.Hal.id}`, { username: 'Halbert' }));
+  assert.equal((await ok(hal.get('/api/auth/me'))).user.username, 'Halbert');
+  assert.equal((await admin.put(`/api/admin/users/${S.u.Hal.id}`, { username: 'Nick' })).status, 409, 'names stay unique');
+  const rename = (await ok(admin.get('/api/admin/log'))).entries.find(e => e.summary === 'Renamed Hal to Halbert.');
+  await ok(admin.post(`/api/admin/log/${rename.id}/undo`));
+  assert.equal((await ok(hal.get('/api/auth/me'))).user.username, 'Hal');
+
+  await ok(admin.post(`/api/admin/users/${S.u.Hal.id}/suspend`, { suspended: true, reason: 'cooling off' }));
+  assert.equal((await hal.get('/api/state')).status, 401, 'signed out at once');
+  const refused = await hal.post('/api/auth/login', { username: 'Hal', password: PW });
+  assert.equal(refused.status, 403);
+  assert.match(refused.json.error, /suspended: cooling off/);
+  assert.ok((await ok(admin.get('/api/admin/users'))).users.find(u => u.username === 'Hal').suspended);
+  await ok(admin.post(`/api/admin/users/${S.u.Hal.id}/suspend`, { suspended: false }));
+  await ok(hal.post('/api/auth/login', { username: 'Hal', password: PW }));
+  await ok(admin.post(`/api/admin/users/${S.u.Hal.id}/signout`));
+  assert.equal((await hal.get('/api/state')).status, 401, 'signed out everywhere');
+
+  await ok(admin.post(`/api/admin/view-as/${S.u.Nick.id}`));
+  const me = await ok(admin.get('/api/auth/me'));
+  assert.equal(me.user.username, 'Nick');
+  assert.ok(me.viewAs?.admin);
+  assert.equal((await ok(admin.get('/api/state'))).me.username, 'Nick', 'the site answers as Nick');
+  const blocked = await admin.post('/api/pods', { players: [] });
+  assert.equal(blocked.status, 403);
+  assert.ok(blocked.json.viewAs, 'nothing can be changed while viewing');
+  assert.equal((await admin.get('/api/admin/overview')).status, 403, 'and admin tools are off');
+  await ok(admin.post('/api/admin/view-as/stop'));
+  assert.ok((await ok(admin.get('/api/auth/me'))).user.isAdmin, 'back to the admin');
+  assert.equal((await nick.post(`/api/admin/view-as/${S.u.Mike.id}`)).status, 403);
+  await ok(admin.del(`/api/admin/users/${S.u.Hal.id}`)); // keep later league tests' player counts as they were
+  assert.ok((await ok(admin.get('/api/admin/log'))).entries.some(e => e.summary === "Deleted Hal's account (can't be undone)." && !e.canUndo));
+});
+
+test('announcement, dashboard and backups', async () => {
+  assert.equal((await nick.put('/api/admin/announcement', { text: 'hi' })).status, 403);
+  await ok(admin.put('/api/admin/announcement', { text: 'Pod night Friday at 7pm!' }));
+  assert.equal((await ok(nick.get('/api/state'))).announcement.text, 'Pod night Friday at 7pm!');
+  await ok(admin.put('/api/admin/announcement', { text: 'Old news', until: '2020-01-01' }));
+  assert.equal((await ok(nick.get('/api/state'))).announcement, null, 'past its end date');
+  await ok(admin.put('/api/admin/announcement', { text: '' }));
+
+  const o = await ok(admin.get('/api/admin/overview'));
+  assert.ok(o.counts.players >= 5 && o.counts.activeLeagues >= 1);
+  assert.equal(o.email.enabled, false);
+  assert.ok('refused24h' in o.limits && o.log.length);
+  assert.equal((await nick.get('/api/admin/overview')).status, 403);
+
+  assert.equal((await nick.post('/api/admin/backups')).status, 403);
+  const { backup } = await ok(admin.post('/api/admin/backups'));
+  assert.match(backup.name, /^app-manual-\d{4}-\d{2}-\d{2}-\d{6}\.db$/);
+  const file = await admin.get(`/api/admin/backups/${backup.name}`);
+  assert.equal(file.status, 200);
+  assert.ok(file.text.startsWith('SQLite format 3'), 'a real database file');
+  assert.equal((await admin.get('/api/admin/backups/..%2Fapp.db')).status, 404, 'no paths');
+  assert.equal((await nick.get(`/api/admin/backups/${backup.name}`)).status, 403);
+  assert.ok((await ok(admin.get('/api/admin/backups'))).backups.some(b => b.name === backup.name));
+});
+
 test('the admin can skip a stuck vote; a league can turn the vote off', async () => {
   const three = (await ok(eve.post('/api/pods', { players: ['Eve', 'Joe', 'Dan'].map(n => ({ userId: S.u[n].id })) }))).pod;
   await ok(eve.post(`/api/pods/${three.id}/winner`, { playerId: S.u.Eve.id }));
@@ -853,7 +1021,7 @@ test('only the admin can delete pods; history and pools follow', async () => {
   assert.equal((await nickRow()).pods, rowBefore - 1, 'cached standings refresh after a change');
   assert.equal(await nickPage(), pageBefore - 1, 'cached player pages refresh after a change');
   assert.equal((await ok(eve.get('/api/history'))).pods.length, 0, 'finished pod left History');
-  assert.ok((await ok(eve.get('/api/pools'))).pools.every(p => !p.packs.length && !p.pods.length), 'and every pool');
+  assert.ok((await ok(eve.get('/api/pools'))).pools.every(p => p.packs.every(k => k.kind) && !p.pods.length), 'and every pool (only admin-given packs and moved cards stay)');
 
   const db = new DatabaseSync(path.join(DATA_DIR, 'app.db'), { readOnly: true });
   try {
@@ -877,10 +1045,11 @@ test('admin can clear a league\'s history; running pods stay', async () => {
   const st = await ok(eve.get('/api/state'));
   assert.deepEqual(st.pods.map(p => p.id), [running.id], 'the running pod is untouched');
   const evePool = (await ok(eve.get('/api/pools'))).pools.find(p => p.username === 'Eve');
-  assert.ok(evePool.packs.length === 1 && evePool.packs.every(k => k.podId === running.id), 'pools keep only the running pod\'s cards');
+  const evePods = evePool.packs.filter(k => !k.kind);
+  assert.ok(evePods.length === 1 && evePods.every(k => k.podId === running.id), 'pools keep only the running pod\'s cards (and admin-given packs)');
   const db = new DatabaseSync(path.join(DATA_DIR, 'app.db'), { readOnly: true });
   try {
-    assert.equal(db.prepare(`SELECT count(*) n FROM pods WHERE status IN ('done','discarded') AND league_id = ?`).get(S.league).n, 0, 'the discarded wheel-test pods are gone too');
+    assert.equal(db.prepare(`SELECT count(*) n FROM pods WHERE status IN ('done','discarded') AND kind = 'pod' AND league_id = ?`).get(S.league).n, 0, 'the discarded wheel-test pods are gone too');
   } finally { db.close(); }
   await ok(eve.post(`/api/pods/${running.id}/discard`));
 });
