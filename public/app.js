@@ -55,6 +55,7 @@ async function loadState() {
   S.viewLeague = st.league?.id || null;
   S.feedbackNew = st.feedbackNew || 0;
   S.announcement = st.announcement || null; S.viewAs = st.viewAs || null;
+  S.tradesWaiting = st.tradesWaiting || 0;
   paintMe();
   paintBanners();
   paintLeaguePicker();
@@ -62,7 +63,7 @@ async function loadState() {
 // Switch the whole app to another league (header picker, joining, creating…).
 async function showLeague(id) {
   S.viewLeague = id || null;
-  S.leagueDetail = null; S.history = null; S.pools = null; S.podId = null;
+  S.leagueDetail = null; S.history = null; S.pools = null; S.trades = null; S.tb = null; S.podId = null;
   await Promise.all([loadState(), loadSets()]);
   render();
 }
@@ -118,6 +119,7 @@ function paintMe() {
   const inApp = !!S.me && !S.me.mustChange;
   $('#fbBtn').hidden = !inApp; $('#fbOr').hidden = !inApp;
   $('#adminTab').hidden = !isAdmin();
+  $('#tradesTab').innerHTML = `Trades${S.tradesWaiting ? ` <span class="tbadge" title="${plural(S.tradesWaiting, 'offer')} waiting for you">${S.tradesWaiting}</span>` : ''}`;
 }
 const soundBtn = $('#soundBtn');
 const paintSound = () => { soundBtn.innerHTML = S.sound ? I.sound : I.mute; };
@@ -240,7 +242,7 @@ async function copyText(text, what = 'List') {
 }
 
 // ---------------- routing ----------------
-const ROUTES = ['league', 'pods', 'wheel', 'packs', 'pools', 'sets', 'history', 'fun', 'account', 'player', 'recap', 'admin'];
+const ROUTES = ['league', 'pods', 'wheel', 'packs', 'pools', 'sets', 'history', 'fun', 'account', 'player', 'recap', 'admin', 'trades'];
 function parseRoute() {
   const [r, q] = location.hash.replace(/^#/, '').split('?');
   S.route = ROUTES.includes(r) ? r : 'pods';
@@ -259,7 +261,7 @@ function render() {
   $$('#tabs a').forEach(a => a.classList.toggle('active', a.dataset.tab === (S.route === 'player' || S.route === 'recap' ? 'league' : S.route)));
   const view = $('#view');
   if (S.route !== 'wheel') stopWheelLoop();
-  ({ league: renderLeague, pods: renderPods, wheel: renderWheel, packs: renderPacks, pools: renderPools, sets: renderSets, history: renderHistory, fun: renderFun, account: renderAccount, player: renderPlayer, recap: renderRecap, admin: renderAdmin })[S.route](view);
+  ({ league: renderLeague, pods: renderPods, wheel: renderWheel, packs: renderPacks, pools: renderPools, sets: renderSets, history: renderHistory, fun: renderFun, account: renderAccount, player: renderPlayer, recap: renderRecap, admin: renderAdmin, trades: renderTrades })[S.route](view);
 }
 
 function confirmBox(title, body, okLabel = 'OK', danger = false) {
@@ -459,7 +461,7 @@ async function renderAccount(view) {
 
 // =============== LEAGUE TAB ===============
 const LIMITS = { min: 3, max: 16, podMin: 3, podMax: 4 };
-const FEED_ICONS = { win: 'crown', vote: 'vote', spin: 'wheel', pull: 'spark', clear: 'trash', end: 'flag', league: 'flag', join: 'user', leave: 'x', pod: 'play', rules: 'sliders', discard: 'x', finish: 'check' };
+const FEED_ICONS = { win: 'crown', vote: 'vote', spin: 'wheel', pull: 'spark', clear: 'trash', end: 'flag', league: 'flag', join: 'user', leave: 'x', pod: 'play', rules: 'sliders', discard: 'x', finish: 'check', trade: 'trade' };
 const LEADING_EMOJI = /^\p{Extended_Pictographic}\uFE0F?\s*/u;
 const fmtWhen = iso => new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 async function refreshLeague() { S.leagueDetail = null; S.history = null; S.pools = null; await Promise.all([loadState(), loadSets()]); render(); }
@@ -1799,6 +1801,211 @@ async function renderPools(view) {
   $('#ps', view).onchange = e => { poolFilter.sort = e.target.value; paint(); };
 }
 
+// =============== TRADES TAB ===============
+// Two players swap pool cards. An offer waits until the other player answers
+// (accept, decline or counter with different cards), so nobody has to be
+// online at the same time. Incoming / Sent / History list the trades with
+// their card images; "New trade" and "Counter" open the builder: both pools
+// side by side, click cards to add them, then send.
+const tradeSides = (t, o = t.offers.at(-1)) => {
+  // Cards from my side of an offer: what I give and what I get.
+  const give = o.cards.filter(c => (o.mine ? c.side === 'give' : c.side === 'get'));
+  const get = o.cards.filter(c => (o.mine ? c.side === 'get' : c.side === 'give'));
+  return { give, get };
+};
+const tradeBox = t => (t.status !== 'open' ? 'history' : t.turn === 'me' ? 'incoming' : 'sent');
+function tcardHtml(c, { gone = false, small = false } = {}) {
+  return `<button type="button" class="tcard r-${esc(c.rarity)} ${c.foil ? 'foil' : ''} ${gone ? 'gone' : ''} ${small ? 'small' : ''}" data-zoom="${c.id}" title="${esc(c.name)}${gone ? ' (no longer available)' : ''}">
+    <img ${cardSrc(c.image, small ? '64px' : '110px')} alt="${esc(c.name)}" loading="lazy">${gone ? '<span class="tc-tag">gone</span>' : c.foil ? '<span class="tc-tag">foil</span>' : ''}</button>`;
+}
+function tradeStrip(cards, label, missing = [], small = false) {
+  return `<div class="tside"><div class="tside-head">${label} <span class="dim">${cards.length ? plural(cards.length, 'card') : 'nothing'}</span></div>
+    <div class="tstrip">${cards.map(c => tcardHtml(c, { gone: missing.includes(c.id), small })).join('') || `<span class="tempty">${small ? '—' : 'Nothing in return'}</span>`}</div></div>`;
+}
+const STATUS_TEXT = { accepted: 'Accepted', declined: 'Declined', cancelled: 'Cancelled', closed: 'Closed' };
+function tradeCardHtml(t) {
+  const o = t.offers.at(-1);
+  const { give, get } = tradeSides(t);
+  const other = plink(t.other.id, t.other.name);
+  const counters = t.offers.length - 1;
+  const head = t.status === 'open'
+    ? (t.turn === 'me' ? `${other} ${o.round === 1 ? 'sent you an offer' : 'countered'}` : `You ${o.round === 1 ? 'offered' : 'countered'} ${other}`)
+    : `Trade with ${other}`;
+  const chip = t.status === 'open'
+    ? (t.turn === 'me' ? '<span class="chip gold">Your turn</span>' : `<span class="chip">Waiting on ${esc(t.other.name)}</span>`)
+    : `<span class="chip ${t.status === 'accepted' ? 'ok' : ''}">${STATUS_TEXT[t.status]}</span>`;
+  const closed = t.status === 'open' ? '' : `<p class="small muted tnote">${STATUS_TEXT[t.status]}${t.closedBy ? ` by ${t.closedBy === S.me.id ? 'you' : esc(t.other.name)}` : ''} · ${fmtWhen(t.closedAt)}${t.closeNote ? ` · ${esc(t.closeNote)}` : ''}</p>`;
+  const earlier = t.offers.slice(0, -1).reverse();
+  return `<article class="panel trade" data-trade="${t.id}">
+    <div class="trade-head"><span class="trade-who">${I.trade}<span>${head}</span></span><span class="small dim">${counters ? `round ${o.round} · ` : ''}${ago(o.at)}</span><span class="grow"></span>${chip}</div>
+    <div class="trade-sides">${tradeStrip(give, 'You give', t.missing)}<div class="tswap" aria-hidden="true">${I.trade}</div>${tradeStrip(get, 'You get', t.missing)}</div>
+    ${o.note ? `<p class="tnote"><span class="dim">${o.mine ? 'Your note' : `${esc(o.fromName)} says`}:</span> ${esc(o.note)}</p>` : ''}
+    ${t.missing.length && t.status === 'open' ? `<p class="small tnote" style="color:var(--danger)">${plural(t.missing.length, 'card')} in this offer ${t.missing.length === 1 ? 'has' : 'have'} left ${t.missing.length === 1 ? 'its' : 'their'} pool, so it can't be accepted as it is.</p>` : ''}
+    ${closed}
+    ${earlier.length ? `<details class="trounds"><summary class="small muted">Earlier offers (${earlier.length})</summary>${earlier.map(e => {
+      const s = tradeSides(t, e);
+      return `<div class="tround"><div class="small dim">${e.mine ? 'You' : esc(e.fromName)} ${e.round === 1 ? 'offered' : 'countered'} · ${fmtWhen(e.at)}${e.note ? ` · “${esc(e.note)}”` : ''}</div>
+        <div class="trade-sides">${tradeStrip(s.give, 'You give', [], true)}<div class="tswap" aria-hidden="true">${I.trade}</div>${tradeStrip(s.get, 'You get', [], true)}</div></div>`;
+    }).join('')}</details>` : ''}
+    ${t.status === 'open' ? `<div class="row trade-acts">${t.turn === 'me'
+      ? `<button class="btn ghost" data-act="decline">${I.x} Decline</button><button class="btn" data-act="counter">${I.trade} Counter</button><button class="btn gold" data-act="accept">${I.check} Accept</button>`
+      : `<button class="btn ghost" data-act="cancel">${I.x} Cancel offer</button>`}</div>` : ''}
+  </article>`;
+}
+
+async function loadTrades() { S.trades = await api('/trades' + lq()); return S.trades; }
+async function renderTrades(view) {
+  if (!S.trades || S.trades.leagueId !== (S.viewLeague || S.trades.leagueId)) {
+    view.innerHTML = '<div class="spinner"></div>';
+    try { await loadTrades(); } catch (err) { fail(err); return; }
+    if (S.route !== 'trades') return;
+  }
+  if (S.params.new || S.params.counter) return renderTradeBuilder(view);
+  S.tb = null;
+  const d = S.trades;
+  const box = ['incoming', 'sent', 'history'].includes(S.params.box) ? S.params.box : (d.trades.some(t => tradeBox(t) === 'incoming') || !d.trades.length ? 'incoming' : 'sent');
+  const list = d.trades.filter(t => tradeBox(t) === box);
+  const n = b => d.trades.filter(t => tradeBox(t) === b).length;
+  const empty = { incoming: 'No offers waiting for you.', sent: 'You have no offers waiting on someone else.', history: 'Finished trades show up here.' }[box];
+  view.innerHTML = `
+    <div class="hero"><div><h1>Trades</h1><p>Swap pool cards with anyone in ${esc(S.league?.name || 'your league')}: any number of cards for any number. An offer waits until the other player accepts, declines or counters it, and accepted cards change pools straight away.</p></div>
+      ${d.canTrade ? `<a class="btn gold" href="#trades?new=1">${I.trade} New trade</a>` : ''}</div>
+    ${d.canTrade ? '' : `<div class="panel small muted" style="margin-bottom:16px">${isAdmin() ? 'Trading is between league members, so the admin account can\'t trade. Use “Move to…” on a card to move it yourself.' : S.league?.status === 'ended' ? 'This league has ended, so trading is closed. Its trades stay here as a record.' : 'Join this league to trade with its players.'}</div>`}
+    <div class="player-tabs">
+      <a href="#trades?box=incoming" class="${box === 'incoming' ? 'sel' : ''}">Incoming <span class="${n('incoming') ? 'tbadge' : 'dim'}">${n('incoming')}</span></a>
+      <a href="#trades?box=sent" class="${box === 'sent' ? 'sel' : ''}">Sent <span class="dim">${n('sent')}</span></a>
+      <a href="#trades?box=history" class="${box === 'history' ? 'sel' : ''}">History <span class="dim">${n('history')}</span></a>
+    </div>
+    <div class="trades">${list.map(tradeCardHtml).join('') || `<div class="empty"><p>${empty}</p>${box !== 'history' && d.canTrade ? `<a class="btn gold" href="#trades?new=1">${I.trade} Start a trade</a>` : ''}</div>`}</div>`;
+  $$('[data-trade]', view).forEach(el => {
+    const t = d.trades.find(x => x.id === el.dataset.trade);
+    const cards = t.offers.flatMap(o => o.cards);
+    $$('[data-zoom]', el).forEach(b => b.onclick = () => cardModal({ ...cards.find(c => String(c.id) === b.dataset.zoom), id: null }));
+    $$('[data-act]', el).forEach(b => b.onclick = () => tradeAction(t, b.dataset.act));
+  });
+}
+
+async function tradeAction(t, act) {
+  if (act === 'counter') return go(`#trades?counter=${t.id}`);
+  const { give, get } = tradeSides(t);
+  const names = cs => cs.length ? cs.map(c => `<b>${esc(c.name)}</b>`).join(', ') : 'nothing';
+  const ask = {
+    accept: ['Accept this trade?', `You give ${names(give)} and get ${names(get)}. The cards change pools right away.`, 'Accept trade', false],
+    decline: [`Decline ${esc(t.other.name)}'s offer?`, 'The trade ends. You can always start a new one.', 'Decline', true],
+    cancel: ['Cancel your offer?', `${esc(t.other.name)} won't be able to accept it any more.`, 'Cancel offer', true],
+  }[act];
+  if (!await confirmBox(...ask)) return;
+  try {
+    await post(`/trades/${t.id}/${act}`);
+    toast(act === 'accept' ? `${I.check} Trade done. The cards are in your pools.` : act === 'decline' ? 'Offer declined.' : 'Offer cancelled.', 'good');
+    S.trades = null; S.pools = null;
+    await loadState();
+    go(act === 'accept' ? '#trades?box=history' : `#trades?box=${act === 'cancel' ? 'sent' : 'incoming'}`);
+  } catch (err) { fail(err); S.trades = null; render(); }
+}
+
+// ---- the builder: both pools side by side, a tray with the offer ----
+async function renderTradeBuilder(view) {
+  const d = S.trades;
+  if (!d.canTrade) { go('#trades'); return; }
+  if (!S.pools) {
+    view.innerHTML = '<div class="spinner"></div>';
+    try { S.pools = (await api('/pools' + lq())).pools; } catch (err) { fail(err); return; }
+    if (S.route !== 'trades') return;
+  }
+  const counter = S.params.counter ? d.trades.find(t => t.id === S.params.counter && t.status === 'open' && t.turn === 'me') : null;
+  if (S.params.counter && !counter) { toast('That offer has already been answered.', 'err'); go('#trades'); return; }
+  const key = counter ? `c:${counter.id}` : 'new';
+  if (!S.tb || S.tb.key !== key) {
+    const s = counter ? tradeSides(counter) : { give: [], get: [] };
+    S.tb = { key, with: counter?.other.id || S.params.with || '', give: new Set(s.give.map(c => c.id)), get: new Set(s.get.map(c => c.id)), note: '', q: '', rarity: '' };
+  }
+  const tb = S.tb;
+  const partners = S.pools.filter(p => p.userId !== S.me.id && S.members.some(m => m.id === p.userId));
+  if (!partners.some(p => p.userId === tb.with)) { if (tb.with) { tb.get.clear(); } tb.with = partners[0]?.userId || ''; }
+  const mine = S.pools.find(p => p.userId === S.me.id);
+  const theirs = partners.find(p => p.userId === tb.with);
+  const cardsOf = p => (p ? p.packs.flatMap(k => k.cards) : []);
+  const held = new Set(d.held);
+  const byId = new Map([...cardsOf(mine), ...cardsOf(theirs)].map(c => [c.id, c]));
+  // Cards that left a pool since the offer was made drop out of the tray.
+  for (const id of tb.give) if (!cardsOf(mine).some(c => c.id === id)) tb.give.delete(id);
+  for (const id of tb.get) if (!cardsOf(theirs).some(c => c.id === id)) tb.get.delete(id);
+  const sortCards = list => [...list].sort((a, b) => (RARITY_ORDER[b.rarity] ?? 0) - (RARITY_ORDER[a.rarity] ?? 0) || a.name.localeCompare(b.name));
+  const lim = d.limits?.side || 30;
+
+  view.innerHTML = `
+    <div class="hero"><div><h1>${counter ? `Counter ${esc(counter.other.name)}'s offer` : 'New trade'}</h1>
+      <p>${counter ? 'Change the cards on either side, then send it back. They get the next say.' : 'Pick cards from your pool to give and from theirs to ask for. Any number on each side.'} Click a card to add or remove it.</p></div>
+      <a class="btn ghost" href="#trades">${I.x} Back to trades</a></div>
+    ${partners.length ? `
+    <div class="set-tools">
+      <label class="tb-with">Trade with <select class="input" id="tbWith" ${counter ? 'disabled' : ''}>${partners.map(p => `<option value="${p.userId}" ${p.userId === tb.with ? 'selected' : ''}>${esc(p.username)}</option>`).join('')}</select></label>
+      <input type="search" id="tbQ" placeholder="Search both pools…" value="${esc(tb.q)}">
+      <select class="input" id="tbR"><option value="">All rarities</option>${['mythic', 'rare', 'uncommon', 'common'].map(r => `<option value="${r}" ${tb.rarity === r ? 'selected' : ''}>${r[0].toUpperCase() + r.slice(1)}</option>`).join('')}</select>
+    </div>
+    <div class="tb-pools">
+      <section class="panel tb-pool"><h2>Your pool <span class="dim small" id="tbMineN"></span></h2><div class="tb-grid" id="tbMine"></div></section>
+      <section class="panel tb-pool"><h2>${esc(theirs?.username || '')}'s pool <span class="dim small" id="tbTheirsN"></span></h2><div class="tb-grid" id="tbTheirs"></div></section>
+    </div>
+    <div class="panel tb-tray" id="tbTray"></div>` : `<div class="empty"><p>Nobody else is in this league yet.</p></div>`}`;
+  if (!partners.length) return;
+
+  const grid = (el, nEl, list, set, isMine) => {
+    const q = tb.q.trim().toLowerCase();
+    const shown = sortCards(list).filter(c => (!q || c.name.toLowerCase().includes(q) || (c.type || '').toLowerCase().includes(q)) && (!tb.rarity || c.rarity === tb.rarity));
+    nEl.textContent = list.length ? `${shown.length === list.length ? '' : `${shown.length} of `}${plural(list.length, 'card')}` : '';
+    el.innerHTML = shown.map(c => {
+      const h = isMine && held.has(c.id);
+      return `<button type="button" class="pick r-${esc(c.rarity)} ${set.has(c.id) ? 'sel' : ''} ${h ? 'held' : ''}" data-pick="${c.id}" ${h ? 'aria-disabled="true"' : ''} aria-pressed="${set.has(c.id)}" title="${esc(c.name)}${h ? ' (in another offer you sent)' : ''}">
+        <img ${cardSrc(c.image, '(max-width: 600px) 30vw, 120px')} alt="${esc(c.name)}" loading="lazy">
+        ${set.has(c.id) ? `<span class="pick-check">${I.check}</span>` : ''}${h ? '<span class="tc-tag">in an offer</span>' : c.foil ? '<span class="tc-tag">foil</span>' : ''}</button>`;
+    }).join('') || `<p class="muted small">${list.length ? 'No cards match.' : 'No cards yet.'}</p>`;
+    $$('[data-pick]', el).forEach(b => b.onclick = () => {
+      const id = Number(b.dataset.pick);
+      if (isMine && held.has(id)) { toast(`${esc(byId.get(id).name)} is in another offer you sent. Cancel that one first, or wait for an answer.`); return; }
+      if (set.has(id)) set.delete(id);
+      else if (set.size >= lim) { toast(`Up to ${lim} cards on each side.`); return; }
+      else set.add(id);
+      paintAll();
+    });
+  };
+  const tray = () => {
+    const strip = (set, label) => tradeStrip([...set].map(id => byId.get(id)).filter(Boolean), label, [], true);
+    const total = tb.give.size + tb.get.size;
+    $('#tbTray', view).innerHTML = `
+      <div class="trade-sides">${strip(tb.give, 'You give')}<div class="tswap" aria-hidden="true">${I.trade}</div>${strip(tb.get, `You get from ${esc(theirs.username)}`)}</div>
+      <div class="row tb-send">
+        <input id="tbNote" maxlength="200" placeholder="Add a note (optional)" value="${esc(tb.note)}">
+        <button class="btn gold" id="tbSend" ${total ? '' : 'disabled'}>${I.trade} ${counter ? 'Send counter' : 'Send offer'}</button>
+      </div>`;
+    $$('#tbTray [data-zoom]', view).forEach(b => b.onclick = () => { const id = Number(b.dataset.zoom); tb.give.delete(id); tb.get.delete(id); paintAll(); });
+    $('#tbNote', view).oninput = e => { tb.note = e.target.value; };
+    $('#tbSend', view).onclick = sendOffer;
+  };
+  const paintAll = () => {
+    grid($('#tbMine', view), $('#tbMineN', view), cardsOf(mine), tb.give, true);
+    grid($('#tbTheirs', view), $('#tbTheirsN', view), cardsOf(theirs), tb.get, false);
+    tray();
+  };
+  const sendOffer = async () => {
+    const body = { give: [...tb.give], get: [...tb.get], note: tb.note };
+    const btn = $('#tbSend', view);
+    btn.disabled = true;
+    try {
+      if (counter) await post(`/trades/${counter.id}/counter`, body);
+      else await post('/trades', { ...body, to: tb.with, league: S.viewLeague });
+      toast(`${I.trade} ${counter ? 'Counter' : 'Offer'} sent to ${esc(theirs.username)}.`, 'good');
+      S.tb = null; S.trades = null;
+      go('#trades?box=sent');
+    } catch (err) { fail(err); S.pools = null; S.trades = null; render(); }
+  };
+  $('#tbWith', view).onchange = e => { tb.with = e.target.value; tb.get.clear(); renderTradeBuilder(view); };
+  $('#tbQ', view).oninput = e => { tb.q = e.target.value; paintAll(); };
+  $('#tbR', view).onchange = e => { tb.rarity = e.target.value; paintAll(); };
+  paintAll();
+}
+
 // =============== SETS TAB ===============
 let setsFilter = { q: '', type: '', sort: 'new', only: '' };
 let saveTimer = null, lastSetsMode = null;
@@ -2478,6 +2685,15 @@ function connect() {
       const info = JSON.parse(e.data || '{}');
       await loadState();
       S.pools = null; S.leagueDetail = null;
+      if (info.trade) {
+        S.trades = null;
+        const tw = info.trade;
+        const who = esc(S.members.find(m => m.id === tw.from)?.username || 'Someone');
+        const msg = tw.to === S.me.id && { offer: `${who} sent you a trade offer`, counter: `${who} countered your offer`, accepted: `${who} accepted your trade`, declined: `${who} declined your offer`, cancelled: `${who} cancelled their offer` }[tw.kind];
+        if (msg) toast(`${I.trade} ${msg} · <a href="#trades?box=${tw.kind === 'offer' || tw.kind === 'counter' ? 'incoming' : 'history'}">see it</a>`, 'good');
+        // Don't wipe a half-built offer.
+        if (S.route === 'trades' && (S.params.new || S.params.counter)) return;
+      }
       if (e.type === 'spin') {
         const pod = podById(info.podId);
         if (pod?.spin && !S.seenSpins.has(pod.spin.id)) {
@@ -2504,7 +2720,7 @@ function connect() {
       if (S.route === 'player' || S.route === 'recap' || S.route === 'admin') return;
       // Don't yank the page out from under someone mid-reveal or typing.
       const typing = document.activeElement && ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName);
-      if (['sets', 'pods', 'account', 'pools', 'league'].includes(S.route) && typing) return;
+      if (['sets', 'pods', 'account', 'pools', 'league', 'trades'].includes(S.route) && typing) return;
       if (S.route === 'packs' && $('.mcard.down')) return;
       if (S.route === 'history') S.history = null;
       render();

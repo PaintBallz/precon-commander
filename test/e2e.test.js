@@ -784,6 +784,86 @@ test('move a card to another player\'s pool, and undo', async () => {
   assert.ok(p.find(x => x.username === 'Nick').packs.some(k => k.cards.some(c => c.id === card.id)), 'back with Nick');
 });
 
+test('trades: one-way offers, counters with more cards, held cards, accept moves the cards', async () => {
+  const pools = async () => (await ok(nick.get('/api/pools'))).pools;
+  const cardsOf = (p, name) => p.find(x => x.username === name).packs.flatMap(k => k.cards);
+  let p = await pools();
+  const [n1, n2, n3] = cardsOf(p, 'Nick');
+  const [d1, d2, d3] = cardsOf(p, 'Dan');
+  assert.ok(n3 && d3, 'both have cards to trade');
+  const nickPacks = (await ok(eve.get(`/api/leagues/${S.league}`))).standings.find(s => s.name === 'Nick').packs;
+
+  // Rules for an offer.
+  assert.equal((await nick.post('/api/trades', { to: S.u.Dan.id })).status, 400, 'needs a card');
+  assert.equal((await nick.post('/api/trades', { to: S.u.Nick.id, give: [n1.id] })).status, 400, 'not with yourself');
+  assert.equal((await nick.post('/api/trades', { to: S.u.Gus.id, give: [n1.id] })).status, 400, 'same league only');
+  assert.equal((await nick.post('/api/trades', { to: S.u.Dan.id, give: [d1.id] })).status, 409, 'can only give your own cards');
+  assert.equal((await nick.post('/api/trades', { to: S.u.Dan.id, get: [n1.id] })).status, 409, 'can only ask for theirs');
+  assert.equal((await admin.post('/api/trades', { league: S.league, to: S.u.Dan.id, get: [d1.id] })).status, 403, 'the admin doesn\'t trade');
+
+  // Nick offers 1 card for 1; Dan sees it as his turn, Nick as waiting.
+  const { trade } = await ok(nick.post('/api/trades', { to: S.u.Dan.id, give: [n1.id], get: [d1.id], note: 'straight swap?' }));
+  assert.equal(trade.turn, 'them');
+  assert.equal((await ok(dan.get('/api/state'))).tradesWaiting, 1, 'badge count');
+  let danView = (await ok(dan.get('/api/trades'))).trades.find(t => t.id === trade.id);
+  assert.equal(danView.turn, 'me');
+  assert.equal(danView.offers[0].note, 'straight swap?');
+  assert.equal((await nick.post(`/api/trades/${trade.id}/accept`)).status, 409, 'the sender can\'t accept their own offer');
+  assert.equal((await nick.post(`/api/trades/${trade.id}/counter`, { give: [n1.id] })).status, 409, 'not Nick\'s turn');
+
+  // Nick's n1 is held while the offer waits.
+  assert.deepEqual((await ok(nick.get('/api/trades'))).held, [n1.id]);
+  assert.equal((await nick.post('/api/trades', { to: S.u.Mike.id, give: [n1.id] })).status, 409, 'a held card can\'t go into a second offer');
+
+  // Dan counters, asking for more: 1 of his for 3 of Nick's (not 1 on 1).
+  await ok(dan.post(`/api/trades/${trade.id}/counter`, { give: [d1.id], get: [n1.id, n2.id, n3.id], note: 'make it 3' }));
+  assert.deepEqual((await ok(nick.get('/api/trades'))).held, [], 'Nick\'s card is free again once it\'s his turn');
+  let nickView = (await ok(nick.get('/api/trades'))).trades.find(t => t.id === trade.id);
+  assert.equal(nickView.turn, 'me');
+  assert.equal(nickView.offers.length, 2, 'every round is kept');
+  assert.deepEqual(nickView.offers[1].cards.filter(c => c.side === 'get').map(c => c.id).sort(), [n1.id, n2.id, n3.id].sort());
+
+  // A second open offer that includes n2 gets closed when the trade goes through.
+  const { trade: other } = await ok(mike.post('/api/trades', { to: S.u.Nick.id, get: [n2.id] }));
+  await ok(nick.post(`/api/trades/${trade.id}/accept`));
+  p = await pools();
+  const nickNow = cardsOf(p, 'Nick').map(c => c.id), danNow = cardsOf(p, 'Dan').map(c => c.id);
+  assert.ok([n1, n2, n3].every(c => danNow.includes(c.id) && !nickNow.includes(c.id)), 'Nick\'s three cards are Dan\'s');
+  assert.ok(nickNow.includes(d1.id) && !danNow.includes(d1.id), 'Dan\'s card is Nick\'s');
+  const tradePack = p.find(x => x.username === 'Nick').packs.find(k => k.cards.some(c => c.id === d1.id));
+  assert.equal(tradePack.kind, 'trade');
+  assert.match(tradePack.note, /Traded with Dan/);
+  assert.equal((await ok(eve.get(`/api/leagues/${S.league}`))).standings.find(s => s.name === 'Nick').packs, nickPacks, 'traded cards aren\'t packs opened');
+  const mikeOther = (await ok(mike.get('/api/trades'))).trades.find(t => t.id === other.id);
+  assert.equal(mikeOther.status, 'closed');
+  assert.match(mikeOther.closeNote, /traded away/);
+  const feed = (await ok(eve.get(`/api/leagues/${S.league}`))).events;
+  assert.ok(feed.some(e => e.kind === 'trade' && /Dan traded .* to Nick for /.test(e.text)), 'the trade is in the feed');
+  await new Promise(r => setTimeout(r, 300));
+  assert.ok(discordPosts.some(x => x.body.embeds?.[0]?.title?.includes('Trade')), 'and posted to Discord');
+  const done = (await ok(dan.get('/api/trades'))).trades.find(t => t.id === trade.id);
+  assert.equal(done.status, 'accepted');
+  assert.deepEqual([(await dan.post(`/api/trades/${trade.id}/accept`)).status, (await nick.post(`/api/trades/${trade.id}/cancel`)).status], [409, 409], 'a finished trade stays finished');
+
+  // An offer with a card that left its pool can't be accepted.
+  const [d4] = cardsOf(p, 'Dan').filter(c => ![n1.id, n2.id, n3.id].includes(c.id));
+  const { trade: stale } = await ok(dan.post('/api/trades', { to: S.u.Nick.id, give: [d4.id] }));
+  await ok(admin.post(`/api/admin/pool-cards/${d4.id}/move`, { toUserId: S.u.Eve.id }));
+  const staleView = (await ok(nick.get('/api/trades'))).trades.find(t => t.id === stale.id);
+  assert.deepEqual(staleView.missing, [d4.id]);
+  assert.equal((await nick.post(`/api/trades/${stale.id}/accept`)).status, 409);
+  await ok(nick.post(`/api/trades/${stale.id}/decline`));
+  const moveEntry = (await ok(admin.get('/api/admin/log'))).entries.find(e => e.summary.startsWith(`The admin moved ${d4.name}`));
+  await ok(admin.post(`/api/admin/log/${moveEntry.id}/undo`)); // keep Eve's pool as the later tests expect
+  assert.equal((await ok(dan.get('/api/trades'))).trades.find(t => t.id === stale.id).status, 'declined');
+
+  // Cancelling your own offer; one left open for the league-end test.
+  const { trade: c1 } = await ok(joe.post('/api/trades', { to: S.u.Nick.id, get: [d1.id] }));
+  assert.equal((await joe.post(`/api/trades/${c1.id}/decline`)).status, 409, 'the sender cancels rather than declines');
+  await ok(joe.post(`/api/trades/${c1.id}/cancel`));
+  S.openTrade = (await ok(joe.post('/api/trades', { to: S.u.Nick.id, get: [d1.id] }))).trade.id;
+});
+
 test('fix a finished pod: winner, precons and who sat in a seat; undo restores it', async () => {
   const hal = client();
   S.u.Hal = (await ok(hal.post('/api/auth/signup', { agree: true, username: 'Hal', email: 'hal@example.com', password: PW }))).user;
@@ -1075,6 +1155,8 @@ test('ending a league archives it and frees its players; deleting removes it', a
   const st = await ok(nick.get('/api/state'));
   assert.equal(st.myLeagueId, null, 'Nick is free to join another league');
   assert.equal((await ok(nick.get(`/api/leagues/${S.league}`))).league.status, 'ended', 'the league stays as an archive');
+  const left = (await ok(joe.get(`/api/trades?league=${S.league}`))).trades.find(t => t.id === S.openTrade);
+  assert.equal(left.status, 'closed', 'open trades close when the league ends');
   assert.equal((await nick.post('/api/pods', { league: S.league, players: ['Nick', 'Mike', 'Joe'].map(n => ({ userId: S.u[n].id })) })).status, 409, 'no new pods');
   const { league } = await ok(fay.post('/api/leagues', { name: 'Season 2' }));
   assert.equal(league.members.length, 6, 'a new league can sweep in everyone who is free (Gus is still in his)');

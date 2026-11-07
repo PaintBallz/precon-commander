@@ -37,6 +37,7 @@ import { adminRoutes, currentAnnouncement } from './admin.js';
 import { logAdmin, podRows, packRows, cardRows, leagueRows } from './adminlog.js';
 import { db } from './db.js';
 import { feedbackRoutes, newFeedbackCount } from './feedback.js';
+import { tradeRoutes, tradesWaiting, closeLeagueTrades } from './trades.js';
 
 const PORT = Number(process.env.PORT || 3000);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -422,6 +423,7 @@ app.post('/api/leagues/:id/end', wrap(async (req, res) => {
   const running = activePods(league.id);
   if (running.length) throw new HttpError(409, `Finish or discard ${names(running.map(p => p.name))} first.`);
   endLeague(league.id);
+  closeLeagueTrades(league.id, 'The league ended.');
   logAdmin(req, { action: 'end-league', summary: `Ended ${league.name}.`, leagueId: league.id });
   logEvent(league.id, 'end', req.user.id, `${league.name} ended. Its standings, history and pools stay as an archive.`);
   broadcast('state', { leagueId: league.id });
@@ -546,6 +548,7 @@ app.get('/api/state', wrap(async (req, res) => {
     openPods: openPodIds.map(id => view(req, loadPod(id))).filter(Boolean),
     members: league ? leagueMembers(league.id).map(m => ({ id: m.id, username: m.username, precon: m.precon })) : [],
     pending,
+    tradesWaiting: tradesWaiting(req.user.id),
     ...(req.user.isAdmin ? { feedbackNew: newFeedbackCount() } : {}),
   });
 }));
@@ -961,6 +964,7 @@ app.put('/api/deck', wrap(async (req, res) => {
 app.delete('/api/deck', wrap(async (req, res) => { deleteDeck(req.user.id); res.json({ ok: true }); }));
 
 adminRoutes(app, { wrap, HttpError, broadcast, viewLeague, requireLeague, allSets, wheelFor, settingsFor, setInfo });
+tradeRoutes(app, { wrap, HttpError, broadcast, viewLeague });
 
 seedAdmin();
 migrateToLeagues(globalSettings());

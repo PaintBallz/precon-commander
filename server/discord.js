@@ -86,6 +86,10 @@ export function announcementPost(text) {
   return postDiscord({ title: '📣 Announcement', url: SITE, description: cut(md(text), 3500), timestamp: new Date().toISOString() });
 }
 
+export function tradePost(text, leagueName) {
+  return postDiscord({ title: '🤝 Trade', url: `${SITE}/#trades`, description: cut(md(text), 3500), footer: { text: leagueName }, timestamp: new Date().toISOString() });
+}
+
 export function testPost(by) {
   return postDiscord({ title: 'Pre-Con Commander is connected', url: SITE, description: `Test post from ${md(by)}. Finished pods, season recaps and announcements will show up in this channel.` });
 }

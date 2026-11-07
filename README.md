@@ -33,6 +33,13 @@ phones, and every phone sees spins, votes and packs live.
   charts, each slot's rarity mix vs the sheet, every card's count vs its expected count (flagging
   ones that come up far too often or aren't on the sheets), and how much of each sheet was seen.
 - **Pools**: each player's pulls in a league, grouped, searchable, filterable by pod.
+- **Trades** between two members of the same league: any number of pool cards for any number.
+  Offers are one-way and wait for an answer (accept, decline, or counter with different or more
+  cards), so nobody has to be online at once. Incoming / Sent / History show each trade with its
+  card images and every earlier round; the builder puts both pools side by side with a tray.
+  Cards you're giving in an offer that's waiting are held; accepting moves the cards at once
+  (as 'trade' packs, never counted as packs opened), closes other open trades that included
+  them, and posts to the feed (and Discord). Open trades close when a league ends.
 - **Copy for Moxfield or Archidekt**: one-tap deck-list export in either site's import format,
   foils included (`1 Name (SET) 123 *F*` / `1x Name (set) 123 *F*`).
 - **League tab**: standings, players, rules and an activity feed (winners, votes, spins, mythic
@@ -228,6 +235,7 @@ server/
   cache.js     in-memory cache, cleared on every change
   ratelimit.js per-IP request limits
   admin.js     Admin tab: dashboard, packs, card moves, pod fixes, player tools, announcements, backups
+  trades.js    trades between league members: offers, counters, accept
   adminlog.js  admin log, snapshots and undo
   backup.js    daily database backups
   discord.js   Discord webhook posts (finished pods, recaps, announcements)
