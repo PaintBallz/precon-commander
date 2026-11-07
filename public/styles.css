@@ -74,14 +74,25 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--text); font-family: var(--cond); text-transform: uppercase; font-weight: 800; font-size: 1.3rem; letter-spacing: .02em; white-space: nowrap; }
 .brand b { color: var(--accent); font-weight: 800; }
-.tabs { display: flex; gap: 0; flex: 1; overflow-x: auto; scrollbar-width: none; }
-.tabs a {
+/* Main tabs in a row; All Sets, History, Fun Packs and Admin (and any main tab
+   that doesn't fit the width) sit in the More menu. See layoutTabs() in app.js. */
+.tabs { display: flex; gap: 0; flex: 1; min-width: 0; }
+.tab-main { display: flex; flex: 0 1 auto; min-width: 0; overflow: hidden; }
+.tab-more { position: relative; display: flex; }
+.tabs a, .more-btn {
   display: flex; align-items: center; padding: 0 16px; text-decoration: none; color: var(--dim);
   font-family: var(--cond); text-transform: uppercase; font-weight: 700; font-size: 1rem; letter-spacing: .05em;
   white-space: nowrap; border-bottom: 3px solid transparent; transition: color .12s, background .12s;
 }
-.tabs a:hover { color: var(--text); background: var(--bg2); }
-.tabs a.active { color: var(--text); background: var(--panel); border-bottom-color: var(--accent); }
+.tabs a:hover, .more-btn:hover { color: var(--text); background: var(--bg2); }
+.tabs a.active, .more-btn.active { color: var(--text); background: var(--panel); border-bottom-color: var(--accent); }
+.more-btn { gap: 4px; background: none; border-top: 0; border-left: 0; border-right: 0; cursor: pointer; }
+.more-btn .i { width: 16px; height: 16px; transition: transform .15s; }
+.more-btn[aria-expanded="true"] { color: var(--text); background: var(--bg2); }
+.more-btn[aria-expanded="true"] .i { transform: rotate(180deg); }
+.more-menu { position: absolute; top: 100%; right: 0; z-index: 30; min-width: 190px; padding: 6px 0; background: var(--panel); border: 1px solid var(--line2); border-top: 2px solid var(--accent); box-shadow: var(--shadow); }
+.more-menu a { padding: 11px 16px; border-bottom: 0; border-left: 3px solid transparent; }
+.more-menu a.active { background: var(--panel2); border-left-color: var(--accent); }
 .top-tools { display: flex; align-items: center; gap: 8px; }
 .icon-btn { display: inline-grid; place-items: center; width: 34px; height: 34px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); cursor: pointer; }
 .icon-btn:hover { color: var(--text); border-color: var(--line2); }
@@ -99,7 +110,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
   .top { flex-wrap: wrap; padding: 0 12px; gap: 0 8px; }
   .brand { padding: 10px 0; font-size: 1.15rem; }
   .tabs { order: 3; flex-basis: calc(100% + 24px); margin: 0 -12px; border-top: 1px solid var(--line); }
-  .tabs a { padding: 11px 12px; }
+  .tab-main a, .more-btn { padding: 11px 12px; }
+  .more-menu { right: 0; }
   .top-tools { margin-left: auto; }
 }
 

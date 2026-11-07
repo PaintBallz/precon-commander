@@ -16,17 +16,23 @@
       <img src="/favicon.svg?v=wubrg" alt="" width="30" height="30" />
       <span>Pre-Con <b>Commander</b></span>
     </a>
-    <nav class="tabs" id="tabs">
-      <a href="#league" data-tab="league">League</a>
-      <a href="#pods" data-tab="pods">Pods</a>
-      <a href="#wheel" data-tab="wheel">Wheel</a>
-      <a href="#packs" data-tab="packs">Packs</a>
-      <a href="#pools" data-tab="pools">Pools</a>
-      <a href="#trades" data-tab="trades" id="tradesTab">Trades</a>
-      <a href="#sets" data-tab="sets">All Sets</a>
-      <a href="#history" data-tab="history">History</a>
-      <a href="#fun" data-tab="fun">Fun Packs</a>
-      <a href="#admin" data-tab="admin" id="adminTab" hidden>Admin</a>
+    <nav class="tabs" id="tabs" aria-label="Sections">
+      <div class="tab-main" id="tabMain">
+        <a href="#league" data-tab="league">League</a>
+        <a href="#pods" data-tab="pods">Pods</a>
+        <a href="#wheel" data-tab="wheel">Wheel</a>
+        <a href="#packs" data-tab="packs">Packs</a>
+        <a href="#pools" data-tab="pools">Pools</a>
+        <a href="#trades" data-tab="trades" id="tradesTab">Trades</a>
+        <a href="#sets" data-tab="sets" data-more>All Sets</a>
+        <a href="#history" data-tab="history" data-more>History</a>
+        <a href="#fun" data-tab="fun" data-more>Fun Packs</a>
+        <a href="#admin" data-tab="admin" id="adminTab" data-more hidden>Admin</a>
+      </div>
+      <div class="tab-more" id="tabMore">
+        <button type="button" class="more-btn" id="moreBtn" aria-haspopup="true" aria-expanded="false" aria-controls="moreMenu"><span id="moreLabel">More</span><span id="moreBadge"></span><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
+        <div class="more-menu" id="moreMenu" hidden></div>
+      </div>
     </nav>
     <div class="top-tools">
       <select class="league-sel" id="leagueSel" title="Which league you're looking at" hidden></select>

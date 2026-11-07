@@ -123,7 +123,42 @@ function paintMe() {
   $('#fbBtn').hidden = !inApp; $('#fbOr').hidden = !inApp;
   $('#adminTab').hidden = !isAdmin();
   $('#tradesTab').innerHTML = `Trades${S.tradesWaiting ? ` <span class="tbadge" title="${plural(S.tradesWaiting, 'offer')} waiting for you">${S.tradesWaiting}</span>` : ''}`;
+  layoutTabs();
 }
+
+// ---------------- top tabs + More menu ----------------
+// Tabs marked data-more always live in the More menu. The other (main) tabs
+// sit in the row; any that don't fit the width move into More too, from the
+// right, and come back when there's room. When the page you're on is in More,
+// the button shows its name and is highlighted.
+const tabMain = $('#tabMain'), moreMenu = $('#moreMenu'), moreBtn = $('#moreBtn');
+const TAB_ORDER = $$('a[data-tab]', tabMain);
+function layoutTabs() {
+  // Start from every main tab in the row, in order.
+  for (const a of TAB_ORDER) if (!a.hasAttribute('data-more')) tabMain.append(a);
+  const overflow = [];
+  const fits = () => tabMain.scrollWidth <= tabMain.clientWidth + 1;
+  const inRow = () => $$('a[data-tab]:not([hidden])', tabMain);
+  while (!fits() && inRow().length > 1) { const a = inRow().at(-1); overflow.unshift(a); a.remove(); }
+  moreMenu.replaceChildren(...overflow, ...TAB_ORDER.filter(a => a.hasAttribute('data-more')));
+  const active = $('a.active', moreMenu);
+  moreBtn.classList.toggle('active', !!active);
+  $('#moreLabel').textContent = active ? active.textContent.trim() : 'More';
+  // A waiting-trades badge that moved into More shows on the button.
+  const badge = $('.tbadge', moreMenu);
+  $('#moreBadge').innerHTML = badge && !active?.contains(badge) ? ` <span class="tbadge">${badge.textContent}</span>` : '';
+}
+function setMenu(open) {
+  moreMenu.hidden = !open;
+  moreBtn.setAttribute('aria-expanded', String(open));
+  if (open) $('a:not([hidden])', moreMenu)?.focus();
+}
+moreBtn.addEventListener('click', e => { e.stopPropagation(); setMenu(moreMenu.hidden); });
+moreMenu.addEventListener('click', () => setMenu(false));
+document.addEventListener('click', e => { if (!moreMenu.hidden && !e.target.closest('#tabMore')) setMenu(false); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !moreMenu.hidden) { setMenu(false); moreBtn.focus(); } });
+window.addEventListener('resize', () => { layoutTabs(); });
+document.fonts?.ready.then(() => layoutTabs());
 const soundBtn = $('#soundBtn');
 const paintSound = () => { soundBtn.innerHTML = S.sound ? I.sound : I.mute; };
 paintSound();
@@ -262,6 +297,7 @@ function render() {
   if (!S.me || S.me.mustChange) { showAuth(); return; }
   $('#top').hidden = false;
   $$('#tabs a').forEach(a => a.classList.toggle('active', a.dataset.tab === (S.route === 'player' || S.route === 'recap' || S.route === 'join' ? 'league' : S.route)));
+  layoutTabs();
   const view = $('#view');
   if (S.route !== 'wheel') stopWheelLoop();
   ({ league: renderLeague, pods: renderPods, wheel: renderWheel, packs: renderPacks, pools: renderPools, sets: renderSets, history: renderHistory, fun: renderFun, account: renderAccount, player: renderPlayer, recap: renderRecap, admin: renderAdmin, trades: renderTrades, join: renderJoin })[S.route](view);

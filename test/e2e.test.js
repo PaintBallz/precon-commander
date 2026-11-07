@@ -108,6 +108,10 @@ test('serves the app shell and assets', async () => {
   const home = await anon.get('/');
   assert.equal(home.status, 200);
   assert.match(home.text, /<title>Pre-Con Commander<\/title>/);
+  // Top tabs: six main ones; All Sets, History, Fun Packs and Admin under More.
+  for (const t of ['sets', 'history', 'fun', 'admin']) assert.match(home.text, new RegExp(`data-tab="${t}"[^>]*data-more`), `${t} is in More`);
+  for (const t of ['league', 'pods', 'wheel', 'packs', 'pools', 'trades']) assert.doesNotMatch(home.text, new RegExp(`data-tab="${t}"[^>]*data-more`), `${t} is a main tab`);
+  assert.match(home.text, /id="moreBtn"[^>]*aria-haspopup="true"/);
   // Cloudflare caches .js/.css for hours, so the page must link versioned URLs.
   assert.match(home.text, /\/app\.js\?v=[0-9a-f]{10}"/, 'script URL carries a content version');
   assert.match(home.text, /\/styles\.css\?v=[0-9a-f]{10}"/, 'stylesheet URL carries a content version');
