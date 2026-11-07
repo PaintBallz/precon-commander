@@ -58,9 +58,11 @@ const DUMMY_HASH = hashPassword(crypto.randomBytes(16).toString('hex'));
 const now = () => new Date().toISOString();
 
 // ---------- users ----------
-const userCols = 'id, username, email, is_admin, must_change, precon, created_at, suspended_at, suspended_reason';
+const userCols = 'id, username, email, is_admin, staff, is_test, must_change, precon, created_at, suspended_at, suspended_reason';
+// isAdmin: may use admin powers (the admin account, or a player made an admin).
+// adminAccount: the original admin account, which runs the site and never plays.
 export function publicUser(r) {
-  return r && { id: r.id, username: r.username, email: r.email || '', isAdmin: !!r.is_admin, mustChange: !!r.must_change, precon: r.precon || '', createdAt: r.created_at,
+  return r && { id: r.id, username: r.username, email: r.email || '', isAdmin: !!(r.is_admin || r.staff), adminAccount: !!r.is_admin, staff: !!r.staff, ...(r.is_test ? { test: true } : {}), mustChange: !!r.must_change, precon: r.precon || '', createdAt: r.created_at,
     ...(r.suspended_at ? { suspended: true, suspendedAt: r.suspended_at, suspendedReason: r.suspended_reason || '' } : {}) };
 }
 export const getUser = id => db.prepare(`SELECT ${userCols} FROM users WHERE id = ?`).get(id);
@@ -112,7 +114,7 @@ function sessionOf(req) {
   if (!s || s.expires_at < Date.now()) { if (s) db.prepare('DELETE FROM sessions WHERE token = ?').run(t); return null; }
   const user = getUser(s.user_id);
   if (!user || user.suspended_at) return null;
-  return { token: t, user, viewAs: user.is_admin && s.view_as ? getUser(s.view_as) : null };
+  return { token: t, user, viewAs: (user.is_admin || user.staff) && s.view_as ? getUser(s.view_as) : null };
 }
 const sessionUser = req => sessionOf(req)?.user || null;
 // The admin's "view as player": this session sees the site as that player,
@@ -204,6 +206,7 @@ export function authRoutes(app, wrap, onChange = () => {}) {
       noteFailure(key); noteFailure(ipKey);
       throw new AuthError(401, 'Wrong username or password.');
     }
+    if (u.is_test) throw new AuthError(403, "Test players can't sign in. An admin plays for them.");
     if (u.suspended_at) throw new AuthError(403, `This account is suspended${u.suspended_reason ? `: ${u.suspended_reason}` : ''}. Ask the admin.`);
     failures.delete(key);
     startSession(req, res, u.id);
@@ -291,6 +294,9 @@ export function authRoutes(app, wrap, onChange = () => {}) {
     requireAdmin(req);
     if (req.params.id === req.user.id) throw new AuthError(409, 'You can\'t delete your own admin account.');
     const target = getUser(req.params.id);
+    if (target?.is_admin) throw new AuthError(409, "The main admin account can't be deleted.");
+    // Another admin's account is only the main admin's to manage.
+    if (target?.staff && !req.user.adminAccount) throw new AuthError(403, 'Only the main admin account can delete another admin.');
     if (!deleteAccount(req.params.id)) throw new AuthError(404, 'User not found');
     logAdmin(req, { action: 'delete-user', summary: `Deleted ${target.username}'s account (can't be undone).`, reason: req.body?.reason });
     onChange();
@@ -301,6 +307,8 @@ export function authRoutes(app, wrap, onChange = () => {}) {
     requireAdmin(req);
     const target = getUser(req.params.id);
     if (!target) throw new AuthError(404, 'User not found');
+    // A reset link is a way into the account, so admins' accounts are only the main admin's.
+    if ((target.is_admin || target.staff) && !req.user.adminAccount && target.id !== req.user.id) throw new AuthError(403, 'Only the main admin account can make a reset link for an admin.');
     logAdmin(req, { action: 'reset-link', summary: `Made a password-reset link for ${target.username}.` });
     res.json({ link: createResetLink(req.params.id), minutes: RESET_MINUTES });
   }));

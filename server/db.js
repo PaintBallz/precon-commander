@@ -227,6 +227,11 @@ for (const [table, col, def] of [
   ['users', 'suspended_at', 'TEXT'], ['users', 'suspended_reason', 'TEXT'],
   // The admin's "view as player" (read-only) for this session.
   ['sessions', 'view_as', 'TEXT'],
+  // A player account with admin powers (it still plays). The original admin
+  // account (is_admin) is the only one that doesn't play.
+  ['users', 'staff', 'INTEGER NOT NULL DEFAULT 0'],
+  // A test player the admin added to fill a league; it can't sign in.
+  ['users', 'is_test', 'INTEGER NOT NULL DEFAULT 0'],
 ]) {
   if (!db.prepare(`SELECT 1 FROM pragma_table_info('${table}') WHERE name = ?`).get(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
 }

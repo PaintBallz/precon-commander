@@ -267,10 +267,28 @@ export function adminRoutes(app, { wrap, HttpError, broadcast, viewLeague, requi
   }));
 
   // ---------- player tools ----------
+  // Make a player an admin (or not). They keep playing; only the original
+  // admin account can hand out or take back admin powers.
+  app.post('/api/admin/users/:id/admin', wrap(async (req, res) => {
+    requireAdmin(req);
+    if (!req.user.adminAccount) throw new HttpError(403, 'Only the main admin account can make or remove admins.');
+    const u = getUser(req.params.id);
+    if (!u || u.is_admin) throw new HttpError(404, 'Player not found');
+    if (u.is_test) throw new HttpError(400, "Test players can't be admins.");
+    const on = req.body?.admin !== false;
+    if (!!u.staff === on) return res.json({ ok: true, user: publicUser(u) });
+    db.prepare('UPDATE users SET staff = ? WHERE id = ?').run(on ? 1 : 0, u.id);
+    if (!on) endAllSessions(u.id); // drop any admin-only state (like View as) right away
+    logAdmin(req, { action: on ? 'make-admin' : 'remove-admin', summary: on ? `Made ${u.username} an admin.` : `Took admin powers away from ${u.username}.`, reason: reasonOf(req.body) });
+    broadcast('state', {});
+    res.json({ ok: true, user: publicUser(getUser(u.id)) });
+  }));
+
   app.put('/api/admin/users/:id', wrap(async (req, res) => {
     requireAdmin(req);
     const u = getUser(req.params.id);
     if (!u) throw new HttpError(404, 'Player not found');
+    if (u.is_admin && !req.user.adminAccount) throw new HttpError(403, 'Only the main admin account can rename itself.');
     const username = String(req.body?.username || '').trim();
     checkUsername(username);
     if (username === u.username) return res.json({ ok: true, user: publicUser(u) });
@@ -285,6 +303,8 @@ export function adminRoutes(app, { wrap, HttpError, broadcast, viewLeague, requi
     const u = getUser(req.params.id);
     if (!u) throw new HttpError(404, 'Player not found');
     if (u.is_admin) throw new HttpError(409, "The admin account can't be suspended.");
+    if (u.id === req.user.id) throw new HttpError(409, "You can't suspend yourself.");
+    if (u.staff && !req.user.adminAccount) throw new HttpError(403, 'Only the main admin account can suspend another admin.');
     const reason = reasonOf(req.body);
     if (req.body?.suspended === false) {
       db.prepare('UPDATE users SET suspended_at = NULL, suspended_reason = NULL WHERE id = ?').run(u.id);
@@ -302,6 +322,7 @@ export function adminRoutes(app, { wrap, HttpError, broadcast, viewLeague, requi
     const u = getUser(req.params.id);
     if (!u) throw new HttpError(404, 'Player not found');
     if (u.id === req.user.id) throw new HttpError(409, 'Use Log out for your own account.');
+    if (u.is_admin && !req.user.adminAccount) throw new HttpError(403, 'Only the main admin account can do that.');
     const n = endAllSessions(u.id);
     logAdmin(req, { action: 'signout', summary: `Signed ${u.username} out everywhere (${plural(n, 'session')}).` });
     res.json({ ok: true, sessions: n });

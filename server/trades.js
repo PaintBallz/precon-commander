@@ -188,7 +188,7 @@ export function tradeRoutes(app, { wrap, HttpError, broadcast, viewLeague }) {
     if (t.status !== 'open') throw new HttpError(409, 'That trade is already finished.');
   };
   const mustTrade = (req, leagueId) => {
-    if (req.user.isAdmin) throw new HttpError(403, 'Only league members can trade.');
+    if (req.user.adminAccount) throw new HttpError(403, 'Only league members can trade.');
     const l = getLeague(leagueId);
     if (!l || l.status !== 'active') throw new HttpError(409, 'Trading is only open in an active league.');
     if (!isMember(l.id, req.user.id)) throw new HttpError(403, `You're not in ${l.name}.`);
@@ -205,7 +205,7 @@ export function tradeRoutes(app, { wrap, HttpError, broadcast, viewLeague }) {
     const rows = db.prepare('SELECT * FROM trades WHERE league_id = ? AND (a_id = ? OR b_id = ?) ORDER BY updated_at DESC').all(league.id, me, me);
     res.json({
       leagueId: league.id,
-      canTrade: !req.user.isAdmin && league.status === 'active' && isMember(league.id, me),
+      canTrade: !req.user.adminAccount && league.status === 'active' && isMember(league.id, me),
       trades: rows.map(t => viewTrade(t, me)),
       held: [...heldCards(me)],
       limits: { side: MAX_SIDE, open: MAX_OPEN },

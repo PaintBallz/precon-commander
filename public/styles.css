@@ -770,3 +770,5 @@ form .fb-filter label.chip { display: inline-flex; gap: 6px; cursor: pointer; co
 .catchup .i { width: 28px; height: 28px; color: var(--accent); flex: none; }
 .catchup div { display: grid; gap: 2px; }
 .catchup b { font-family: var(--cond); font-size: 1.3rem; letter-spacing: .02em; }
+.test-tools { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--line2); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.test-tools p { flex-basis: 100%; margin: 0; }

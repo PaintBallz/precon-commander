@@ -52,10 +52,10 @@ export function leaguesOf(userId) {
 
 export function leagueMembers(leagueId, { former = false } = {}) {
   return db.prepare(`
-    SELECT u.id, u.username, u.precon, m.joined_at, m.left_at FROM league_members m JOIN users u ON u.id = m.user_id
+    SELECT u.id, u.username, u.precon, u.is_test, u.staff, m.joined_at, m.left_at FROM league_members m JOIN users u ON u.id = m.user_id
     WHERE m.league_id = ? ${former ? '' : 'AND m.left_at IS NULL'} AND u.is_admin = 0
     ORDER BY m.left_at IS NOT NULL, u.username COLLATE NOCASE`).all(leagueId)
-    .map(r => ({ id: r.id, username: r.username, precon: r.precon || '', joinedAt: r.joined_at, leftAt: r.left_at || null }));
+    .map(r => ({ id: r.id, username: r.username, precon: r.precon || '', joinedAt: r.joined_at, leftAt: r.left_at || null, ...(r.is_test ? { test: true } : {}), ...(r.staff ? { admin: true } : {}) }));
 }
 export const isMember = (leagueId, userId) =>
   !!db.prepare('SELECT 1 FROM league_members WHERE league_id = ? AND user_id = ? AND left_at IS NULL').get(leagueId, userId);

@@ -69,6 +69,13 @@ phones, and every phone sees spins, votes and packs live.
   required "13 or older and I agree" box at sign-up, and **Delete account** on the Account page
   (the admin can delete accounts too). A deleted player's past pods stay in league history as
   "Deleted player". Fonts are self-hosted, so pages make no third-party requests except Scryfall images.
+- **Admins**: the main `admin` account runs the site and never plays. It can make any player an
+  admin too (Admin tab → Players → Make admin): they keep playing and get every admin tool, but
+  only the main account can make or remove admins, and other admins can't rename, sign out,
+  suspend, delete or get a reset link for an admin's account.
+- **Test players**: on the League tab an admin can fill a league up to 4 with test players
+  (TestBot1, …) to try it out. They can't sign in; an admin plays for them. They're never swept
+  into new leagues, and "Remove test players" deletes them.
 - **Admin tab** (site admin only):
   - **Dashboard**: players, leagues, running pods, unopened packs, new suggestions, reset-email
     health, last backup, and a "needs attention" list (stuck pods, piles of unopened packs,

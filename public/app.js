@@ -82,7 +82,10 @@ function toast(msg, kind = '') {
   setTimeout(() => el.remove(), 4200);
 }
 const fail = err => toast(esc(err.message || err), 'err');
+// isAdmin: may use admin powers. isAdminAccount: the main admin account, which
+// runs the site and never plays (a player made an admin still plays).
 const isAdmin = () => !!S.me?.isAdmin;
+const isAdminAccount = () => !!S.me?.adminAccount;
 // Line icons from the sprite in index.html: ${I.crown}, ${I.trash}, …
 const I = new Proxy({}, { get: (_, n) => `<svg class="i i-${String(n)}" aria-hidden="true"><use href="#i-${String(n)}"/></svg>` });
 const podById = id => S.pods.find(p => p.id === id) || S.openPods.find(p => p.id === id);
@@ -486,7 +489,7 @@ async function renderJoin(view) {
   if (S.route !== 'join') return;
   const l = d.league;
   const already = d.current?.id === l.id;
-  const blocked = isAdmin() ? "The admin account runs leagues and doesn't join them."
+  const blocked = isAdminAccount() ? "The admin account runs leagues and doesn't join them."
     : already ? null
     : l.status !== 'active' ? `${esc(l.name)} has ended.`
     : d.current ? `You're in ${esc(d.current.name)}. You can be in one league at a time, so leave it on the League tab first.`
@@ -514,8 +517,8 @@ async function renderJoin(view) {
 }
 
 function joinCreateForms() {
-  const canJoin = !isAdmin() && !S.myLeagueId;
-  const canCreate = isAdmin() || !S.myLeagueId;
+  const canJoin = !isAdminAccount() && !S.myLeagueId;
+  const canCreate = isAdminAccount() || !S.myLeagueId;
   if (!canJoin && !canCreate) return '';
   return `<div class="account-grid" style="margin-top:18px">
     ${canJoin ? `<form class="panel grid" id="joinForm">
@@ -556,7 +559,7 @@ function wireJoinCreate(view) {
 async function renderLeague(view) {
   const l = S.league;
   if (!l) {
-    view.innerHTML = `<div class="hero"><div><h1>League</h1><p>Pods belong to a league: ${LIMITS.min}–${LIMITS.max} players who play pods of ${LIMITS.podMin}–${LIMITS.podMax}, keep their own card pools, standings and wheel. ${isAdmin() ? 'Start one below.' : "You're not in one yet."}</p></div></div>${joinCreateForms()}`;
+    view.innerHTML = `<div class="hero"><div><h1>League</h1><p>Pods belong to a league: ${LIMITS.min}–${LIMITS.max} players who play pods of ${LIMITS.podMin}–${LIMITS.podMax}, keep their own card pools, standings and wheel. ${isAdminAccount() ? 'Start one below.' : "You're not in one yet."}</p></div></div>${joinCreateForms()}`;
     wireJoinCreate(view);
     return;
   }
@@ -595,9 +598,14 @@ async function renderLeague(view) {
       </section>
       <section class="panel">
         <div class="spread"><h2 style="margin:0">Players</h2><span class="small muted">${league.members.length}/${lim.max}</span></div>
-        <div class="member-list">${league.members.map(m => `<div class="member"><div><b>${plink(m.id, m.username)}</b>${m.leagueAdmin ? ' <span class="chip gold" title="Started the league: can change its rules and kick players">League admin</span>' : ''}${m.id === S.me.id ? ' <span class="dim small">(you)</span>' : ''}<div class="small muted">${esc(m.precon) || 'No precon set'}</div></div>
+        <div class="member-list">${league.members.map(m => `<div class="member"><div><b>${plink(m.id, m.username)}</b>${m.leagueAdmin ? ' <span class="chip gold" title="Started the league: can change its rules and kick players">League admin</span>' : ''}${m.admin ? ' <span class="chip gold" title="A player with admin powers">admin</span>' : ''}${m.test ? ' <span class="chip" title="Cannot sign in; an admin plays for it">test player</span>' : ''}${m.id === S.me.id ? ' <span class="dim small">(you)</span>' : ''}<div class="small muted">${esc(m.precon) || 'No precon set'}</div></div>
           ${league.canManage && active && m.id !== S.me.id ? `<button class="btn ghost sm" data-rmm="${m.id}" data-name="${esc(m.username)}" title="Kick from the league">✕</button>` : ''}</div>`).join('') || '<p class="muted">Nobody yet.</p>'}</div>
         ${isAdmin() && active ? `<div class="row" style="margin-top:10px">${candidates.length ? `<select class="input" id="addMember"><option value="">Add a player…</option>${candidates.map(c => `<option value="${c.id}">${esc(c.username)}</option>`).join('')}</select><button class="btn sm" id="addMemberBtn">Add</button>` : '<span class="small muted">Every player is already in a league.</span>'}</div>` : ''}
+        ${isAdmin() && active ? `<div class="test-tools">
+          ${league.members.length < 4 ? `<button class="btn sm" id="addTestBtn">${I.user} Fill to 4 with test players</button>` : ''}
+          ${league.members.some(m => m.test) ? `<button class="btn sm danger" id="rmTestBtn">${I.x} Remove test players</button>` : ''}
+          <p class="small muted">Test players let you try a league out: they can't sign in, and as an admin you play for them (start pods, crown the winner, skip the vote, spin and open their packs).</p>
+        </div>` : ''}
       </section>
       <section class="panel">
         <h2>Rules</h2>
@@ -642,6 +650,15 @@ async function renderLeague(view) {
   $$('[data-rmm]', view).forEach(b => b.onclick = async () => {
     if (!await confirmBox(`Kick ${esc(b.dataset.name)}?`, `${esc(b.dataset.name)} is removed from ${esc(league.name)}. Their past pods and pool stay in its history. The invite code won't let them back in; only the site admin can re-add them.`, 'Kick', true)) return;
     try { await del(`/leagues/${league.id}/members/${b.dataset.rmm}`); await refreshLeague(); } catch (err) { fail(err); }
+  });
+  $('#addTestBtn', view)?.addEventListener('click', async () => {
+    const n = 4 - league.members.length;
+    if (!await confirmBox(`Add ${plural(n, 'test player')}?`, `${esc(league.name)} gets ${n === 1 ? 'a test player' : `${n} test players`} (TestBot1, TestBot2, …) so it has 4. Remove them with “Remove test players” when you're done.`, 'Add test players')) return;
+    try { const r = await post(`/leagues/${league.id}/test-players`); toast(`Added ${esc(r.added.join(', '))}.`, 'good'); await refreshLeague(); } catch (err) { fail(err); }
+  });
+  $('#rmTestBtn', view)?.addEventListener('click', async () => {
+    if (!await confirmBox('Remove the test players?', 'Their accounts are deleted. Pods they played stay in the history as “Deleted player”. To start over completely, delete the league instead.', 'Remove', true)) return;
+    try { const r = await del(`/leagues/${league.id}/test-players`); toast(`Removed ${esc(r.removed.join(', '))}.`, 'good'); await refreshLeague(); } catch (err) { fail(err); }
   });
   $('#addMemberBtn', view)?.addEventListener('click', async () => {
     const userId = $('#addMember', view).value;
@@ -1922,7 +1939,7 @@ async function renderTrades(view) {
   view.innerHTML = `
     <div class="hero"><div><h1>Trades</h1><p>Swap pool cards with anyone in ${esc(S.league?.name || 'your league')}: any number of cards for any number. An offer waits until the other player accepts, declines or counters it, and accepted cards change pools straight away.</p></div>
       ${d.canTrade ? `<a class="btn gold" href="#trades?new=1">${I.trade} New trade</a>` : ''}</div>
-    ${d.canTrade ? '' : `<div class="panel small muted" style="margin-bottom:16px">${isAdmin() ? 'Trading is between league members, so the admin account can\'t trade. Use “Move to…” on a card to move it yourself.' : S.league?.status === 'ended' ? 'This league has ended, so trading is closed. Its trades stay here as a record.' : 'Join this league to trade with its players.'}</div>`}
+    ${d.canTrade ? '' : `<div class="panel small muted" style="margin-bottom:16px">${isAdminAccount() ? 'Trading is between league members, so the admin account can\'t trade. Use “Move to…” on a card to move it yourself.' : S.league?.status === 'ended' ? 'This league has ended, so trading is closed. Its trades stay here as a record.' : 'Join this league to trade with its players.'}</div>`}
     <div class="player-tabs">
       <a href="#trades?box=incoming" class="${box === 'incoming' ? 'sel' : ''}">Incoming <span class="${n('incoming') ? 'tbadge' : 'dim'}">${n('incoming')}</span></a>
       <a href="#trades?box=sent" class="${box === 'sent' ? 'sel' : ''}">Sent <span class="dim">${n('sent')}</span></a>
@@ -2551,9 +2568,10 @@ async function renderAdmin(view) {
       <h2>${I.user} Players</h2>
       <p class="small muted">${users.emailEnabled ? 'Password-reset emails are on.' : 'Password-reset emails are <b>off</b>: use <b>Reset link</b> and send the link yourself.'} <b>View as</b> shows the site exactly as that player sees it, read-only.</p>
       <table class="standings admin-users"><thead><tr><th>Player</th><th>Email</th><th>Joined</th><th></th></tr></thead>
-      <tbody>${users.users.map(u => `<tr class="${u.suspended ? 'dim' : ''}"><td><b>${u.isAdmin ? esc(u.username) : plink(u.id, u.username)}</b>${u.isAdmin ? ' <span class="chip gold">admin</span>' : ''}${u.suspended ? ` <span class="chip" title="${esc(u.suspendedReason)}">suspended</span>` : ''}<div class="small muted">${esc(u.precon) || ''}</div></td>
+      <tbody>${users.users.map(u => `<tr class="${u.suspended ? 'dim' : ''}"><td><b>${u.adminAccount ? esc(u.username) : plink(u.id, u.username)}</b>${u.adminAccount ? ' <span class="chip gold">admin account</span>' : u.staff ? ' <span class="chip gold" title="A player with admin powers">admin</span>' : ''}${u.test ? ' <span class="chip" title="Cannot sign in; an admin plays for it">test player</span>' : ''}${u.suspended ? ` <span class="chip" title="${esc(u.suspendedReason)}">suspended</span>` : ''}<div class="small muted">${esc(u.precon) || ''}</div></td>
         <td class="small">${esc(u.email) || '<span class="dim">—</span>'}</td><td class="small muted">${new Date(u.createdAt).toLocaleDateString()}</td>
-        <td class="admin-acts">${u.id === S.me.id ? '' : `
+        <td class="admin-acts">${u.id === S.me.id || u.adminAccount ? '' : `
+          ${isAdminAccount() && !u.test ? `<button class="btn sm ${u.staff ? '' : 'gold'}" data-ua="${u.staff ? 'unstaff' : 'staff'}" data-id="${u.id}" data-name="${esc(u.username)}">${u.staff ? 'Remove admin' : 'Make admin'}</button>` : ''}
           <button class="btn sm" data-ua="view" data-id="${u.id}" data-name="${esc(u.username)}">View as</button>
           <button class="btn sm" data-ua="rename" data-id="${u.id}" data-name="${esc(u.username)}">Rename</button>
           <button class="btn sm" data-ua="reset" data-id="${u.id}" data-name="${esc(u.username)}">Reset link</button>
@@ -2651,6 +2669,12 @@ async function renderAdmin(view) {
           if (!f) return;
           await post(`/admin/users/${id}/suspend`, { suspended: true, reason: f.reason }); toast(`${who} is suspended.`, 'good'); break;
         }
+        case 'staff':
+          if (!await confirmBox(`Make ${who} an admin?`, `${who} keeps playing as normal and also gets the Admin tab: giving and taking packs, fixing pods, moving cards, player tools, test players, the log and backups. Only you (the main admin account) can make or remove admins.`, 'Make admin')) return;
+          await post(`/admin/users/${id}/admin`, { admin: true }); toast(`${who} is now an admin.`, 'good'); break;
+        case 'unstaff':
+          if (!await confirmBox(`Remove ${who}'s admin powers?`, `${who} stays a player. They're signed out so the change takes effect right away.`, 'Remove admin', true)) return;
+          await post(`/admin/users/${id}/admin`, { admin: false }); toast(`${who} is a regular player again.`, 'good'); break;
         case 'unsuspend':
           await post(`/admin/users/${id}/suspend`, { suspended: false }); toast(`${who} can log in again.`, 'good'); break;
         case 'delete': {

@@ -969,6 +969,57 @@ test('player tools: rename, suspend, sign out everywhere, view as (read-only)', 
   assert.ok((await ok(admin.get('/api/admin/log'))).entries.some(e => e.summary === "Deleted Hal's account (can't be undone)." && !e.canUndo));
 });
 
+test('a player can be made an admin and keeps playing; admins fill a league to 4 with test players', async () => {
+  // Lex plays in Gus's league.
+  const lex = client();
+  S.u.Lex = (await ok(lex.post('/api/auth/signup', { agree: true, username: 'Lex', email: 'lex@example.com', password: PW }))).user;
+  await ok(admin.post(`/api/leagues/${S.gusLeague}/members`, { userId: S.u.Lex.id }));
+  assert.equal((await lex.get('/api/admin/overview')).status, 403, 'not an admin yet');
+  assert.equal((await nick.post(`/api/admin/users/${S.u.Lex.id}/admin`)).status, 403, 'only admins');
+
+  // The main admin makes Lex an admin; Lex keeps playing.
+  await ok(admin.post(`/api/admin/users/${S.u.Lex.id}/admin`, { admin: true }));
+  const me = (await ok(lex.get('/api/auth/me'))).user;
+  assert.deepEqual([me.isAdmin, me.adminAccount, me.staff], [true, false, true]);
+  await ok(lex.get('/api/admin/overview'));
+  const st = await ok(lex.get('/api/state'));
+  assert.equal(st.myLeagueId, S.gusLeague, 'still in the league');
+  assert.ok(st.members.some(m => m.id === S.u.Lex.id), 'still listed as a player');
+  assert.ok((await ok(lex.get(`/api/trades?league=${S.gusLeague}`))).canTrade, 'and can trade');
+
+  // What only the main admin account can do.
+  const adminId = (await ok(admin.get('/api/auth/me'))).user.id;
+  assert.equal((await lex.post(`/api/admin/users/${S.u.Nick.id}/admin`)).status, 403, 'can\'t make more admins');
+  assert.equal((await lex.post(`/api/admin/users/${adminId}/reset-link`)).status, 403, 'can\'t get into the main admin account');
+  assert.equal((await lex.del(`/api/admin/users/${adminId}`)).status, 409);
+  assert.equal((await lex.post(`/api/admin/users/${adminId}/signout`)).status, 403);
+  assert.equal((await lex.put(`/api/admin/users/${adminId}`, { username: 'boss' })).status, 403);
+
+  // Fill Gus's league (Gus and Lex) to 4 with test players.
+  const r = await ok(lex.post(`/api/leagues/${S.gusLeague}/test-players`));
+  assert.equal(r.added.length, 2);
+  assert.ok(r.added.every(n => /^TestBot\d+$/.test(n)));
+  assert.equal(r.league.members.length, 4);
+  assert.ok(r.league.members.filter(m => m.test).length === 2 && r.league.members.find(m => m.id === S.u.Lex.id).admin);
+  assert.equal((await lex.post(`/api/leagues/${S.gusLeague}/test-players`)).status, 409, 'already 4');
+  assert.equal((await gus.post(`/api/leagues/${S.gusLeague}/test-players`)).status, 403, 'admins only');
+  assert.equal((await anon.post('/api/auth/login', { username: r.added[0], password: 'whatever1' })).status, 401, 'test players can\'t sign in');
+  // An admin plays for them: a pod with two test players.
+  const bots = r.league.members.filter(m => m.test);
+  const { pod } = await ok(lex.post('/api/pods', { league: S.gusLeague, players: [S.u.Gus.id, ...bots.map(b => b.id)].map(userId => ({ userId })) }));
+  await ok(lex.post(`/api/pods/${pod.id}/winner`, { playerId: bots[0].id }));
+  assert.equal((await lex.del(`/api/leagues/${S.gusLeague}/test-players`)).status, 409, 'not while they\'re in a running pod');
+  await ok(lex.post(`/api/pods/${pod.id}/discard`));
+  const gone = await ok(lex.del(`/api/leagues/${S.gusLeague}/test-players`));
+  assert.equal(gone.removed.length, 2);
+  assert.equal(gone.league.members.length, 2);
+
+  // Taking admin away signs Lex out; then Lex's account goes so later member counts hold.
+  await ok(admin.post(`/api/admin/users/${S.u.Lex.id}/admin`, { admin: false }));
+  assert.equal((await lex.get('/api/admin/overview')).status, 401);
+  await ok(admin.del(`/api/admin/users/${S.u.Lex.id}`));
+});
+
 test('announcement, dashboard and backups', async () => {
   assert.equal((await nick.put('/api/admin/announcement', { text: 'hi' })).status, 403);
   await ok(admin.put('/api/admin/announcement', { text: 'Pod night Friday at 7pm!' }));

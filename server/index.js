@@ -27,7 +27,7 @@ import {
 } from './leagues.js';
 import { getBoosterSets, BOOSTER_SET_TYPES } from './scryfall.js';
 import { openPack, hasRealPack, realPackKind, localPackSets, sheetOdds } from './packs.js';
-import { requireAuth, requireAdmin, authRoutes, seedAdmin, listUsers, getUser, setPrecon } from './auth.js';
+import { requireAuth, requireAdmin, authRoutes, seedAdmin, listUsers, getUser, setPrecon, deleteAccount } from './auth.js';
 import { importDeck, editDeck, getDeck, deleteDeck, DeckError } from './decks.js';
 import { playerStats, seasonRecap } from './stats.js';
 import { discordInvite, podFinishedPost, leagueEndedPost } from './discord.js';
@@ -293,17 +293,17 @@ app.get('/api/leagues/:id', (req, res) => {
 // every player who isn't in an active league joins it right away (up to 16).
 app.post('/api/leagues', wrap(async (req, res) => {
   const name = String(req.body?.name || '').trim().slice(0, 40) || `League ${listLeagues().length + 1}`;
-  if (!req.user.isAdmin) {
+  if (!req.user.adminAccount) {
     const current = activeLeagueOf(req.user.id);
     if (current) throw new HttpError(409, `You're already in ${current.name}. Leave it first to start a new league.`);
   }
   const league = createLeague({ name, createdBy: req.user.id, wheel: globalSettings() });
   const joined = [];
-  if (!req.user.isAdmin) { addMember(league.id, req.user.id, req.user.id); joined.push(req.user.username); }
+  if (!req.user.adminAccount) { addMember(league.id, req.user.id, req.user.id); joined.push(req.user.username); }
   if (req.body?.addEveryone !== false) {
     for (const u of listUsers()) {
       if (joined.length >= LEAGUE_MAX) break;
-      if (u.is_admin || u.id === req.user.id || activeLeagueOf(u.id)) continue;
+      if (u.is_admin || u.is_test || u.id === req.user.id || activeLeagueOf(u.id)) continue;
       addMember(league.id, u.id, req.user.id);
       joined.push(u.username);
     }
@@ -353,15 +353,15 @@ app.get('/api/leagues/invite/:code', wrap(async (req, res) => {
   const current = activeLeagueOf(req.user.id);
   res.json({
     league: { id: league.id, name: league.name, status: league.status, members: leagueMembers(league.id).map(m => m.username), pods: finishedPods(league.id).length, running: activePods(league.id).length },
-    catchUpPacks: req.user.isAdmin ? 0 : catchUpCount(league.id, req.user.id),
-    catchUpPods: req.user.isAdmin ? 0 : catchUpPods(league.id, req.user.id).length,
+    catchUpPacks: req.user.adminAccount ? 0 : catchUpCount(league.id, req.user.id),
+    catchUpPods: req.user.adminAccount ? 0 : catchUpPods(league.id, req.user.id).length,
     current: current ? { id: current.id, name: current.name } : null,
     full: leagueMembers(league.id).length >= LEAGUE_MAX,
   });
 }));
 
 app.post('/api/leagues/join', wrap(async (req, res) => {
-  if (req.user.isAdmin) throw new HttpError(400, 'The admin account manages leagues and does not join them.');
+  if (req.user.adminAccount) throw new HttpError(400, 'The admin account manages leagues and does not join them.');
   const league = leagueByCode(req.body?.code || '');
   if (!league) throw new HttpError(404, 'No league has that code. Check it and try again.');
   joinCheck(league, req.user);
@@ -399,6 +399,56 @@ app.post('/api/leagues/:id/members', wrap(async (req, res) => {
   broadcast('state', { leagueId: league.id });
   res.json({ league: leagueView(req, league), catchUp: caught });
 }));
+// ---------- test players ----------
+// An admin can fill a league up to 4 members with test players to try it
+// out. They can't sign in; an admin plays for them (admins can already act
+// for any player: start pods, crown, spin, open packs, skip the vote). They're
+// never swept into new leagues. Removing them deletes the accounts (their
+// past pods stay, as "Deleted player").
+const TEST_FILL = 4;
+app.post('/api/leagues/:id/test-players', wrap(async (req, res) => {
+  requireAdmin(req);
+  const league = requireLeague(req.params.id);
+  if (league.status !== 'active') throw new HttpError(409, `${league.name} has ended.`);
+  const have = leagueMembers(league.id).length;
+  const want = Math.min(TEST_FILL, Number(req.body?.upTo) || TEST_FILL);
+  if (have >= want) throw new HttpError(409, `${league.name} already has ${plural(have, 'player')}.`);
+  const added = [];
+  for (let n = 1; added.length < want - have; n++) {
+    const username = `TestBot${n}`;
+    const taken = db.prepare('SELECT id, is_test FROM users WHERE username = ?').get(username);
+    let u;
+    if (!taken) {
+      const uid = crypto.randomUUID();
+      // A random password nobody knows; sign-in is refused for test players anyway.
+      db.prepare("INSERT INTO users (id, username, email, pass_hash, is_admin, must_change, created_at, is_test, precon) VALUES (?, ?, NULL, ?, 0, 0, ?, 1, 'Test precon')")
+        .run(uid, username, 'x$' + crypto.randomBytes(24).toString('hex'), now());
+      u = getUser(uid);
+    } else if (taken.is_test && !activeLeagueOf(taken.id)) u = getUser(taken.id);
+    else continue;
+    addMember(league.id, u.id, req.user.id);
+    catchUp(league, u);
+    added.push(u.username);
+  }
+  logEvent(league.id, 'join', req.user.id, `${req.user.username} added test ${added.length === 1 ? 'player' : 'players'} ${names(added)}.`);
+  logAdmin(req, { action: 'test-players', summary: `Added test players ${names(added)} to ${league.name}.`, leagueId: league.id });
+  broadcast('state', { leagueId: league.id });
+  res.json({ ok: true, added, league: leagueView(req, getLeague(league.id)) });
+}));
+app.delete('/api/leagues/:id/test-players', wrap(async (req, res) => {
+  requireAdmin(req);
+  const league = requireLeague(req.params.id);
+  const bots = leagueMembers(league.id).filter(m => getUser(m.id)?.is_test);
+  if (!bots.length) throw new HttpError(409, `${league.name} has no test players.`);
+  const busy = bots.map(b => [b, runningPodOf(league.id, b.id)]).find(([, p]) => p);
+  if (busy) throw new HttpError(409, `${busy[0].username} is playing in ${busy[1].name}. Finish or discard it first.`);
+  for (const b of bots) deleteAccount(b.id);
+  logEvent(league.id, 'leave', req.user.id, `${req.user.username} removed the test players.`);
+  logAdmin(req, { action: 'test-players', summary: `Removed ${plural(bots.length, 'test player')} from ${league.name}.`, leagueId: league.id });
+  broadcast('state', { leagueId: league.id });
+  res.json({ ok: true, removed: bots.map(b => b.username), league: leagueView(req, getLeague(league.id)) });
+}));
+
 // Kick a player: the league admin or the site admin.
 app.delete('/api/leagues/:id/members/:userId', wrap(async (req, res) => {
   const league = requireLeague(req.params.id);
