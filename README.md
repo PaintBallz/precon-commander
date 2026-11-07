@@ -15,7 +15,7 @@ and packs live.
 2. **Play a pod.** 3–4 players sit down with their precons. Several pods can run at once.
 3. **Vote.** When the pod ends, its players vote (never for themselves) to give one player a
    bonus pack. Ballots stay hidden until everyone has voted, and a tie means a re-vote.
-4. **Spin.** The winner spins a wheel of booster sets. Every pack from that pod is that set:
+4. **Spin.** Once everyone in the pod has the wheel open, the winner spins a wheel of booster sets. Every pack from that pod is that set:
    the winner gets the most, everyone else gets some, and league members who missed the pod
    get one too.
 5. **Open packs.** A rip-open animation, rares revealed last, and card zoom with double-faced
