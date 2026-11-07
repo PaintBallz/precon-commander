@@ -1007,7 +1007,16 @@ test('a player can be made an admin and keeps playing; admins fill a league to 4
   // An admin plays for them: a pod with two test players.
   const bots = r.league.members.filter(m => m.test);
   const { pod } = await ok(lex.post('/api/pods', { league: S.gusLeague, players: [S.u.Gus.id, ...bots.map(b => b.id)].map(userId => ({ userId })) }));
-  await ok(lex.post(`/api/pods/${pod.id}/winner`, { playerId: bots[0].id }));
+  let p = (await ok(lex.post(`/api/pods/${pod.id}/winner`, { playerId: bots[0].id }))).pod;
+  // Test players vote by themselves; the vote waits only on Gus.
+  assert.equal(p.vote.status, 'open');
+  assert.deepEqual([...p.vote.current.voted].sort(), bots.map(b => b.id).sort(), 'both test players voted right away');
+  for (let i = 0; i < 10 && p.vote.status === 'open'; i++) {
+    assert.ok(!p.vote.current.voted.includes(S.u.Gus.id), 'each round opens with the test players already voted');
+    const pick = p.vote.current.candidates.find(c => c !== S.u.Gus.id);
+    p = (await ok(gus.post(`/api/pods/${pod.id}/vote`, { candidateId: pick }))).pod;
+  }
+  assert.equal(p.vote.status, 'done', 'Gus\'s vote finishes it (test players re-vote on a tie)');
   assert.equal((await lex.del(`/api/leagues/${S.gusLeague}/test-players`)).status, 409, 'not while they\'re in a running pod');
   await ok(lex.post(`/api/pods/${pod.id}/discard`));
   const gone = await ok(lex.del(`/api/leagues/${S.gusLeague}/test-players`));

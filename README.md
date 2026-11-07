@@ -74,7 +74,8 @@ phones, and every phone sees spins, votes and packs live.
   only the main account can make or remove admins, and other admins can't rename, sign out,
   suspend, delete or get a reset link for an admin's account.
 - **Test players**: on the League tab an admin can fill a league up to 4 with test players
-  (TestBot1, …) to try it out. They can't sign in; an admin plays for them. They're never swept
+  (TestBot1, …) to try it out. They can't sign in and vote by themselves (a random other player,
+  again on every tie); an admin plays the rest for them. They're never swept
   into new leagues, and "Remove test players" deletes them.
 - **Admin tab** (site admin only):
   - **Dashboard**: players, leagues, running pods, unopened packs, new suggestions, reset-email

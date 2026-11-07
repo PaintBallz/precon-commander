@@ -602,6 +602,29 @@ function closeRoundIfComplete(pod) {
   v.decidedAt = now();
   findPlayer(pod, top[0]).awarded += rulesOf(pod).voteBonus;
 }
+// Test players vote by themselves: as soon as a round opens (the winner is
+// crowned, or a tie starts a re-vote), each one votes for a random candidate
+// other than itself. If that completes the round, the next one opens and they
+// vote again, until the vote is decided or it's waiting on a real player.
+function botVote(pod) {
+  const v = pod.vote;
+  if (v?.status !== 'open') return;
+  const bots = pod.players.filter(p => getUser(p.id)?.is_test).map(p => p.id);
+  if (!bots.length) return;
+  for (let guard = 0; guard < 25 && v.status === 'open'; guard++) {
+    const round = v.round;
+    const candidates = candidatesFor(pod, round);
+    for (const id of bots) {
+      if (v.ballots.some(b => b.round === round && b.voterId === id)) continue;
+      const choices = candidates.filter(c => c !== id);
+      v.ballots.push({ round, voterId: id, candidateId: choices[Math.floor(Math.random() * choices.length)], at: now() });
+    }
+    closeRoundIfComplete(pod);
+    if (v.round === round) break; // decided, or still waiting on a real player
+  }
+}
+const logVoteDecided = pod => logEvent(pod.leagueId, 'vote', null, `${findPlayer(pod, pod.vote.winnerId).name} won ${pod.name}'s bonus-pack vote${pod.vote.round > 1 ? ` after ${plural(pod.vote.round - 1, 're-vote')}` : ''}.`);
+
 // What a phone gets to see: ballots stay secret while a round is open (only
 // who has voted, plus your own choice); closed rounds show their counts.
 function view(req, pod) {
@@ -694,6 +717,8 @@ app.post('/api/pods/:id/winner', wrap(async (req, res) => {
   for (const p of pod.players) p.awarded = p.id === winner.id ? rules.winnerPacks : rules.loserPacks;
   openVote(pod);
   logEvent(pod.leagueId, 'win', req.user.id, `${winner.name} won ${pod.name}.`);
+  botVote(pod);
+  if (pod.vote.status === 'done') logVoteDecided(pod);
   res.json({ pod: view(req, commit(pod)) });
 }));
 
@@ -734,10 +759,9 @@ app.post('/api/pods/:id/vote', wrap(async (req, res) => {
   v.ballots.push({ round: v.round, voterId: req.user.id, candidateId, at: now() });
   const round = v.round;
   closeRoundIfComplete(pod);
+  if (v.status === 'open' && v.round > round) botVote(pod); // a re-vote: test players vote again
   const kind = v.status === 'done' ? 'decided' : v.round > round ? 'tied' : 'voted';
-  if (kind === 'decided') {
-    logEvent(pod.leagueId, 'vote', null, `${findPlayer(pod, v.winnerId).name} won ${pod.name}'s bonus-pack vote${v.round > 1 ? ` after ${plural(v.round - 1, 're-vote')}` : ''}.`);
-  }
+  if (kind === 'decided') logVoteDecided(pod);
   res.json({ pod: view(req, commit(pod, 'state', { vote: kind })), result: kind });
 }));
 
