@@ -157,7 +157,7 @@ players sign up, and one of them starts a league on the **League** tab.
 | `PUBLIC_URL` | `http://localhost:$PORT` | The site's public address, used in password-reset links. Set it in production. |
 | `CF_EMAIL_ACCOUNT_ID`, `CF_EMAIL_TOKEN`, `MAIL_FROM` | unset | Password-reset emails through Cloudflare Email Sending (the token needs the Email Sending permission; `MAIL_FROM` must be on a domain with Email Sending enabled). Used first when set. |
 | `DISCORD_WEBHOOK_URL` | unset | A Discord channel webhook (Edit channel → Integrations → Webhooks). When set, finished pods, season recaps and announcements are posted there, with no @mentions. The dashboard shows the last result and has a test button. Keep it secret: anyone with the URL can post to the channel. |
-| `DISCORD_INVITE` | unset | A `https://discord.gg/...` invite link; adds a "Join the league Discord" button to the footer. |
+| `DISCORD_INVITE` | unset | A `https://discord.gg/...` invite link; adds a "Join the Discord" button to the footer. |
 | `SMTP_HOST`, `SMTP_PORT` (`587`), `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` | unset | Password-reset emails through any SMTP server. With neither option set, "Forgot password" tells players to ask the admin, who makes a reset link on the Account page. |
 | `MAIL_FROM_NAME` | `Pre-Con Commander` | Sender name on reset emails. |
 | `RATE_ALL_PER_MIN` | `600` | Requests per IP per minute, every URL (pages, scripts, fonts, API). |

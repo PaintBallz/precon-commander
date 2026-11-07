@@ -1346,7 +1346,8 @@ test('static files carry long cache headers; the page itself is never cached', a
 // Last: these use up this test run's per-minute allowance.
 test('Discord: invite button, and finished pods, announcements and season recaps are posted', async () => {
   const home = await anon.get('/');
-  assert.ok(home.text.includes('<a class="btn sm discord-join" href="https://discord.gg/pcctest"'), 'the footer invite button');
+  assert.ok(home.text.includes('<a class="btn sm discord-join" href="https://discord.gg/pcctest" target="_blank" rel="noopener">Join the Discord</a>'), 'the footer invite button');
+  assert.match(home.text, /<div class="foot-actions">\s*<a class="btn sm discord-join"[^]*?id="fbBtn"[^]*?<\/div>/, 'in one row with Suggest a feature');
   const o = await ok(admin.get('/api/admin/overview'));
   assert.equal(o.discord.enabled, true);
   assert.equal((await nick.post('/api/admin/discord/test')).status, 403);

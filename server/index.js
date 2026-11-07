@@ -74,7 +74,7 @@ const INDEX_HTML = fs.readFileSync(path.join(PUBLIC, 'index.html'), 'utf8')
   .replace('/styles.css"', `/styles.css?v=${ASSET_VERSION}"`)
   .replace('/app.js"', `/app.js?v=${ASSET_VERSION}"`)
   .replace('<!--discord-invite-->', discordInvite()
-    ? `<a class="btn sm discord-join" href="${discordInvite()}" target="_blank" rel="noopener">Join the league Discord</a>`
+    ? `<a class="btn sm discord-join" href="${discordInvite()}" target="_blank" rel="noopener">Join the Discord</a>`
     : '');
 // app.js imports decklist.js; give that import the same version stamp so it
 // can be cached as long as app.js.

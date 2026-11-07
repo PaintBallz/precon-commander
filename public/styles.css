@@ -546,8 +546,10 @@ tr.dim td { color: var(--dim); }
 .site-foot .credit { font-family: var(--cond); text-transform: uppercase; letter-spacing: .06em; font-weight: 700; font-size: 1.05rem; color: var(--text); }
 .site-foot .discord { background: none; border: 0; padding: 0; font: inherit; color: var(--accent); cursor: pointer; }
 .site-foot .discord:hover { text-decoration: underline; }
-.site-foot .fb-btn { margin: 10px 0 4px; }
-.site-foot .discord-join { display: inline-flex; margin: 10px 6px 4px; background: #5865f2; border-color: #5865f2; color: #fff; text-decoration: none; }
+/* The Discord invite and Suggest a feature sit side by side, same height, centred. */
+.site-foot .foot-actions { display: flex; justify-content: center; align-items: stretch; flex-wrap: wrap; gap: 8px; margin: 10px 0 4px; }
+.site-foot .foot-actions .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; margin: 0; }
+.site-foot .discord-join { background: #5865f2; border-color: #5865f2; color: #fff; text-decoration: none; }
 .site-foot .discord-join:hover { background: #4752c4; border-color: #4752c4; }
 .fb-list { display: grid; gap: 8px; margin-top: 12px; }
 .fb-item { border: 1px solid var(--line); border-left: 3px solid var(--line2); padding: 10px 12px; background: var(--bg2); }
