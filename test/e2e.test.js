@@ -516,16 +516,25 @@ test('cannot sacrifice without another spun pack to give up', async () => {
   S.joePack = j.id;
 });
 
-test('generated booster for an old set (Foreign Black Border): 11 commons, 3 uncommons, 1 rare, no land slot', async () => {
-  await ok(joe.post(`/api/pods/${S.pod.id}/packs/${S.joePack}/choose`, { setCode: 'fbb' }));
+test('the foreign sets are off the list and cannot be chosen, spun or opened', async () => {
+  const codes = new Set((await ok(nick.get('/api/sets'))).sets.map(x => x.code));
+  for (const c of ['fbb', '4bb', 'bchr']) {
+    assert.ok(!codes.has(c), `${c} is not on the set list`);
+    assert.equal((await joe.post(`/api/pods/${S.pod.id}/packs/${S.joePack}/choose`, { setCode: c })).status, 400, `${c} cannot be chosen`);
+    assert.equal((await joe.post('/api/fun/open', { set: c })).status, 400, `${c} cannot be opened as a fun pack`);
+    assert.equal((await joe.get(`/api/fun/odds/${c}`)).status, 404);
+  }
+});
+
+test('generated booster for a set with no print sheets (Jumpstart 2022): land slot, 10 commons, 3 uncommons, 1 rare', async () => {
+  await ok(joe.post(`/api/pods/${S.pod.id}/packs/${S.joePack}/choose`, { setCode: 'j22' }));
   const { pack } = await ok(joe.post(`/api/pods/${S.pod.id}/packs/${S.joePack}/open`));
   assert.equal(pack.generated, true);
   assert.equal(pack.cards.length, 15);
-  assert.equal(count(pack.cards, c => c.rarity === 'common'), 11);
-  assert.equal(count(pack.cards, c => c.rarity === 'uncommon'), 3);
-  assert.equal(count(pack.cards, isRareUp), 1);
-  assert.equal(count(pack.cards, isBasic), 0, 'no basic land slot before Shards of Alara');
-  assert.ok(pack.cards.every(c => c.set === 'fbb'));
+  assert.equal(count(pack.cards, isBasic), 1, 'one basic land slot');
+  assert.ok(count(pack.cards, isRareUp) >= 1);
+  assert.ok(count(pack.cards, c => c.rarity === 'uncommon') >= 3);
+  assert.ok(pack.cards.every(c => c.set === 'j22'));
 });
 
 test('generated booster for a modern set (Jumpstart): land slot + rare/mythic', async () => {
@@ -1173,9 +1182,9 @@ test('admin can delete a single pulled card and a whole pack', async () => {
   assert.equal(after.cards.length, mikePack.cards.length - 1, 'and the pack\'s pulls in History');
   assert.ok(!after.cards.some(c => c.id === card.id));
 
-  // Joe's whole Foreign Black Border pack.
+  // Joe's whole Jumpstart 2022 pack.
   const joePacks = player(await histPod(), 'Joe').packs;
-  const alpha = joePacks.find(k => k.set.code === 'fbb');
+  const alpha = joePacks.find(k => k.set.code === 'j22');
   assert.equal((await joe.del(`/api/pods/${S.pod.id}/packs/${alpha.id}`)).status, 403, 'players cannot delete packs');
   assert.equal((await admin.del(`/api/pods/${S.pod.id}/packs/nope`)).status, 404);
   await ok(admin.del(`/api/pods/${S.pod.id}/packs/${alpha.id}`));
@@ -1292,10 +1301,10 @@ test('fun packs: any set, explained, never saved', async () => {
   assert.match(r.pack.explain.summary, /MTGJSON/);
   assert.deepEqual(r.pack.explain.slots.map(sl => [sl.label, sl.count]).sort(), [['Common', 11], ['Rare', 1], ['Uncommon', 3]]);
   assert.ok(r.pack.cards.every(c => c.set === 'lea' && c.image));
-  // … and a generated one (Foreign Black Border, cached by the earlier test).
-  r = await ok(mike.post('/api/fun/open', { set: 'fbb' }));
+  // … and a generated one (Jumpstart 2022, cached by the earlier test).
+  r = await ok(mike.post('/api/fun/open', { set: 'j22' }));
   assert.equal(r.pack.explain.source, 'generated');
-  assert.match(r.pack.explain.era, /Before Shards of Alara/);
+  assert.match(r.pack.explain.era, /Shards of Alara \(2008\) or later/);
   assert.equal(r.pack.explain.slots.reduce((n, sl) => n + sl.count, 0), 15);
   // Several packs at once (up to a box of 36), each built independently.
   assert.equal((await mike.post('/api/fun/open', { set: 'lea', count: 37 })).status, 400, 'more than a box');
@@ -1312,7 +1321,7 @@ test('fun packs: any set, explained, never saved', async () => {
   assert.equal(Math.round(Object.values(odds.cards).reduce((s, c) => s + c.exp, 0)), 15, 'expected copies add up to a pack');
   assert.ok(odds.sheets.every(sh => sh.appear === 1 && sh.keys.length === sh.size || sh.keys.length <= sh.size));
   assert.ok(r.packs.flatMap(p => p.cards).every(c => odds.cards[`${c.set}/${c.number}${c.foil ? '/f' : ''}`]), 'every pulled card is on a sheet');
-  assert.deepEqual(await ok(mike.get('/api/fun/odds/fbb')), { real: false }, 'generated sets have no sheet odds');
+  assert.deepEqual(await ok(mike.get('/api/fun/odds/j22')), { real: false }, 'generated sets have no sheet odds');
   assert.equal((await mike.get('/api/fun/odds/nope')).status, 404);
   assert.equal(JSON.stringify((await ok(mike.get('/api/pools'))).pools), before, 'pools are untouched');
   const { events } = await ok(mike.get(`/api/leagues/${S.league}`));
