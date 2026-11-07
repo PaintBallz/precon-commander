@@ -210,6 +210,13 @@ export function adminRoutes(app, { wrap, HttpError, broadcast, viewLeague, requi
       const to = getUser(String(b.swap.to));
       if (!seat) throw new HttpError(400, 'That person isn\'t in this pod.');
       if (!to || to.is_admin || !isMember(pod.leagueId, to.id) && !db.prepare('SELECT 1 FROM league_members WHERE league_id = ? AND user_id = ?').get(pod.leagueId, to.id)) throw new HttpError(400, 'Pick someone from this league.');
+      // Someone who joined the league later holds unopened catch-up packs for
+      // this pod; taking a real seat replaces them.
+      const late = pod.absentees.find(p => p.id === to.id);
+      if (late && late.packs.every(k => k.kind === 'catchup' && k.status !== 'opened')) {
+        pod.absentees = pod.absentees.filter(p => p !== late);
+        changes.push(`${to.username}'s unopened catch-up ${late.packs.length === 1 ? 'pack' : 'packs'} for it ${late.packs.length === 1 ? 'was' : 'were'} dropped`);
+      }
       if ([...pod.players, ...pod.absentees].some(p => p.id === to.id)) throw new HttpError(409, `${to.username} is already in this pod.`);
       swap = { from: seat.id, fromName: seat.name, to: to.id, toName: to.username };
       changes.push(`${seat.name}'s seat (with its packs and cards) is now ${to.username}'s`);

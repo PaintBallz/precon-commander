@@ -242,7 +242,7 @@ async function copyText(text, what = 'List') {
 }
 
 // ---------------- routing ----------------
-const ROUTES = ['league', 'pods', 'wheel', 'packs', 'pools', 'sets', 'history', 'fun', 'account', 'player', 'recap', 'admin', 'trades'];
+const ROUTES = ['league', 'pods', 'wheel', 'packs', 'pools', 'sets', 'history', 'fun', 'account', 'player', 'recap', 'admin', 'trades', 'join'];
 function parseRoute() {
   const [r, q] = location.hash.replace(/^#/, '').split('?');
   S.route = ROUTES.includes(r) ? r : 'pods';
@@ -258,10 +258,10 @@ window.addEventListener('hashchange', () => {
 function render() {
   if (!S.me || S.me.mustChange) { showAuth(); return; }
   $('#top').hidden = false;
-  $$('#tabs a').forEach(a => a.classList.toggle('active', a.dataset.tab === (S.route === 'player' || S.route === 'recap' ? 'league' : S.route)));
+  $$('#tabs a').forEach(a => a.classList.toggle('active', a.dataset.tab === (S.route === 'player' || S.route === 'recap' || S.route === 'join' ? 'league' : S.route)));
   const view = $('#view');
   if (S.route !== 'wheel') stopWheelLoop();
-  ({ league: renderLeague, pods: renderPods, wheel: renderWheel, packs: renderPacks, pools: renderPools, sets: renderSets, history: renderHistory, fun: renderFun, account: renderAccount, player: renderPlayer, recap: renderRecap, admin: renderAdmin, trades: renderTrades })[S.route](view);
+  ({ league: renderLeague, pods: renderPods, wheel: renderWheel, packs: renderPacks, pools: renderPools, sets: renderSets, history: renderHistory, fun: renderFun, account: renderAccount, player: renderPlayer, recap: renderRecap, admin: renderAdmin, trades: renderTrades, join: renderJoin })[S.route](view);
 }
 
 function confirmBox(title, body, okLabel = 'OK', danger = false) {
@@ -291,6 +291,9 @@ function showAuth() {
   const resetToken = location.hash.startsWith('#reset') ? new URLSearchParams(location.hash.split('?')[1] || '').get('token') : null;
   if (resetToken) return renderReset(view, resetToken);
   if (S.me?.mustChange) return renderMustChange(view);
+  // An invite link: new players most likely need an account first.
+  const invited = location.hash.startsWith('#join');
+  if (invited && !S.inviteSeen) { S.inviteSeen = true; authMode = 'signup'; }
   const tabs = `<div class="auth-tabs">
       <button data-m="login" class="${authMode === 'login' ? 'sel' : ''}">Log in</button>
       <button data-m="signup" class="${authMode === 'signup' ? 'sel' : ''}">Sign up</button>
@@ -319,6 +322,7 @@ function showAuth() {
   };
   view.innerHTML = `<div class="auth-wrap"><div class="panel auth-box">
       <div class="auth-brand"><img src="/favicon.svg" alt="" width="44" height="44"><div><h1>Pre-Con <b>Commander</b></h1><p class="muted small">League pods, one wheel spin, every pull tracked.</p></div></div>
+      ${invited ? `<p class="panel invite-note small">${I.flag} You've been invited to a league. Sign up (or log in) and you'll go straight to it.</p>` : ''}
       ${authMode === 'forgot' ? '<h2>Reset password</h2>' : tabs}
       ${forms[authMode]}
     </div></div>`;
@@ -466,6 +470,49 @@ const LEADING_EMOJI = /^\p{Extended_Pictographic}\uFE0F?\s*/u;
 const fmtWhen = iso => new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 async function refreshLeague() { S.leagueDetail = null; S.history = null; S.pools = null; await Promise.all([loadState(), loadSets()]); render(); }
 
+const inviteLink = code => `${location.origin}/#join?code=${encodeURIComponent(code)}`;
+
+// An invite link (#join?code=…): what the league is, how many catch-up packs
+// joining now brings, and one button to join.
+async function renderJoin(view) {
+  const code = String(S.params.code || '').trim().toUpperCase();
+  if (!code) { go('#league'); return; }
+  view.innerHTML = '<div class="spinner"></div>';
+  let d;
+  try { d = await api(`/leagues/invite/${encodeURIComponent(code)}`); } catch (err) {
+    view.innerHTML = `<div class="empty"><h2>That invite didn't work</h2><p>${esc(err.message)}</p><a class="btn" href="#league">Go to League</a></div>`;
+    return;
+  }
+  if (S.route !== 'join') return;
+  const l = d.league;
+  const already = d.current?.id === l.id;
+  const blocked = isAdmin() ? "The admin account runs leagues and doesn't join them."
+    : already ? null
+    : l.status !== 'active' ? `${esc(l.name)} has ended.`
+    : d.current ? `You're in ${esc(d.current.name)}. You can be in one league at a time, so leave it on the League tab first.`
+    : d.full ? `${esc(l.name)} is full.` : null;
+  view.innerHTML = `<div class="join-wrap"><div class="panel join-box">
+    <p class="small muted" style="margin:0">You're invited to</p>
+    <h1>${esc(l.name)}</h1>
+    <p class="muted">${plural(l.members.length, 'player')}: ${esc(l.members.join(', ')) || 'nobody yet'} · ${plural(l.pods, 'pod')} finished${l.running ? `, ${l.running} running` : ''}</p>
+    ${already ? `<p>You're already in ${esc(l.name)}.</p><a class="btn gold" href="#league">Go to the league</a>`
+      : blocked ? `<p class="warn-box panel">${blocked}</p><a class="btn" href="#league">Go to League</a>`
+      : `${d.catchUpPacks ? `<div class="catchup">${I.pack}<div><b>${plural(d.catchUpPacks, 'catch-up pack')}</b><span class="small muted">For the ${plural(d.catchUpPods, 'pod')} already spun before you joined: the same packs a player who missed ${d.catchUpPods === 1 ? 'it' : 'them'} got, so you start level with everyone else.</span></div></div>` : ''}
+         <button class="btn gold big" id="joinNow">Join ${esc(l.name)}</button>`}
+  </div></div>`;
+  $('#joinNow', view)?.addEventListener('click', async e => {
+    e.target.disabled = true;
+    try {
+      const r = await post('/leagues/join', { code });
+      toast(`Welcome to ${esc(r.league.name)}!${r.catchUp?.packs ? ` ${plural(r.catchUp.packs, 'catch-up pack')} ${r.catchUp.packs === 1 ? 'is' : 'are'} waiting for you.` : ''}`, 'good');
+      S.viewLeague = r.league.id;
+      await Promise.all([loadState(), loadSets()]);
+      S.leagueDetail = null; S.pools = null; S.trades = null;
+      go(r.catchUp?.packs ? '#packs' : '#league');
+    } catch (err) { fail(err); e.target.disabled = false; }
+  });
+}
+
 function joinCreateForms() {
   const canJoin = !isAdmin() && !S.myLeagueId;
   const canCreate = isAdmin() || !S.myLeagueId;
@@ -491,7 +538,7 @@ function wireJoinCreate(view) {
     e.preventDefault();
     try {
       const r = await post('/leagues/join', { code: new FormData(e.target).get('code').trim().toUpperCase() });
-      toast(`Welcome to ${esc(r.league.name)}!`, 'good');
+      toast(`Welcome to ${esc(r.league.name)}!${r.catchUp?.packs ? ` ${plural(r.catchUp.packs, 'catch-up pack')} ${r.catchUp.packs === 1 ? 'is' : 'are'} waiting for you on the Packs tab.` : ''}`, 'good');
       await showLeague(r.league.id);
     } catch (err) { fail(err); }
   });
@@ -533,7 +580,7 @@ async function renderLeague(view) {
         ${plural(league.members.length, 'player')} of ${lim.max}.</p></div>
       <div class="row">
         <a class="btn ${active ? '' : 'gold'}" href="#recap?league=${league.id}">${I.crown} ${active ? 'Season so far' : 'Season recap'}</a>
-        ${league.code && active ? `<div class="code-box" title="Friends join with this code on the League tab"><span class="small muted">Invite code</span><b>${esc(league.code)}</b><button class="btn sm" id="copyCode">${I.copy} Copy</button></div>` : ''}
+        ${league.code && active ? `<div class="code-box" title="Friends join with this code on the League tab"><span class="small muted">Invite code</span><b>${esc(league.code)}</b><button class="btn sm" id="copyCode" title="Copies a link that signs people up and joins them">${I.copy} Copy invite link</button></div>` : ''}
         ${league.isMember && active ? `<button class="btn danger sm" id="leaveL">Leave league</button>` : ''}
       </div>
     </div>
@@ -584,9 +631,9 @@ async function renderLeague(view) {
     ${joinCreateForms()}`;
   wireJoinCreate(view);
   $('#copyCode', view)?.addEventListener('click', async () => {
-    const text = `Join "${league.name}" on Pre-Con Commander: ${location.origin}  (League tab, invite code ${league.code})`;
+    const text = `Join "${league.name}" on Pre-Con Commander: ${inviteLink(league.code)}`;
     try { await navigator.clipboard.writeText(text); } catch { /* shown below anyway */ }
-    toast(`${I.copy} Invite copied: code <b>${esc(league.code)}</b>`, 'good');
+    toast(`${I.copy} Invite link copied. Anyone who opens it can sign up and join (code <b>${esc(league.code)}</b>).`, 'good');
   });
   $('#leaveL', view)?.addEventListener('click', async () => {
     if (!await confirmBox(`Leave ${esc(league.name)}?`, 'You stop getting packs for missed pods and can join or start another league. Your past pods stay in its history.', 'Leave league', true)) return;
@@ -599,7 +646,11 @@ async function renderLeague(view) {
   $('#addMemberBtn', view)?.addEventListener('click', async () => {
     const userId = $('#addMember', view).value;
     if (!userId) return;
-    try { await post(`/leagues/${league.id}/members`, { userId }); await refreshLeague(); } catch (err) { fail(err); }
+    try {
+      const r = await post(`/leagues/${league.id}/members`, { userId });
+      if (r.catchUp?.packs) toast(`Added, with ${plural(r.catchUp.packs, 'catch-up pack')} for the ${plural(r.catchUp.pods, 'pod')} already played.`, 'good');
+      await refreshLeague();
+    } catch (err) { fail(err); }
   });
   $('#rulesForm', view)?.addEventListener('submit', async e => {
     e.preventDefault();
@@ -627,7 +678,7 @@ function pendingBanner() {
   if (!S.pending.length || S.viewLeague !== S.myLeagueId) return '';
   return `<div class="panel pending">
     <h3 style="margin:0 0 8px">${I.pack} ${plural(S.pending.length, 'pack')} waiting for you</h3>
-    <div class="row">${S.pending.map(k => `<a class="chip" href="#packs?pod=${k.podId}&player=${S.me.id}&pack=${k.packId}">${k.status === 'choosing' ? `${I.question}` : icon(k.set)} ${k.status === 'choosing' ? 'Choose a set' : esc(k.set?.name || '')} <span class="dim">· ${k.grant ? `from the admin${k.note ? `: ${esc(k.note)}` : ''}` : `${esc(k.podName)}${k.absent ? ' (missed)' : ''}`}</span></a>`).join('')}</div>
+    <div class="row">${S.pending.map(k => `<a class="chip" href="#packs?pod=${k.podId}&player=${S.me.id}&pack=${k.packId}">${k.status === 'choosing' ? `${I.question}` : icon(k.set)} ${k.status === 'choosing' ? 'Choose a set' : esc(k.set?.name || '')} <span class="dim">· ${k.grant ? `from the admin${k.note ? `: ${esc(k.note)}` : ''}` : `${esc(k.podName)}${k.catchup ? ' (catch-up)' : k.absent ? ' (missed)' : ''}`}</span></a>`).join('')}</div>
   </div>`;
 }
 
@@ -844,7 +895,8 @@ function absentLine(pod) {
   const n = pod.rules?.absentPacks || 0;
   if (pod.spin) {
     if (!pod.absentees?.length) return '';
-    return `<div class="absent-line small muted">${I.pack} Missed it, ${plural(n, 'pack')} each: ${pod.absentees.map(a => `<a class="chip" href="#packs?pod=${pod.id}&player=${a.id}">${esc(a.name)} · ${a.packs.filter(k => k.status === 'opened').length}/${a.packs.length} opened</a>`).join(' ')}</div>`;
+    const late = a => a.packs.length && a.packs.every(k => k.kind === 'catchup');
+    return `<div class="absent-line small muted">${I.pack} Missed it, ${plural(n, 'pack')} each: ${pod.absentees.map(a => `<a class="chip" href="#packs?pod=${pod.id}&player=${a.id}" ${late(a) ? 'title="Joined the league later: catch-up packs"' : ''}>${esc(a.name)}${late(a) ? ' (joined later)' : ''} · ${a.packs.filter(k => k.status === 'opened').length}/${a.packs.length} opened</a>`).join(' ')}</div>`;
   }
   const others = S.members.filter(m => !pod.players.some(p => p.id === m.id));
   return n && others.length ? `<div class="absent-line small muted">${I.pack} ${names(others.map(m => esc(m.username)))} ${others.length === 1 ? 'is' : 'are'} not in this pod and will get ${plural(n, 'pack')} of the spun set.</div>` : '';
@@ -1772,7 +1824,7 @@ async function renderPools(view) {
     </div>
     <div class="cards" id="poolCards"></div>
     <details class="panel" style="margin-top:18px"><summary class="muted" style="cursor:pointer">Packs in this pool (${packs.length})</summary>
-      <div class="row" style="margin-top:10px">${packs.map(k => `<span class="chip">${icon(k.set)}${esc(k.set.name)}${k.source === 'sacrifice' ? ` ${I.flame}` : ''} <span class="dim">· ${k.kind === 'trade' ? esc(k.note || 'moved card') : k.kind === 'grant' ? `from the admin${k.note ? `: ${esc(k.note)}` : ''}` : `${esc(k.podName)}${k.absent ? ' (missed)' : ''}`} · ${k.cards.length}</span>${isAdmin() ? `<button class="chip-x" data-delpack="${k.podId}:${k.packId}" title="Admin: delete this pack and its pulls">✕</button>` : ''}</span>`).join('')}</div>
+      <div class="row" style="margin-top:10px">${packs.map(k => `<span class="chip">${icon(k.set)}${esc(k.set.name)}${k.source === 'sacrifice' ? ` ${I.flame}` : ''} <span class="dim">· ${k.kind === 'trade' ? esc(k.note || 'moved card') : k.kind === 'grant' ? `from the admin${k.note ? `: ${esc(k.note)}` : ''}` : `${esc(k.podName)}${k.kind === 'catchup' ? ' (catch-up)' : k.absent ? ' (missed)' : ''}`} · ${k.cards.length}</span>${isAdmin() ? `<button class="chip-x" data-delpack="${k.podId}:${k.packId}" title="Admin: delete this pack and its pulls">✕</button>` : ''}</span>`).join('')}</div>
       ${isAdmin() ? `<p class="small dim" style="margin:10px 0 0">Admin: ✕ deletes a whole pack; open a card and use ${I.trash} Remove to delete a single copy.</p>` : ''}
     </details>` : `<div class="empty"><p>${pool.userId === S.me.id ? 'Your' : `${esc(pool.username)}'s`} pool is empty. Cards show up here as soon as packs are opened.</p></div>`}`;
   $('#copyPool', view)?.addEventListener('click', () => copyText(listFor(cards), `${pool.username}'s pool${podName ? ` from ${podName}` : ''} (${cards.length} cards)`));

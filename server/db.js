@@ -414,12 +414,12 @@ export function finishedPods(leagueId) {
 // (running or finished) and pods they missed.
 export function pendingPacks(userId, leagueId) {
   return db.prepare(`
-    SELECT k.id AS pack_id, k.status, k.set_code, k.note, p.id AS pod_id, p.name AS pod_name, p.status AS pod_status, pp.role
+    SELECT k.id AS pack_id, k.status, k.set_code, k.note, k.kind, p.id AS pod_id, p.name AS pod_name, p.status AS pod_status, pp.role
     FROM pod_packs k JOIN pods p ON p.id = k.pod_id
     JOIN pod_players pp ON pp.pod_id = k.pod_id AND pp.user_id = k.user_id
     WHERE k.user_id = ? AND p.league_id = ? AND k.status != 'opened' AND p.status IN ('playing', 'awarded', 'done')
     ORDER BY p.created_at, k.seq`).all(userId, leagueId)
-    .map(r => ({ packId: r.pack_id, status: r.status, set: getSet(r.set_code, new Map()), podId: r.pod_id, podName: r.pod_name, podStatus: r.pod_status, absent: r.role === 'absent', ...(r.role === 'grant' ? { grant: true, note: r.note || '' } : {}) }));
+    .map(r => ({ packId: r.pack_id, status: r.status, set: getSet(r.set_code, new Map()), podId: r.pod_id, podName: r.pod_name, podStatus: r.pod_status, absent: r.role === 'absent', ...(r.kind === 'catchup' ? { catchup: true } : {}), ...(r.role === 'grant' ? { grant: true, note: r.note || '' } : {}) }));
 }
 export function deletePod(id) {
   return db.prepare('DELETE FROM pods WHERE id = ?').run(id).changes > 0;

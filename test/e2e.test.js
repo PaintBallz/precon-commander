@@ -12,7 +12,7 @@
 // copy lists → standings + feed → wheel odds → finish → history → end league.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -78,7 +78,7 @@ before(async () => {
     cwd: ROOT,
     env: { ...process.env, PORT: String(PORT), DATA_DIR, SMTP_HOST: '', MAIL_FROM: '', CF_EMAIL_TOKEN: '',
       // The whole suite runs from one IP; the last test checks the heavy limit.
-      RATE_ALL_PER_MIN: '100000', RATE_API_PER_MIN: '100000', RATE_HEAVY_PER_MIN: '200',
+      RATE_ALL_PER_MIN: '100000', RATE_API_PER_MIN: '100000', RATE_HEAVY_PER_MIN: '200', SIGNUPS_PER_HOUR: '20',
       DISCORD_WEBHOOK_URL: `http://127.0.0.1:${HOOK_PORT}/api/webhooks/123/test-token`, DISCORD_INVITE: 'https://discord.gg/pcctest' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -95,6 +95,13 @@ after(() => {
   server?.kill();
   hookServer.close();
   fs.rmSync(DATA_DIR, { recursive: true, force: true });
+});
+
+test('the browser code parses (a syntax error there breaks the whole site)', () => {
+  for (const f of ['public/app.js', 'public/decklist.js']) {
+    const r = spawnSync(process.execPath, ['--check', f], { cwd: ROOT, encoding: 'utf8' });
+    assert.equal(r.status, 0, `${f}: ${r.stderr}`);
+  }
 });
 
 test('serves the app shell and assets', async () => {
@@ -619,6 +626,40 @@ test('a missed pod\'s pack can still be opened after the pod is finished', async
   assert.equal((await ok(fay.get('/api/pools'))).pools.find(p => p.username === 'Fay').packs.length, 1);
 });
 
+test('a late joiner gets catch-up packs for every pod already spun, through the invite link', async () => {
+  const ivy = client();
+  await ok(ivy.post('/api/auth/signup', { agree: true, username: 'Ivy', email: 'ivy@example.com', password: PW }));
+  const code = (await ok(nick.get(`/api/leagues/${S.league}`))).league.code;
+  const spun = [...(await ok(nick.get('/api/history'))).pods, ...(await ok(nick.get('/api/state'))).pods].filter(p => p.spin);
+  const expected = spun.reduce((n, p) => n + p.rules.absentPacks, 0);
+  assert.ok(spun.length && expected > 0, 'there are spun pods to catch up on');
+
+  // The invite page says what joining brings.
+  assert.equal((await ivy.get('/api/leagues/invite/ZZZZZZ')).status, 404);
+  const invite = await ok(ivy.get(`/api/leagues/invite/${code.toLowerCase()}`));
+  assert.equal(invite.league.id, S.league);
+  assert.equal(invite.catchUpPacks, expected);
+  assert.equal((await ok(nick.get(`/api/leagues/invite/${code}`))).catchUpPacks, 0, 'a member who played or missed every pod has nothing to catch up');
+
+  const r = await ok(ivy.post('/api/leagues/join', { code }));
+  assert.deepEqual(r.catchUp, { pods: spun.length, packs: expected });
+  const st = await ok(ivy.get('/api/state'));
+  assert.equal(st.pending.length, expected, 'the catch-up packs are waiting');
+  assert.ok(st.pending.every(k => k.catchup && k.absent), 'labelled as catch-up');
+  const pod = await ok(ivy.get(`/api/pods/${st.pending[0].podId}`));
+  assert.equal(pod.pod.absentees.find(a => a.id === st.pending[0] && false) ?? pod.pod.absentees.find(a => a.name === 'Ivy').packs[0].set.code, pod.pod.spin.set.code, 'each pack is that pod\'s spun set');
+  const { pack } = await ok(ivy.post(`/api/pods/${st.pending[0].podId}/packs/${st.pending[0].packId}/open`));
+  assert.equal(pack.status, 'opened');
+  const ivyRow = (await ok(nick.get(`/api/leagues/${S.league}`))).standings.find(s => s.name === 'Ivy');
+  assert.deepEqual([ivyRow.pods, ivyRow.missed, ivyRow.packs], [0, 0, 1], 'catch-up pods don\'t count as missed');
+  assert.ok((await ok(nick.get(`/api/leagues/${S.league}`))).events.some(e => /Ivy joined with the invite code and gets \d+ catch-up packs? for the \d+ pods? played before they joined/.test(e.text)));
+
+  // Leaving and coming back doesn't hand out the same packs twice.
+  await ok(ivy.post(`/api/leagues/${S.league}/leave`));
+  assert.deepEqual((await ok(ivy.post('/api/leagues/join', { code }))).catchUp, { pods: 0, packs: 0 });
+  await ok(ivy.post('/api/auth/delete', { password: PW })); // keep the later member counts as they were
+});
+
 test('league standings and activity feed', async () => {
   const { standings, events } = await ok(eve.get(`/api/leagues/${S.league}`));
   const row = name => standings.find(s => s.name === name);
@@ -981,8 +1022,11 @@ test('pods, players, packs, pool cards and leagues are stored as tables', async 
     assert.equal(pod.league_id, S.league);
     assert.equal(pod.winner_id, S.u.Nick.id);
     assert.equal(pod.spin_set_code, S.spin.setCode);
-    const roles = db.prepare('SELECT role, count(*) n FROM pod_players WHERE pod_id = ? GROUP BY role ORDER BY role').all(S.pod.id);
+    // Players who joined the league after this pod hold catch-up packs for it; they're counted apart from the two who missed it.
+    const roles = db.prepare(`SELECT pp.role, count(*) n FROM pod_players pp WHERE pp.pod_id = ?
+      AND NOT EXISTS (SELECT 1 FROM pod_packs k WHERE k.pod_id = pp.pod_id AND k.user_id = pp.user_id AND k.kind = 'catchup') GROUP BY pp.role ORDER BY pp.role`).all(S.pod.id);
     assert.deepEqual(roles.map(r => [r.role, r.n]), [['absent', 2], ['player', 4]]);
+    assert.equal(db.prepare("SELECT count(DISTINCT user_id) n FROM pod_packs WHERE pod_id = ? AND kind = 'catchup'").get(S.pod.id).n, 2, 'Ivy and Hal joined later');
     const opened = db.prepare(`SELECT count(*) n FROM pod_packs WHERE pod_id = ? AND status = 'opened'`).get(S.pod.id).n;
     const cards = db.prepare('SELECT * FROM pool_cards WHERE pod_id = ?').all(S.pod.id);
     assert.equal(opened, openedPacks.length, 'opened packs of players and absent members');

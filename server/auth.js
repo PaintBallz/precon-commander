@@ -130,7 +130,7 @@ const WINDOW = 15 * 60e3, MAX_FAILS = 10;
 // Failed logins per IP across all usernames (credential stuffing tries many).
 const MAX_IP_FAILS = 30;
 // New accounts per IP: a handful per hour is plenty for a friend group.
-const SIGNUP_WINDOW = 60 * 60e3, MAX_SIGNUPS = 10;
+const SIGNUP_WINDOW = 60 * 60e3, MAX_SIGNUPS = Number(process.env.SIGNUPS_PER_HOUR) > 0 ? Number(process.env.SIGNUPS_PER_HOUR) : 10;
 // (clientIp, from ratelimit.js, reads CF-Connecting-IP only from the local tunnel.)
 function throttled(key, windowMs = WINDOW, max = MAX_FAILS) {
   const list = (failures.get(key) || []).filter(t => t > Date.now() - windowMs);

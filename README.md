@@ -12,6 +12,12 @@ phones, and every phone sees spins, votes and packs live.
 
 - **Leagues** of 3–16 players. Anyone can start one (it can sweep in everyone who isn't in a
   league yet); others join with a 6-letter **invite code**. One league at a time per player.
+- **Invite link** (`/#join?code=…`, "Copy invite link" on the League tab): opens sign-up for new
+  players, then a join page showing the league and any catch-up packs, with one Join button.
+- **Catch-up packs for late joiners**: joining after pods have been played (by link, code, or the
+  admin adding you) gives you what a member who missed each spun pod got (that pod's set, its
+  missed-pod pack count), labelled "catch-up". They don't count as pods missed in standings, and
+  leaving and rejoining never hands out the same packs twice.
 - **Pods** of 3–4 league players, each on their precon. Several pods can run at once.
 - **Bonus-pack vote**: when a pod ends, its players vote (never for themselves) to give one
   player an extra pack. Ballots are secret until everyone has voted, and a tie triggers a

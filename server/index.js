@@ -273,7 +273,8 @@ function computeStandings(leagueId) {
       s.sacrificed += p.sacrificed;
       count(s, p.packs);
     }
-    for (const a of pod.absentees) { const s = row(a.id, a.name); s.missed++; count(s, a.packs); }
+    // Catch-up packs (joined after the pod) aren't a missed pod.
+    for (const a of pod.absentees) { const s = row(a.id, a.name); if (!a.packs.every(k => k.kind === 'catchup')) s.missed++; count(s, a.packs); }
   }
   // Packs from the admin and moved cards count toward packs and pulls, not pods.
   for (const pod of grantsPods(leagueId)) for (const a of pod.absentees) count(row(a.id, a.name), a.packs);
@@ -320,6 +321,45 @@ function joinCheck(league, user) {
   if (leagueMembers(league.id).length >= LEAGUE_MAX) throw new HttpError(409, `${league.name} is full (${LEAGUE_MAX} players).`);
 }
 
+// ---------- catching up a late joiner ----------
+// Someone who joins after pods have been played gets what a member who missed
+// those pods got: each spun pod's "missed it" packs (the pod's rules, its
+// spun set). They're added to each pod as a missed player, so they open like
+// any missed-pod pack and the pod shows as missed in their pool. Pods that
+// haven't spun yet need nothing: the spin hands packs to every member.
+function catchUpPods(leagueId, userId) {
+  return [...activePods(leagueId), ...finishedPods(leagueId)]
+    .filter(p => p.spin?.set && rulesOf(p).absentPacks > 0 && !p.players.some(x => x.id === userId) && !p.absentees.some(x => x.id === userId));
+}
+const catchUpCount = (leagueId, userId) => catchUpPods(leagueId, userId).reduce((n, p) => n + rulesOf(p).absentPacks, 0);
+function catchUp(league, user) {
+  const pods = catchUpPods(league.id, user.id);
+  let packs = 0;
+  for (const pod of pods) {
+    const n = rulesOf(pod).absentPacks;
+    pod.absentees.push({ id: user.id, name: user.username, packs: Array.from({ length: n }, () => ({ ...newPack(pod.spin.set), kind: 'catchup' })) });
+    pod.updatedAt = now();
+    savePod(pod);
+    packs += n;
+  }
+  return { pods: pods.length, packs };
+}
+const caughtUpText = c => (c.packs ? ` and gets ${plural(c.packs, 'catch-up pack')} for the ${plural(c.pods, 'pod')} played before they joined` : '');
+
+// What an invite link shows before joining: the league and the catch-up packs.
+app.get('/api/leagues/invite/:code', wrap(async (req, res) => {
+  const league = leagueByCode(req.params.code || '');
+  if (!league) throw new HttpError(404, 'No league has that code. Check the link and try again.');
+  const current = activeLeagueOf(req.user.id);
+  res.json({
+    league: { id: league.id, name: league.name, status: league.status, members: leagueMembers(league.id).map(m => m.username), pods: finishedPods(league.id).length, running: activePods(league.id).length },
+    catchUpPacks: req.user.isAdmin ? 0 : catchUpCount(league.id, req.user.id),
+    catchUpPods: req.user.isAdmin ? 0 : catchUpPods(league.id, req.user.id).length,
+    current: current ? { id: current.id, name: current.name } : null,
+    full: leagueMembers(league.id).length >= LEAGUE_MAX,
+  });
+}));
+
 app.post('/api/leagues/join', wrap(async (req, res) => {
   if (req.user.isAdmin) throw new HttpError(400, 'The admin account manages leagues and does not join them.');
   const league = leagueByCode(req.body?.code || '');
@@ -327,9 +367,10 @@ app.post('/api/leagues/join', wrap(async (req, res) => {
   joinCheck(league, req.user);
   if (wasKicked(league.id, req.user.id)) throw new HttpError(403, `You were removed from ${league.name}. Ask the site admin to add you back.`);
   addMember(league.id, req.user.id, req.user.id);
-  logEvent(league.id, 'join', req.user.id, `${req.user.username} joined with the invite code.`);
+  const caught = catchUp(league, req.user);
+  logEvent(league.id, 'join', req.user.id, `${req.user.username} joined with the invite code${caughtUpText(caught)}.`);
   broadcast('state', { leagueId: league.id });
-  res.json({ league: leagueView(req, league) });
+  res.json({ league: leagueView(req, league), catchUp: caught });
 }));
 
 const runningPodOf = (leagueId, userId) => activePods(leagueId).find(p => p.players.some(x => x.id === userId));
@@ -353,9 +394,10 @@ app.post('/api/leagues/:id/members', wrap(async (req, res) => {
   if (!u || u.is_admin) throw new HttpError(400, 'Pick a player account.');
   joinCheck(league, { id: u.id, username: u.username });
   addMember(league.id, u.id, req.user.id);
-  logEvent(league.id, 'join', req.user.id, `${u.username} was added to the league by the site admin.`);
+  const caught = catchUp(league, u);
+  logEvent(league.id, 'join', req.user.id, `${u.username} was added to the league by the site admin${caughtUpText(caught)}.`);
   broadcast('state', { leagueId: league.id });
-  res.json({ league: leagueView(req, league) });
+  res.json({ league: leagueView(req, league), catchUp: caught });
 }));
 // Kick a player: the league admin or the site admin.
 app.delete('/api/leagues/:id/members/:userId', wrap(async (req, res) => {
