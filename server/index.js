@@ -164,8 +164,8 @@ const DEFAULT_SETTINGS = { minYear: 1993, maxYear: 2100, types: [...BOOSTER_SET_
 function globalSettings() { return { ...DEFAULT_SETTINGS, ...kvGet('wheel_settings', {}) }; }
 function settingsFor(league) { return league ? { ...DEFAULT_SETTINGS, ...league.wheel } : globalSettings(); }
 
-// Foreign-language reprints: never on the wheel, never chosen, never opened.
-const BLOCKED_SETS = new Set(['fbb', '4bb', 'bchr']);
+// Foreign-language printings (Foreign Black Border x3, Renaissance, Rinascimento): never on the wheel, never chosen, never opened.
+const BLOCKED_SETS = new Set(['fbb', '4bb', 'bchr', 'ren', 'rin']);
 
 // The booster set list changes when Wizards releases a set: cached for 10 minutes.
 async function allSets() {

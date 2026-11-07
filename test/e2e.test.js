@@ -536,9 +536,9 @@ test('cannot sacrifice without another spun pack to give up', async () => {
   S.joePack = j.id;
 });
 
-test('the foreign sets are off the list and cannot be chosen, spun or opened', async () => {
+test('the foreign-language sets are off the list and cannot be chosen, spun or opened', async () => {
   const codes = new Set((await ok(nick.get('/api/sets'))).sets.map(x => x.code));
-  for (const c of ['fbb', '4bb', 'bchr']) {
+  for (const c of ['fbb', '4bb', 'bchr', 'ren', 'rin']) {
     assert.ok(!codes.has(c), `${c} is not on the set list`);
     assert.equal((await joe.post(`/api/pods/${S.pod.id}/packs/${S.joePack}/choose`, { setCode: c })).status, 400, `${c} cannot be chosen`);
     assert.equal((await joe.post('/api/fun/open', { set: c })).status, 400, `${c} cannot be opened as a fun pack`);
