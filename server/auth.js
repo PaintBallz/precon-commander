@@ -74,15 +74,19 @@ function setPassword(userId, pw, mustChange = 0) {
   db.prepare('UPDATE users SET pass_hash = ?, must_change = ? WHERE id = ?').run(hashPassword(pw), mustChange, userId);
 }
 
-// First start: one admin account with the default password, which must be
-// changed on first login (the site is public).
+// First start: one admin account. Its starting password is ADMIN_INITIAL_PASSWORD,
+// or a random one printed once to the server log; either way it must be changed
+// on first login. There is no fixed default anyone could guess.
 export function seedAdmin() {
   if (db.prepare('SELECT 1 FROM users WHERE is_admin = 1').get()) return;
   const taken = db.prepare('SELECT 1 FROM users WHERE username = ?').get('admin');
   if (taken) { db.prepare('UPDATE users SET is_admin = 1 WHERE username = ?').run('admin'); return; }
+  const fromEnv = String(process.env.ADMIN_INITIAL_PASSWORD || '');
+  const pw = fromEnv || crypto.randomBytes(12).toString('base64url');
   db.prepare('INSERT INTO users (id, username, email, pass_hash, is_admin, must_change, created_at) VALUES (?, ?, NULL, ?, 1, 1, ?)')
-    .run(crypto.randomUUID(), 'admin', hashPassword('changeme'), now());
-  console.log('Created admin account (username "admin", password "changeme": change it on first login)');
+    .run(crypto.randomUUID(), 'admin', hashPassword(pw), now());
+  console.log(fromEnv ? 'Created admin account "admin" with ADMIN_INITIAL_PASSWORD: change it on first login'
+    : `Created admin account "admin" with starting password ${pw} (shown once): change it on first login`);
 }
 
 // ---------- sessions ----------

@@ -78,7 +78,7 @@ before(async () => {
     cwd: ROOT,
     env: { ...process.env, PORT: String(PORT), DATA_DIR, SMTP_HOST: '', MAIL_FROM: '', CF_EMAIL_TOKEN: '',
       // The whole suite runs from one IP; the last test checks the heavy limit.
-      RATE_ALL_PER_MIN: '100000', RATE_API_PER_MIN: '100000', RATE_HEAVY_PER_MIN: '200', SIGNUPS_PER_HOUR: '20',
+      RATE_ALL_PER_MIN: '100000', RATE_API_PER_MIN: '100000', RATE_HEAVY_PER_MIN: '200', SIGNUPS_PER_HOUR: '20', ADMIN_INITIAL_PASSWORD: 'changeme',
       DISCORD_WEBHOOK_URL: `http://127.0.0.1:${HOOK_PORT}/api/webhooks/123/test-token`, DISCORD_INVITE: 'https://discord.gg/pcctest' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -146,7 +146,7 @@ test('the league is behind a login', async () => {
   assert.equal((await anon.post('/api/auth/login', { username: 'admin', password: 'nope' })).status, 401);
 });
 
-test('admin starts on "changeme" and must change it first', async () => {
+test('admin starts on its initial password and must change it first', async () => {
   const { user } = await ok(admin.post('/api/auth/login', { username: 'admin', password: 'changeme' }));
   assert.equal(user.isAdmin, true);
   assert.equal(user.mustChange, true);

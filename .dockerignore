@@ -1,4 +1,12 @@
 node_modules
 data
+backups
 .git
 *.log
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+.claude
+.style-previews

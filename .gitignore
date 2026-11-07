@@ -1,3 +1,36 @@
+# Dependencies
 node_modules/
+
+# Live data: the database, its WAL files, snapshots and backups
 data/
+backups/
+*.db
+*.db-shm
+*.db-wal
+*.db.bak*
+*.sqlite
+*.sqlite3
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+docker-compose.override.yml
+compose.override.yml
+
+# Local tooling and scratch files
+.claude/
+.style-previews/
+.vscode/
+.idea/
 *.log
+coverage/
+tmp/
+
+# OS clutter
+.DS_Store
+Thumbs.db
+desktop.ini
