@@ -1068,6 +1068,12 @@ test('announcement, dashboard and backups', async () => {
   assert.equal((await ok(nick.get('/api/state'))).announcement.text, 'Pod night Friday at 7pm!');
   await ok(admin.put('/api/admin/announcement', { text: 'Old news', until: '2020-01-01' }));
   assert.equal((await ok(nick.get('/api/state'))).announcement, null, 'past its end date');
+  // The end is a moment (date and time), not just a day.
+  const soon = new Date(Date.now() + 2 * 3600e3).toISOString();
+  await ok(admin.put('/api/admin/announcement', { text: 'Pods start in 2 hours', until: soon }));
+  assert.equal((await ok(nick.get('/api/state'))).announcement.until, soon, 'kept to the minute');
+  await ok(admin.put('/api/admin/announcement', { text: 'Just ended', until: new Date(Date.now() - 60e3).toISOString() }));
+  assert.equal((await ok(nick.get('/api/state'))).announcement, null, 'a minute past its end time is gone, same day');
   await ok(admin.put('/api/admin/announcement', { text: '' }));
 
   const o = await ok(admin.get('/api/admin/overview'));

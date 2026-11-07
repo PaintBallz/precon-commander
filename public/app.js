@@ -103,6 +103,9 @@ const icon = (set, cls = '') => set?.icon ? `<img class="set-icon ${cls}" src="$
 const pct = n => n >= 0.1 ? (n * 100).toFixed(1) + '%' : n > 0 ? (n * 100).toFixed(2) + '%' : '—';
 const typeLabel = t => ({ expansion: 'Expansion', core: 'Core', masters: 'Masters', draft_innovation: 'Draft Innovation' }[t] || t);
 const fmtDate = iso => new Date(iso).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+const fmtDateTime = iso => new Date(iso).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+// An ISO time as a <input type="datetime-local"> value, in this browser's time zone.
+const localInput = iso => { const d = new Date(iso); return new Date(d.getTime() - d.getTimezoneOffset() * 60e3).toISOString().slice(0, 16); };
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 const RARITY_ORDER = { common: 0, uncommon: 1, rare: 2, mythic: 3, special: 3, bonus: 3 };
 const kindLabel = code => { const m = S.setsByCode.get(code); return m?.realPack ? ({ play: 'Play Booster', draft: 'Draft Booster', set: 'Set Booster' }[m.packKind] || 'Booster') : 'Booster'; };
@@ -2677,9 +2680,9 @@ async function renderAdmin(view) {
     <section class="panel" style="margin-top:16px">
       <h2>${I.flag} Announcement</h2>
       <form id="annForm" class="grid" style="gap:10px">
-        <p class="small muted" style="margin:0">A banner at the top of the site for every signed-in player. Players can hide it for themselves.${ann?.text ? ` Showing now${ann.until ? ` until ${fmtDate(ann.until)}` : ''}.` : ''}</p>
+        <p class="small muted" style="margin:0">A banner at the top of the site for every signed-in player. Players can hide it for themselves.${ann?.text ? ` Showing now${ann.until ? ` until ${fmtDateTime(ann.until)}` : ''}.` : ''}</p>
         <label>Message<input name="text" maxlength="280" value="${esc(ann?.text || '')}" placeholder="e.g. Pod night Friday at 7pm!"></label>
-        <label>Show until <span class="dim small">(optional)</span><input name="until" type="date" value="${ann?.until ? ann.until.slice(0, 10) : ''}"></label>
+        <label>Show until <span class="dim small">(optional)</span><input name="until" type="datetime-local" value="${ann?.until ? localInput(ann.until) : ''}"></label>
         ${o.discord.enabled ? '<label class="check"><input type="checkbox" name="discord" checked><span>Also post it to Discord</span></label>' : ''}
         <div class="row"><button class="btn gold">Save announcement</button>${ann?.text ? '<button type="button" class="btn danger sm" id="annClear">Clear</button>' : ''}</div>
       </form>
@@ -2749,7 +2752,7 @@ async function renderAdmin(view) {
   $('#annForm', view).onsubmit = async e => {
     e.preventDefault();
     const f = e.target;
-    try { await api('/admin/announcement', { method: 'PUT', body: { text: f.text.value, until: f.until.value ? `${f.until.value}T23:59:59` : null, discord: Boolean(f.discord?.checked) } }); toast(f.text.value.trim() ? 'Announcement is up.' : 'Announcement cleared.', 'good'); await loadState(); renderAdmin(view); } catch (err) { fail(err); }
+    try { await api('/admin/announcement', { method: 'PUT', body: { text: f.text.value, until: f.until.value ? new Date(f.until.value).toISOString() : null, discord: Boolean(f.discord?.checked) } }); toast(f.text.value.trim() ? 'Announcement is up.' : 'Announcement cleared.', 'good'); await loadState(); renderAdmin(view); } catch (err) { fail(err); }
   };
   $('#annClear', view)?.addEventListener('click', async () => {
     try { await api('/admin/announcement', { method: 'PUT', body: { text: '' } }); toast('Announcement cleared.', 'good'); await loadState(); renderAdmin(view); } catch (err) { fail(err); }
