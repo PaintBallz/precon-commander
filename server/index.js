@@ -632,7 +632,7 @@ const logVoteDecided = pod => logEvent(pod.leagueId, 'vote', null, `${findPlayer
 // who has voted, plus your own choice); closed rounds show their counts.
 function view(req, pod) {
   if (!pod) return pod;
-  const out = { ...pod, rules: rulesOf(pod) };
+  const out = { ...pod, rules: rulesOf(pod), ...(pod.spin ? {} : watchState(pod)) };
   if (!pod.vote) return out;
   const v = pod.vote;
   const closed = v.status === 'open' ? v.round - 1 : v.round;
@@ -784,12 +784,61 @@ app.post('/api/pods/:id/vote/skip', wrap(async (req, res) => {
 // The one spin per pod. Only the winner (or the admin) can pull the lever.
 // Every pod player gets their packs of the spun set, and every league member
 // who missed the pod gets absentPacks of it too.
+// ---------- everyone watches the spin ----------
+// While a player has their pod's wheel open, their phone pings /watch every few
+// seconds. The winner can only spin once every (real) player in the pod is
+// watching; test players always count as watching. Kept in memory: a restart
+// just means phones ping again. The admin can spin anyway (force).
+const WATCH_TTL = 20e3;
+const watchers = new Map(); // podId -> Map(userId -> last ping)
+function watchingOf(podId) {
+  const m = watchers.get(podId);
+  if (!m) return [];
+  const t = Date.now();
+  for (const [u, at] of m) if (t - at > WATCH_TTL) m.delete(u);
+  if (!m.size) watchers.delete(podId);
+  return [...m.keys()];
+}
+function watchState(pod) {
+  const watching = watchingOf(pod.id);
+  const waiting = pod.players.filter(p => !watching.includes(p.id) && !getUser(p.id)?.is_test).map(p => p.id);
+  return { watching, waiting };
+}
+const watchKey = pod => JSON.stringify(watchState(pod));
+function setWatch(pod, userId, on) {
+  const before = watchKey(pod);
+  if (on) { if (!watchers.has(pod.id)) watchers.set(pod.id, new Map()); watchers.get(pod.id).set(userId, Date.now()); }
+  else watchers.get(pod.id)?.delete(userId);
+  if (watchKey(pod) !== before) broadcast('watch', { podId: pod.id, leagueId: pod.leagueId, ...watchState(pod) });
+}
+// Phones that close without saying goodbye drop off after WATCH_TTL.
+setInterval(() => {
+  for (const podId of [...watchers.keys()]) {
+    const m = watchers.get(podId), t = Date.now();
+    if (![...m.values()].some(at => t - at > WATCH_TTL)) continue;
+    const pod = loadPod(podId);
+    if (!pod || pod.spin) { watchers.delete(podId); continue; }
+    watchingOf(podId);
+    broadcast('watch', { podId, leagueId: pod.leagueId, ...watchState(pod) });
+  }
+}, 5e3).unref();
+
+app.post('/api/pods/:id/watch', wrap(async (req, res) => {
+  const pod = requirePod(req.params.id);
+  if (!pod.spin && pod.players.some(p => p.id === req.user.id)) setWatch(pod, req.user.id, req.body?.on !== false);
+  res.json(pod.spin ? { watching: [], waiting: [] } : watchState(pod));
+}));
+
 app.post('/api/pods/:id/spin', wrap(async (req, res) => {
   const canSpin = pod => {
     if (pod.status !== 'awarded') throw new HttpError(409, 'Crown the winner first: the winner spins the wheel.');
     if (pod.spin) throw new HttpError(409, `This pod already spun ${pod.spin.set.name}. There is only one spin per pod.`);
     if (pod.vote?.status === 'open') throw new HttpError(409, 'Finish the bonus-pack vote first: the spin hands out everyone\'s packs.');
     if (!req.user.isAdmin && req.user.id !== pod.winnerId) throw new HttpError(403, `Only the winner, ${findPlayer(pod, pod.winnerId).name}, can spin.`);
+    const waiting = watchState(pod).waiting.filter(id => id !== req.user.id);
+    if (waiting.length && !(req.user.isAdmin && req.body?.force)) {
+      throw new HttpError(409, `Waiting for ${names(waiting.map(id => findPlayer(pod, id).name))} to open the wheel. Everyone watches the spin.`);
+    }
   };
   const before = requirePod(req.params.id);
   canSpin(before);
@@ -812,6 +861,7 @@ app.post('/api/pods/:id/spin', wrap(async (req, res) => {
     ? leagueMembers(league.id).filter(m => !pod.players.some(p => p.id === m.id))
       .map(m => ({ id: m.id, name: m.username, packs: Array.from({ length: absent }, () => newPack(set)) }))
     : [];
+  watchers.delete(pod.id);
   logEvent(pod.leagueId, 'spin', req.user.id, `${pod.name} spun ${set.name}.${pod.absentees.length ? ` ${names(pod.absentees.map(a => a.name))} missed it and get ${plural(absent, `${set.name} pack`)} each.` : ''}`);
   res.json({ pod: view(req, commit(pod, 'spin', { spinId: pod.spin.id })), spin: pod.spin });
 }));

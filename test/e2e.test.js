@@ -70,6 +70,12 @@ const S = { u: {} };
 const anon = client();
 const admin = client();
 const nick = client(), mike = client(), joe = client(), dan = client(), eve = client(), fay = client(), gus = client();
+const CLIENTS = { Nick: nick, Mike: mike, Joe: joe, Dan: dan, Eve: eve, Fay: fay, Gus: gus };
+// Everyone in the pod opens the wheel page (the spin waits for them).
+async function watchAll(podId) {
+  const { pod } = await ok(admin.get(`/api/pods/${podId}`));
+  for (const pl of pod.players) if (CLIENTS[pl.name]) await ok(CLIENTS[pl.name].post(`/api/pods/${podId}/watch`, { on: true }));
+}
 const player = (pod, who) => pod.players.find(p => p.id === S.u[who].id);
 
 before(async () => {
@@ -415,6 +421,20 @@ test('only the winner spins, once; league members who missed it get a pack of th
   // below don't depend on which of ~180 sets comes up.
   const REAL = ['dom', 'war', 'eld', 'neo'];
   await ok(admin.put('/api/settings', { league: S.league, excluded: S.sets.map(s => s.code).filter(c => !REAL.includes(c)) }));
+  // Everyone watches the spin: the winner can't spin until the whole pod has the wheel open.
+  let w = await ok(nick.post(`/api/pods/${S.pod.id}/watch`, { on: true }));
+  assert.ok(w.watching.includes(S.u.Nick.id));
+  const locked = await nick.post(`/api/pods/${S.pod.id}/spin`);
+  assert.equal(locked.status, 409, 'spin waits for everyone');
+  assert.match(locked.json.error, /Waiting for .*to open the wheel/);
+  await ok(fay.post(`/api/pods/${S.pod.id}/watch`, { on: true })); // not in the pod: ignored
+  await watchAll(S.pod.id);
+  const { pod: watched } = await ok(nick.get(`/api/pods/${S.pod.id}`));
+  assert.deepEqual(watched.waiting, [], 'everyone is watching');
+  assert.ok(!watched.watching.includes(S.u.Fay.id));
+  await ok(mike.post(`/api/pods/${S.pod.id}/watch`, { on: false }));
+  assert.ok((await ok(nick.get(`/api/pods/${S.pod.id}`))).pod.waiting.includes(S.u.Mike.id), 'leaving the page counts');
+  await watchAll(S.pod.id);
   // A double tap sends two spins at once: exactly one may land.
   const taps = await Promise.all([nick.post(`/api/pods/${S.pod.id}/spin`), nick.post(`/api/pods/${S.pod.id}/spin`)]);
   assert.deepEqual(taps.map(t => t.status).sort(), [200, 409], 'two spins at once: one lands, one is refused');
@@ -1075,7 +1095,8 @@ test('the admin can skip a stuck vote; a league can turn the vote off', async ()
   const skipped = (await ok(admin.post(`/api/pods/${three.id}/vote/skip`))).pod;
   assert.equal(skipped.vote.status, 'skipped');
   assert.deepEqual(skipped.players.map(p => p.awarded), [3, 2, 2]);
-  await ok(eve.post(`/api/pods/${three.id}/spin`));
+  assert.equal((await eve.post(`/api/pods/${three.id}/spin`, { force: true })).status, 409, 'only the admin can spin without everyone');
+  await ok(admin.post(`/api/pods/${three.id}/spin`, { force: true }));
   await ok(eve.post(`/api/pods/${three.id}/discard`));
 
   await ok(admin.put(`/api/leagues/${S.league}`, { rules: { voteBonus: 0 } }));
@@ -1142,6 +1163,7 @@ test('wheel odds follow per-set weights and exclusions (admin)', async () => {
   for (let i = 0; i < N; i++) {
     const { pod } = await ok(admin.post('/api/pods', { league: S.league, players: ['Eve', 'Joe', 'Dan'].map(n => ({ userId: S.u[n].id })) }));
     await ok(eve.post(`/api/pods/${pod.id}/winner`, { playerId: S.u.Eve.id }));
+    await watchAll(pod.id);
     hits[(await ok(eve.post(`/api/pods/${pod.id}/spin`))).spin.setCode]++;
     await ok(eve.post(`/api/pods/${pod.id}/discard`));
   }
@@ -1203,6 +1225,7 @@ async function quickPod(trio, { finish = false } = {}) {
   const { pod } = await ok(eve.post('/api/pods', { players: trio.map(n => ({ userId: S.u[n].id })) }));
   await ok(eve.post(`/api/pods/${pod.id}/winner`, { playerId: S.u[trio[0]].id }));
   await ok(admin.post(`/api/pods/${pod.id}/vote/skip`));
+  await watchAll(pod.id);
   const spun = (await ok(eve.post(`/api/pods/${pod.id}/spin`))).pod;
   await ok(eve.post(`/api/pods/${pod.id}/packs/${spun.players[0].packs[0].id}/open`));
   if (finish) await ok(eve.post(`/api/pods/${pod.id}/finish`));

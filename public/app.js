@@ -287,17 +287,37 @@ function parseRoute() {
   S.params = Object.fromEntries(new URLSearchParams(q || ''));
 }
 const go = hash => { if (location.hash === hash) { parseRoute(); render(); } else location.hash = hash; };
-// The vote is over and the wheel is waiting: take the pod's players (and whoever
-// just ended it) to the wheel, unless they're mid-spin, mid-reveal or typing.
-function toWheelIfReady(pod, force = false) {
-  if (!pod || pod.spin || pod.status !== 'awarded' || voteOpen(pod)) return false;
-  if (!force && !pod.players.some(p => p.id === S.me?.id)) return false;
-  if (S.spinning || S.opening || $('.mcard.down')) return false;
-  const typing = document.activeElement && ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName);
-  if (typing || (S.route === 'trades' && (S.params.new || S.params.counter))) return false;
-  if (S.route === 'wheel' && S.podId === pod.id) return false;
-  go(`#wheel?pod=${pod.id}`);
-  return true;
+// The vote is over and the wheel is waiting: nudge the pod's players to open
+// it (the spin waits until everyone is watching). Nobody is moved automatically.
+function wheelNudge(pod) {
+  if (!pod || pod.spin || pod.status !== 'awarded' || voteOpen(pod)) return;
+  if (!pod.players.some(p => p.id === S.me?.id)) return;
+  if (S.route === 'wheel' && S.podId === pod.id) return;
+  toast(`${I.wheel} ${esc(pod.name)} is ready to spin. Everyone watches: <a href="#wheel?pod=${pod.id}">open the wheel</a>`, 'good');
+}
+
+// While I have my pod's wheel open (and it hasn't spun), tell the server every
+// few seconds so the winner can see I'm watching; say goodbye when I leave.
+const WATCH_EVERY = 8e3;
+function syncWatch() {
+  const pod = S.route === 'wheel' ? currentPod() : null;
+  const want = pod && !pod.spin && pod.players.some(p => p.id === S.me?.id) && document.visibilityState === 'visible' ? pod.id : null;
+  if (want === S.watchPod) return;
+  if (S.watchPod) post(`/pods/${S.watchPod}/watch`, { on: false }).catch(() => {});
+  clearInterval(S.watchTimer);
+  S.watchPod = want;
+  if (!want) return;
+  const ping = () => post(`/pods/${want}/watch`, { on: true }).then(w => applyWatch(want, w)).catch(() => {});
+  ping();
+  S.watchTimer = setInterval(ping, WATCH_EVERY);
+}
+document.addEventListener('visibilitychange', () => { if (S.me) syncWatch(); });
+function applyWatch(podId, w) {
+  const pod = podById(podId);
+  if (!pod || pod.spin) return;
+  if (JSON.stringify([pod.watching, pod.waiting]) === JSON.stringify([w.watching, w.waiting])) return;
+  pod.watching = w.watching; pod.waiting = w.waiting;
+  if (S.route === 'wheel' && S.podId === podId && !S.spinning) renderWheel($('#view'));
 }
 window.addEventListener('hashchange', () => {
   if (location.hash.startsWith('#reset')) { showAuth(); return; }
@@ -308,6 +328,7 @@ window.addEventListener('hashchange', () => {
 function render() {
   S.stopReveal?.(); S.stopReveal = null;
   if (!S.me || S.me.mustChange) { showAuth(); return; }
+  queueMicrotask(syncWatch);
   $('#top').hidden = false;
   $$('#tabs a').forEach(a => a.classList.toggle('active', a.dataset.tab === (S.route === 'player' || S.route === 'recap' || S.route === 'join' ? 'league' : S.route)));
   layoutTabs();
@@ -815,7 +836,7 @@ function wirePods(view) {
   $$('[data-win]', view).forEach(b => b.onclick = async () => {
     const pod = podById(b.dataset.pod), p = pod.players.find(x => x.id === b.dataset.win);
     if (!await confirmBox(`Crown <b>${esc(p.name)}</b> the winner?`, `${esc(p.name)} gets ${plural(pod.rules.winnerPacks, 'pack')}, everyone else gets ${pod.rules.loserPacks}, and ${esc(p.name)} spins the wheel for the whole pod.`, `Crown winner ${I.crown}`)) return;
-    try { await post(`/pods/${pod.id}/winner`, { playerId: p.id }); await loadState(); if (!toWheelIfReady(podById(pod.id), true)) render(); } catch (err) { fail(err); }
+    try { await post(`/pods/${pod.id}/winner`, { playerId: p.id }); await loadState(); render(); wheelNudge(podById(pod.id)); } catch (err) { fail(err); }
   });
   $$('[data-award]', view).forEach(b => b.onclick = async () => {
     try { await post(`/pods/${b.dataset.pod}/award`, { playerId: b.dataset.award, delta: Number(b.dataset.delta) }); await loadState(); render(); } catch (err) { fail(err); }
@@ -836,12 +857,12 @@ function wirePods(view) {
       S.pods = S.pods.map(x => x.id === r.pod.id ? r.pod : x);
       render();
       if (r.result === 'tied') toast(`${I.vote} It's a tie: re-vote between the tied players.`, 'good');
-      if (r.result === 'decided') { toast(`${I.vote} ${esc(nameIn(r.pod, r.pod.vote.winnerId))} wins the bonus pack!`, 'good'); toWheelIfReady(r.pod, true); }
+      if (r.result === 'decided') { toast(`${I.vote} ${esc(nameIn(r.pod, r.pod.vote.winnerId))} wins the bonus pack!`, 'good'); wheelNudge(r.pod); }
     } catch (err) { fail(err); b.disabled = false; }
   });
   $$('[data-skipvote]', view).forEach(b => b.onclick = async () => {
     if (!await confirmBox('Skip the vote?', 'Nobody gets the bonus pack, and the winner can spin right away.', 'Skip vote', true)) return;
-    try { await post(`/pods/${b.dataset.skipvote}/vote/skip`); await loadState(); if (!toWheelIfReady(podById(b.dataset.skipvote), true)) render(); } catch (err) { fail(err); }
+    try { await post(`/pods/${b.dataset.skipvote}/vote/skip`); await loadState(); render(); } catch (err) { fail(err); }
   });
   $$('[data-discard]', view).forEach(b => b.onclick = async () => {
     const pod = podById(b.dataset.discard);
@@ -1158,7 +1179,20 @@ function renderWheel(view) {
   if (pod?.spin && !S.spinning) restOn(pod.spin);
   const st = S.settings;
   const winner = pod?.players.find(p => p.id === pod.winnerId);
-  const mayspin = !!pod && pod.status === 'awarded' && !pod.spin && !voteOpen(pod) && (isAdmin() || S.me.id === pod.winnerId);
+  const canSpinNow = !!pod && pod.status === 'awarded' && !pod.spin && !voteOpen(pod) && (isAdmin() || S.me.id === pod.winnerId);
+  const waiting = (pod?.waiting || []).filter(id => id !== S.me.id);
+  const mayspin = canSpinNow && !waiting.length;
+  const showWatch = !!pod && pod.status === 'awarded' && !pod.spin;
+  const watchBox = showWatch ? `<div class="panel watch-box">
+      <h3>${I.wheel} Everyone watches the spin</h3>
+      <div class="watchers">${pod.players.map(p => {
+        const here = p.id === S.me.id && S.watchPod === pod.id || pod.watching?.includes(p.id) || !pod.waiting?.includes(p.id);
+        return `<span class="chip ${here ? 'here' : 'away'}">${here ? '✓' : '…'} ${esc(p.name)}</span>`;
+      }).join('')}</div>
+      <p class="small muted" style="margin:8px 0 0">${voteOpen(pod) ? 'Open this page while the vote finishes; the spin unlocks once it\'s decided and everyone is here.'
+        : waiting.length ? `Waiting for ${esc(waiting.map(id => nameIn(pod, id)).join(', '))} to open the wheel.` : 'Everyone is here.'}</p>
+      ${canSpinNow && waiting.length && isAdmin() ? `<button class="btn ghost sm" id="forceSpin" style="margin-top:10px">Spin anyway (admin)</button>` : ''}
+    </div>` : '';
   view.innerHTML = `
     ${pod ? podSwitcher(pod, 'wheel') : ''}
     <div class="wheel-layout">
@@ -1184,6 +1218,7 @@ function renderWheel(view) {
             : voteOpen(pod) ? `${I.vote} The pod is voting on the bonus pack. <a href="#pods">Vote on the Pods tab</a>; the spin unlocks when it's decided.`
             : `${I.crown} <b>${esc(winner.name)}</b> spins once for the whole pod.${mayspin ? '' : ' Waiting for them to spin…'}`}</p>
         </div>`}
+        ${watchBox}
         <div id="revealBox"></div>
         ${isAdmin() ? `<details class="panel settings-box" ${store.get('wheelSettingsOpen', false) ? 'open' : ''}>
           <summary><span>${I.sliders} Wheel settings <span class="chip gold">admin</span></span><span class="dim small">${S.wheel.length} of ${S.sets.length} sets</span></summary>
@@ -1209,17 +1244,21 @@ function renderWheel(view) {
   requestAnimationFrame(drawWheel);
   const spinBtn = $('#spinBtn', view);
   spinBtn.disabled = !mayspin || S.spinning || !S.wheel.length;
-  spinBtn.title = !pod ? 'Start a pod: its winner spins when it ends' : pod.spin ? 'This pod already spun' : pod.status !== 'awarded' ? 'Crown a winner first' : voteOpen(pod) ? 'Finish the bonus-pack vote first' : !mayspin ? `Only ${winner.name} can spin` : 'Spin!';
-  spinBtn.onclick = async () => {
+  spinBtn.title = !pod ? 'Start a pod: its winner spins when it ends' : pod.spin ? 'This pod already spun' : pod.status !== 'awarded' ? 'Crown a winner first' : voteOpen(pod) ? 'Finish the bonus-pack vote first' : !canSpinNow ? `Only ${winner.name} can spin` : waiting.length ? 'Waiting for everyone to open the wheel' : 'Spin!';
+  const doSpin = async (force = false) => {
     spinBtn.disabled = true;
     try {
       audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
-      const { spin } = await post(`/pods/${pod.id}/spin`);
+      const { spin } = await post(`/pods/${pod.id}/spin`, force ? { force: true } : {});
       S.seenSpins.add(spin.id);
       await loadState();
       await runSpin(pod.id, spin);
     } catch (err) { fail(err); renderWheel(view); }
   };
+  spinBtn.onclick = () => doSpin();
+  $('#forceSpin', view)?.addEventListener('click', async () => {
+    if (await confirmBox('Spin without everyone?', `${esc(waiting.map(id => nameIn(pod, id)).join(', '))} ${waiting.length > 1 ? "aren't" : "isn't"} on the wheel page. They'll still get their packs.`, 'Spin anyway')) doSpin(true);
+  });
   if (isAdmin()) {
     const det = $('.settings-box', view);
     det.addEventListener('toggle', () => store.set('wheelSettingsOpen', det.open));
@@ -2873,7 +2912,7 @@ function connect() {
         const pod = podById(info.podId);
         if (pod?.players.some(p => p.id === S.me.id)) toast(info.vote === 'tied' ? `${I.vote} ${esc(pod.name)}: tie! Re-vote between the tied players.` : `${I.vote} ${esc(pod.name)}: ${esc(nameIn(pod, pod.vote.winnerId))} wins the bonus pack.`, 'good');
       }
-      if ((info.vote === 'decided' || info.vote === 'ready') && Date.now() - (S.justVoted || 0) > 3000 && toWheelIfReady(podById(info.podId))) return;
+      if ((info.vote === 'decided' || info.vote === 'ready') && Date.now() - (S.justVoted || 0) > 3000) wheelNudge(podById(info.podId));
       if (S.spinning || S.opening) return;
       // Player pages and recaps are snapshots; they refresh when reopened.
       if (S.route === 'player' || S.route === 'recap' || S.route === 'admin') return;
@@ -2887,6 +2926,7 @@ function connect() {
   };
   es.addEventListener('state', onState);
   es.addEventListener('spin', onState);
+  es.addEventListener('watch', e => { try { const w = JSON.parse(e.data || '{}'); applyWatch(w.podId, w); } catch { /* ignore */ } });
   es.addEventListener('feedback', async e => {
     const info = JSON.parse(e.data || '{}');
     const mine = info.authorId === S.me?.id;

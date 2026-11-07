@@ -254,6 +254,10 @@ select { border-radius: 0; }
 .pack-nav [aria-disabled="true"] { opacity: .4; pointer-events: none; }
 .reveal-bar { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-bottom: 12px; }
 .reveal-bar:empty { display: none; }
+.watch-box h3 { margin: 0 0 8px; }
+.watchers { display: flex; flex-wrap: wrap; gap: 6px; }
+.watchers .chip.here { border-color: var(--ok); color: var(--text); }
+.watchers .chip.away { opacity: .6; }
 .pack-item { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-left: 3px solid var(--line); background: var(--panel); cursor: pointer; text-align: left; width: 100%; color: var(--text); }
 .pack-item:hover { background: var(--panel2); }
 .pack-item.sel { border-left-color: var(--accent); background: var(--accent-soft); }
