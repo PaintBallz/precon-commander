@@ -2237,6 +2237,7 @@ async function renderAdmin(view) {
     ...o.piles.filter(p => p.count >= 3).map(p => `${I.pack} ${esc(p.name)} has ${plural(p.count, 'unopened pack')} in ${esc(p.league)}.`),
     ...(c.feedbackNew ? [`${I.bulb} ${plural(c.feedbackNew, 'new suggestion')} on <a href="#account">your Account page</a>.`] : []),
     ...(!o.email.enabled ? [`${I.x} Password-reset emails are off.`] : o.email.last.ok === false ? [`${I.x} The last reset email failed ${ago(o.email.last.at)}: ${esc(o.email.last.error)}`] : []),
+    ...(o.discord.enabled && o.discord.last.ok === false ? [`${I.x} The last Discord post failed ${ago(o.discord.last.at)}: ${esc(o.discord.last.error)}`] : []),
     ...(refused ? [`${I.flag} ${plural(refused, 'request')} hit a rate limit in the last 24 hours.`] : []),
     ...(!lastBackup || Date.now() - Date.parse(lastBackup.at) > 2 * 864e5 ? [`${I.x} No backup in the last 2 days.`] : []),
   ];
@@ -2247,7 +2248,9 @@ async function renderAdmin(view) {
       ${tile(c.unopenedPacks, 'Unopened packs')}${tile(c.feedbackNew, 'New suggestions')}
       ${tile(o.email.enabled ? (o.email.last.ok === false ? 'Failing' : 'On') : 'Off', 'Reset emails', o.email.last.at ? `last ${ago(o.email.last.at)}` : '')}
       ${tile(lastBackup ? ago(lastBackup.at) : 'none', 'Last backup', `${o.backups.count} kept`)}
+      ${tile(o.discord.enabled ? (o.discord.last.ok === false ? 'Failing' : 'On') : 'Off', 'Discord posts', o.discord.last.at ? `last ${ago(o.discord.last.at)}` : (o.discord.invite ? 'invite link on' : ''))}
     </div>
+    ${o.discord.enabled ? '<p class="small muted" style="margin:-6px 0 14px">Finished pods, season recaps and announcements post to your Discord channel. <button type="button" class="btn sm ghost" id="discordTest">Send a test post</button></p>' : ''}
     <section class="panel admin-attn"><h2>Needs attention</h2>${attention.length ? `<ul class="rules-list">${attention.map(a => `<li>${a}</li>`).join('')}</ul>` : '<p class="muted" style="margin:0">Nothing. All quiet.</p>'}
       <p class="small muted" style="margin:10px 0 0">Rate limits per IP per minute: ${o.limits.limits.all} requests, ${o.limits.limits.api} API calls, ${o.limits.limits.heavy} heavy lookups, ${o.limits.limits.streams} live connections. Refused in the last 24 h: ${Object.entries(o.limits.refused24h).map(([k, v]) => `${k} ${v}`).join(', ')}.</p></section>
 
@@ -2280,6 +2283,7 @@ async function renderAdmin(view) {
         <p class="small muted" style="margin:0">A banner at the top of the site for every signed-in player. Players can hide it for themselves.${ann?.text ? ` Showing now${ann.until ? ` until ${fmtDate(ann.until)}` : ''}.` : ''}</p>
         <label>Message<input name="text" maxlength="280" value="${esc(ann?.text || '')}" placeholder="e.g. Pod night Friday at 7pm!"></label>
         <label>Show until <span class="dim small">(optional)</span><input name="until" type="date" value="${ann?.until ? ann.until.slice(0, 10) : ''}"></label>
+        ${o.discord.enabled ? '<label class="check"><input type="checkbox" name="discord" checked><span>Also post it to Discord</span></label>' : ''}
         <div class="row"><button class="btn gold">Save announcement</button>${ann?.text ? '<button type="button" class="btn danger sm" id="annClear">Clear</button>' : ''}</div>
       </form>
     </section>
@@ -2338,10 +2342,16 @@ async function renderAdmin(view) {
     try { await api(`/pods/${podId}/packs/${packId}`, { method: 'DELETE', body: { reason: f.reason } }); toast('Pack taken back.', 'good'); renderAdmin(view); } catch (err) { fail(err); }
   });
   // ---- announcement ----
+  const dTest = $('#discordTest', view);
+  if (dTest) dTest.onclick = async () => {
+    dTest.disabled = true;
+    try { const r = await api('/admin/discord/test', { method: 'POST' }); r.ok ? toast('Test post sent. Check the channel.', 'good') : toast(`Discord refused it: ${r.last.error}`, 'err'); } catch (err) { fail(err); }
+    dTest.disabled = false;
+  };
   $('#annForm', view).onsubmit = async e => {
     e.preventDefault();
     const f = e.target;
-    try { await api('/admin/announcement', { method: 'PUT', body: { text: f.text.value, until: f.until.value ? `${f.until.value}T23:59:59` : null } }); toast(f.text.value.trim() ? 'Announcement is up.' : 'Announcement cleared.', 'good'); await loadState(); renderAdmin(view); } catch (err) { fail(err); }
+    try { await api('/admin/announcement', { method: 'PUT', body: { text: f.text.value, until: f.until.value ? `${f.until.value}T23:59:59` : null, discord: Boolean(f.discord?.checked) } }); toast(f.text.value.trim() ? 'Announcement is up.' : 'Announcement cleared.', 'good'); await loadState(); renderAdmin(view); } catch (err) { fail(err); }
   };
   $('#annClear', view)?.addEventListener('click', async () => {
     try { await api('/admin/announcement', { method: 'PUT', body: { text: '' } }); toast('Announcement cleared.', 'good'); await loadState(); renderAdmin(view); } catch (err) { fail(err); }

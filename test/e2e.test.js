@@ -18,6 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import http from 'node:http';
 import { listText } from '../public/decklist.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -26,6 +27,13 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const LIVE_SCRYFALL = !process.env.SCRYFALL_BASE;
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'pcc-e2e-'));
 let server, serverLog = '';
+// A stand-in for Discord: catches the site's webhook posts.
+const HOOK_PORT = PORT - 1;
+const discordPosts = [];
+const hookServer = http.createServer((req, res) => {
+  let b = ''; req.on('data', d => { b += d; });
+  req.on('end', () => { discordPosts.push({ path: req.url, body: JSON.parse(b || '{}') }); res.writeHead(204); res.end(); });
+});
 
 // One cookie jar per "phone".
 function client() {
@@ -65,11 +73,13 @@ const nick = client(), mike = client(), joe = client(), dan = client(), eve = cl
 const player = (pod, who) => pod.players.find(p => p.id === S.u[who].id);
 
 before(async () => {
+  await new Promise(r => hookServer.listen(HOOK_PORT, '127.0.0.1', r));
   server = spawn(process.execPath, ['--no-warnings', 'server/index.js'], {
     cwd: ROOT,
     env: { ...process.env, PORT: String(PORT), DATA_DIR, SMTP_HOST: '', MAIL_FROM: '', CF_EMAIL_TOKEN: '',
       // The whole suite runs from one IP; the last test checks the heavy limit.
-      RATE_ALL_PER_MIN: '100000', RATE_API_PER_MIN: '100000', RATE_HEAVY_PER_MIN: '200' },
+      RATE_ALL_PER_MIN: '100000', RATE_API_PER_MIN: '100000', RATE_HEAVY_PER_MIN: '200',
+      DISCORD_WEBHOOK_URL: `http://127.0.0.1:${HOOK_PORT}/api/webhooks/123/test-token`, DISCORD_INVITE: 'https://discord.gg/pcctest' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   server.stdout.on('data', d => { serverLog += d; });
@@ -83,6 +93,7 @@ before(async () => {
 
 after(() => {
   server?.kill();
+  hookServer.close();
   fs.rmSync(DATA_DIR, { recursive: true, force: true });
 });
 
@@ -1207,6 +1218,30 @@ test('static files carry long cache headers; the page itself is never cached', a
 });
 
 // Last: these use up this test run's per-minute allowance.
+test('Discord: invite button, and finished pods, announcements and season recaps are posted', async () => {
+  const home = await anon.get('/');
+  assert.ok(home.text.includes('<a class="btn sm discord-join" href="https://discord.gg/pcctest"'), 'the footer invite button');
+  const o = await ok(admin.get('/api/admin/overview'));
+  assert.equal(o.discord.enabled, true);
+  assert.equal((await nick.post('/api/admin/discord/test')).status, 403);
+  assert.equal((await ok(admin.post('/api/admin/discord/test'))).ok, true);
+  await new Promise(r => setTimeout(r, 300));
+  assert.ok(discordPosts.every(p => p.path === '/api/webhooks/123/test-token'));
+  assert.ok(discordPosts.every(p => Array.isArray(p.body.allowed_mentions?.parse) && !p.body.allowed_mentions.parse.length), 'never pings anyone');
+  const titles = discordPosts.map(p => p.body.embeds[0].title);
+  assert.ok(titles.some(t => / won /.test(t)), 'a finished pod');
+  const won = discordPosts.find(p => / won /.test(p.body.embeds[0].title)).body.embeds[0];
+  assert.match(won.description, /🏆/);
+  assert.ok(titles.includes('📣 Announcement'), 'the announcement');
+  assert.ok(titles.some(t => / is over!$/.test(t)), 'the season recap');
+  assert.ok(titles.includes('Pre-Con Commander is connected'), 'the test post');
+  const ann = discordPosts.filter(p => p.body.embeds[0].title === '📣 Announcement').length;
+  await ok(admin.put('/api/admin/announcement', { text: 'Banner only', discord: false }));
+  await ok(admin.put('/api/admin/announcement', { text: '' }));
+  await new Promise(r => setTimeout(r, 300));
+  assert.equal(discordPosts.filter(p => p.body.embeds[0].title === '📣 Announcement').length, ann, 'unticked: not posted; cleared: not posted');
+});
+
 test('per-IP rate limits: heavy endpoints, then everything, answer 429 with Retry-After', async () => {
   const limited = client();
   const r1 = await limited.get('/api/state');

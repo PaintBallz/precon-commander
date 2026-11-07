@@ -68,7 +68,7 @@ phones, and every phone sees spins, votes and packs live.
     and cards move with it). **Move a card** to another player's pool from the card zoom.
   - **Players**: rename, suspend / un-suspend, sign out everywhere, reset link, delete, and
     **View as** (see the site exactly as that player, read-only).
-  - **Announcement** banner for every player, with an optional end date.
+  - **Announcement** banner for every player, with an optional end date (and optionally posted to Discord).
   - **Admin log** of every admin action with its reason; deletes, grants, moves, fixes, renames
     and suspensions can be **undone for 30 days** (deleted rows are kept as a snapshot).
   - **Backups**: automatic every 24 hours (newest 14 kept) in `data/backups`, plus "Back up now"
@@ -143,6 +143,8 @@ players sign up, and one of them starts a league on the **League** tab.
 | `DATA_DIR` | `./data` | Where the SQLite database (`app.db`) lives. |
 | `PUBLIC_URL` | `http://localhost:$PORT` | The site's public address, used in password-reset links. Set it in production. |
 | `CF_EMAIL_ACCOUNT_ID`, `CF_EMAIL_TOKEN`, `MAIL_FROM` | unset | Password-reset emails through Cloudflare Email Sending (the token needs the Email Sending permission; `MAIL_FROM` must be on a domain with Email Sending enabled). Used first when set. |
+| `DISCORD_WEBHOOK_URL` | unset | A Discord channel webhook (Edit channel → Integrations → Webhooks). When set, finished pods, season recaps and announcements are posted there, with no @mentions. The dashboard shows the last result and has a test button. Keep it secret: anyone with the URL can post to the channel. |
+| `DISCORD_INVITE` | unset | A `https://discord.gg/...` invite link; adds a "Join the league Discord" button to the footer. |
 | `SMTP_HOST`, `SMTP_PORT` (`587`), `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` | unset | Password-reset emails through any SMTP server. With neither option set, "Forgot password" tells players to ask the admin, who makes a reset link on the Account page. |
 | `MAIL_FROM_NAME` | `Pre-Con Commander` | Sender name on reset emails. |
 | `RATE_ALL_PER_MIN` | `600` | Requests per IP per minute, every URL (pages, scripts, fonts, API). |
@@ -228,6 +230,7 @@ server/
   admin.js     Admin tab: dashboard, packs, card moves, pod fixes, player tools, announcements, backups
   adminlog.js  admin log, snapshots and undo
   backup.js    daily database backups
+  discord.js   Discord webhook posts (finished pods, recaps, announcements)
   decks.js     deck-list import (Moxfield, Archidekt, pasted text)
 public/        the app: plain ES modules, no build step
 packs/         real booster print-sheet data (see packs/NOTICE.md)

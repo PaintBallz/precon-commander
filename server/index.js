@@ -30,6 +30,7 @@ import { openPack, hasRealPack, realPackKind, localPackSets, sheetOdds } from '.
 import { requireAuth, requireAdmin, authRoutes, seedAdmin, listUsers, getUser, setPrecon } from './auth.js';
 import { importDeck, editDeck, getDeck, deleteDeck, DeckError } from './decks.js';
 import { playerStats, seasonRecap } from './stats.js';
+import { discordInvite, podFinishedPost, leagueEndedPost } from './discord.js';
 import { cached, cachedSync, clearCache } from './cache.js';
 import { rateLimit, streamSlot } from './ratelimit.js';
 import { adminRoutes, currentAnnouncement } from './admin.js';
@@ -70,7 +71,10 @@ const ASSET_VERSION = crypto.createHash('sha1')
   .digest('hex').slice(0, 10);
 const INDEX_HTML = fs.readFileSync(path.join(PUBLIC, 'index.html'), 'utf8')
   .replace('/styles.css"', `/styles.css?v=${ASSET_VERSION}"`)
-  .replace('/app.js"', `/app.js?v=${ASSET_VERSION}"`);
+  .replace('/app.js"', `/app.js?v=${ASSET_VERSION}"`)
+  .replace('<!--discord-invite-->', discordInvite()
+    ? `<a class="btn sm discord-join" href="${discordInvite()}" target="_blank" rel="noopener">Join the league Discord</a>`
+    : '');
 // app.js imports decklist.js; give that import the same version stamp so it
 // can be cached as long as app.js.
 const APP_JS = fs.readFileSync(path.join(PUBLIC, 'app.js'), 'utf8')
@@ -421,6 +425,7 @@ app.post('/api/leagues/:id/end', wrap(async (req, res) => {
   logAdmin(req, { action: 'end-league', summary: `Ended ${league.name}.`, leagueId: league.id });
   logEvent(league.id, 'end', req.user.id, `${league.name} ended. Its standings, history and pools stay as an archive.`);
   broadcast('state', { leagueId: league.id });
+  Promise.resolve(seasonRecap(league.id, standings(league.id))).then(r => leagueEndedPost(league, r)).catch(() => {});
   res.json({ ok: true });
 }));
 app.delete('/api/leagues/:id', wrap(async (req, res) => {
@@ -756,7 +761,9 @@ app.post('/api/pods/:id/finish', wrap(async (req, res) => {
   pod.status = 'done';
   pod.finishedAt = now();
   logEvent(pod.leagueId, 'finish', req.user.id, `${pod.name} finished and was saved to History.`);
-  res.json({ ok: true, pod: view(req, commit(pod)) });
+  const saved = commit(pod);
+  podFinishedPost(saved, getLeague(saved.leagueId)?.name || 'League');
+  res.json({ ok: true, pod: view(req, saved) });
 }));
 
 app.post('/api/pods/:id/discard', wrap(async (req, res) => {

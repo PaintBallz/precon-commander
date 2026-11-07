@@ -10,6 +10,7 @@ import { requireAdmin, getUser, listUsers, publicUser, checkUsername, setViewAs,
 import { logAdmin, adminLog, undoAction, purgeOldUndo, podRows, renameEverywhere } from './adminlog.js';
 import { listBackups, makeBackup, backupFile, scheduleBackups } from './backup.js';
 import { mailEnabled, lastMail } from './mail.js';
+import { discordEnabled, discordInvite, lastDiscord, announcementPost, testPost } from './discord.js';
 import { rateStats } from './ratelimit.js';
 import { newFeedbackCount } from './feedback.js';
 
@@ -62,6 +63,7 @@ export function adminRoutes(app, { wrap, HttpError, broadcast, viewLeague, requi
         .map(p => ({ id: p.id, name: p.name, league: leagueName(p.leagueId), status: p.status, since: p.updatedAt || p.createdAt })),
       piles: piles.sort((a, b) => b.count - a.count).slice(0, 8),
       email: { enabled: mailEnabled(), last: { ...lastMail } },
+      discord: { enabled: discordEnabled(), invite: Boolean(discordInvite()), last: { ...lastDiscord } },
       limits: rateStats(),
       backups: { count: backups.length, latest: backups[0] || null },
       announcement: kvGet('announcement'),
@@ -235,6 +237,14 @@ export function adminRoutes(app, { wrap, HttpError, broadcast, viewLeague, requi
     res.json({ ok: true, pod: loadPod(pod.id) });
   }));
 
+  // ---------- Discord ----------
+  app.post('/api/admin/discord/test', wrap(async (req, res) => {
+    requireAdmin(req);
+    if (!discordEnabled()) throw new HttpError(409, 'Discord is not connected. Put the channel webhook in DISCORD_WEBHOOK_URL first.');
+    const ok = await testPost(req.user.username);
+    res.json({ ok, last: { ...lastDiscord } });
+  }));
+
   // ---------- announcement ----------
   app.put('/api/admin/announcement', wrap(async (req, res) => {
     requireAdmin(req);
@@ -244,6 +254,7 @@ export function adminRoutes(app, { wrap, HttpError, broadcast, viewLeague, requi
     const a = text ? { id: newId(8), text, until: until ? until.toISOString() : null, at: now() } : null;
     kvSet('announcement', a);
     logAdmin(req, { action: 'announce', summary: a ? `Announcement: "${text}"` : 'Cleared the announcement.' });
+    if (a && req.body?.discord !== false) announcementPost(text);
     broadcast('state', {});
     res.json({ ok: true, announcement: a });
   }));
