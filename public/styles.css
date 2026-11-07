@@ -250,6 +250,10 @@ select { border-radius: 0; }
 .player-tabs button:hover, .player-tabs a:hover { color: var(--text); background: var(--bg2); }
 .player-tabs button.sel, .player-tabs a.sel { color: var(--text); border-bottom-color: var(--accent); background: var(--panel); }
 .pack-list { display: flex; flex-direction: column; gap: 6px; }
+.pack-nav { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.pack-nav [aria-disabled="true"] { opacity: .4; pointer-events: none; }
+.reveal-bar { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-bottom: 12px; }
+.reveal-bar:empty { display: none; }
 .pack-item { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-left: 3px solid var(--line); background: var(--panel); cursor: pointer; text-align: left; width: 100%; color: var(--text); }
 .pack-item:hover { background: var(--panel2); }
 .pack-item.sel { border-left-color: var(--accent); background: var(--accent-soft); }

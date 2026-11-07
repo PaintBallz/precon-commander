@@ -287,6 +287,18 @@ function parseRoute() {
   S.params = Object.fromEntries(new URLSearchParams(q || ''));
 }
 const go = hash => { if (location.hash === hash) { parseRoute(); render(); } else location.hash = hash; };
+// The vote is over and the wheel is waiting: take the pod's players (and whoever
+// just ended it) to the wheel, unless they're mid-spin, mid-reveal or typing.
+function toWheelIfReady(pod, force = false) {
+  if (!pod || pod.spin || pod.status !== 'awarded' || voteOpen(pod)) return false;
+  if (!force && !pod.players.some(p => p.id === S.me?.id)) return false;
+  if (S.spinning || S.opening || $('.mcard.down')) return false;
+  const typing = document.activeElement && ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName);
+  if (typing || (S.route === 'trades' && (S.params.new || S.params.counter))) return false;
+  if (S.route === 'wheel' && S.podId === pod.id) return false;
+  go(`#wheel?pod=${pod.id}`);
+  return true;
+}
 window.addEventListener('hashchange', () => {
   if (location.hash.startsWith('#reset')) { showAuth(); return; }
   if (!S.me || S.me.mustChange) return;
@@ -294,6 +306,7 @@ window.addEventListener('hashchange', () => {
 });
 
 function render() {
+  S.stopReveal?.(); S.stopReveal = null;
   if (!S.me || S.me.mustChange) { showAuth(); return; }
   $('#top').hidden = false;
   $$('#tabs a').forEach(a => a.classList.toggle('active', a.dataset.tab === (S.route === 'player' || S.route === 'recap' || S.route === 'join' ? 'league' : S.route)));
@@ -802,7 +815,7 @@ function wirePods(view) {
   $$('[data-win]', view).forEach(b => b.onclick = async () => {
     const pod = podById(b.dataset.pod), p = pod.players.find(x => x.id === b.dataset.win);
     if (!await confirmBox(`Crown <b>${esc(p.name)}</b> the winner?`, `${esc(p.name)} gets ${plural(pod.rules.winnerPacks, 'pack')}, everyone else gets ${pod.rules.loserPacks}, and ${esc(p.name)} spins the wheel for the whole pod.`, `Crown winner ${I.crown}`)) return;
-    try { await post(`/pods/${pod.id}/winner`, { playerId: p.id }); await loadState(); render(); } catch (err) { fail(err); }
+    try { await post(`/pods/${pod.id}/winner`, { playerId: p.id }); await loadState(); if (!toWheelIfReady(podById(pod.id), true)) render(); } catch (err) { fail(err); }
   });
   $$('[data-award]', view).forEach(b => b.onclick = async () => {
     try { await post(`/pods/${b.dataset.pod}/award`, { playerId: b.dataset.award, delta: Number(b.dataset.delta) }); await loadState(); render(); } catch (err) { fail(err); }
@@ -823,12 +836,12 @@ function wirePods(view) {
       S.pods = S.pods.map(x => x.id === r.pod.id ? r.pod : x);
       render();
       if (r.result === 'tied') toast(`${I.vote} It's a tie: re-vote between the tied players.`, 'good');
-      if (r.result === 'decided') toast(`${I.vote} ${esc(nameIn(r.pod, r.pod.vote.winnerId))} wins the bonus pack!`, 'good');
+      if (r.result === 'decided') { toast(`${I.vote} ${esc(nameIn(r.pod, r.pod.vote.winnerId))} wins the bonus pack!`, 'good'); toWheelIfReady(r.pod, true); }
     } catch (err) { fail(err); b.disabled = false; }
   });
   $$('[data-skipvote]', view).forEach(b => b.onclick = async () => {
     if (!await confirmBox('Skip the vote?', 'Nobody gets the bonus pack, and the winner can spin right away.', 'Skip vote', true)) return;
-    try { await post(`/pods/${b.dataset.skipvote}/vote/skip`); await loadState(); render(); } catch (err) { fail(err); }
+    try { await post(`/pods/${b.dataset.skipvote}/vote/skip`); await loadState(); if (!toWheelIfReady(podById(b.dataset.skipvote), true)) render(); } catch (err) { fail(err); }
   });
   $$('[data-discard]', view).forEach(b => b.onclick = async () => {
     const pod = podById(b.dataset.discard);
@@ -1356,6 +1369,23 @@ function cardHtml(c, i, down, qty = 0) {
   </div>`;
 }
 
+// ‹ Prev / Next › step through a player's packs (opened or not) without
+// opening anything; "Open next pack" jumps to their next unopened pack and opens it.
+function packNav(pack, owner, pod) {
+  const list = owner.packs, i = list.findIndex(k => k.id === pack.id);
+  const href = k => `#packs?pod=${pod.id}&player=${owner.id}&pack=${k.id}`;
+  const prev = list[i - 1], next = list[i + 1];
+  return `<div class="pack-nav">
+    ${prev ? `<a class="btn ghost sm" href="${href(prev)}" aria-label="Previous pack">‹ Prev</a>` : `<span class="btn ghost sm" aria-disabled="true">‹ Prev</span>`}
+    <span class="small muted">Pack ${i + 1} of ${list.length}</span>
+    ${next ? `<a class="btn ghost sm" href="${href(next)}" aria-label="Next pack">Next ›</a>` : `<span class="btn ghost sm" aria-disabled="true">Next ›</span>`}
+  </div>`;
+}
+const nextUnopened = (owner, pack) => {
+  const list = owner.packs, i = list.findIndex(k => k.id === pack.id);
+  return [...list.slice(i + 1), ...list.slice(0, i)].find(k => k.status === 'ready') || null;
+};
+
 function renderPackView(el, pack, owner, pod) {
   if (!pack) { el.innerHTML = `<div class="empty"><h2>No packs</h2></div>`; return; }
   const mine = canAct(owner);
@@ -1368,6 +1398,7 @@ function renderPackView(el, pack, owner, pod) {
     const sp = spunPacks(owner);
     const canSac = mine && pack.source === 'wheel' && sp.length >= 2 && pod.kind !== 'grants';
     el.innerHTML = `
+      ${packNav(pack, owner, pod)}
       <div class="booster" id="booster">
         ${icon(pack.set, 'lg')}
         <div class="bname">${esc(pack.set.name)}</div>
@@ -1394,9 +1425,13 @@ function renderPackView(el, pack, owner, pod) {
         await new Promise(r => setTimeout(r, 450));
         S.pods = S.pods.map(x => x.id === res.pod.id ? res.pod : x);
         S.opening = false;
+        // Stay on the pack just opened (not the next unopened one) so its reveal plays.
+        history.replaceState(null, '', `#packs?pod=${pod.id}&player=${owner.id}&pack=${pack.id}`);
+        parseRoute();
         renderPacks($('#view'));
       } catch (err) { S.opening = false; fail(err); btn.disabled = false; btn.textContent = 'Try again'; bo.classList.remove('shake'); }
     });
+    if (S.autoOpen === pack.id) { S.autoOpen = null; $('#openBtn', el)?.click(); }
     return;
   }
   // opened
@@ -1404,14 +1439,19 @@ function renderPackView(el, pack, owner, pod) {
   const animate = S.animatePacks.has(pack.id);
   S.animatePacks.delete(pack.id);
   const hits = cards.filter(c => c.rarity === 'mythic' || c.rarity === 'rare');
+  const upNext = mine ? nextUnopened(owner, pack) : null;
   el.innerHTML = `
+    ${packNav(pack, owner, pod)}
+    <div class="reveal-bar">
+      ${animate ? `<button class="btn sm" id="revealAll">Skip animation</button>` : ''}
+      ${upNext ? `<button class="btn gold" id="openNext">Open next pack →</button>` : ''}
+    </div>
     <div class="spread" style="margin-bottom:14px">
       <div class="row">${icon(pack.set, 'lg')}<div><h2 style="margin:0">${esc(pack.set.name)}</h2>
       <div class="small muted">${esc(owner.name)} · ${esc(pack.boosterType || 'Booster')} · ${cards.length} cards${pack.source === 'sacrifice' ? ` · ${I.flame} chosen with a sacrifice` : ''}</div></div></div>
       <div class="row">
-        ${animate ? `<button class="btn sm" id="revealAll">Reveal all</button>` : ''}
         ${exportToggle()}
-        <button class="btn gold" id="copyPack">${I.copy} Copy pack list</button>
+        <button class="btn" id="copyPack">${I.copy} Copy pack list</button>
         ${isAdmin() ? `<button class="btn danger sm" id="delPack" title="Admin: delete this pack and its pulls">${I.trash} Delete pack</button>` : ''}
       </div>
     </div>
@@ -1420,6 +1460,10 @@ function renderPackView(el, pack, owner, pod) {
     <details style="margin-top:16px"><summary class="muted small" style="cursor:pointer">Show list text</summary><pre class="list">${esc(listFor(cards))}</pre></details>`;
   $('#copyPack', el).onclick = () => copyText(listFor(cards), `${pack.set.name} pack`);
   $('#delPack', el)?.addEventListener('click', () => deletePackFlow(pod.id, pack, owner));
+  $('#openNext', el)?.addEventListener('click', () => {
+    S.autoOpen = upNext.id;
+    go(`#packs?pod=${pod.id}&player=${owner.id}&pack=${upNext.id}`);
+  });
   $$('.mcard', el).forEach(m => m.onclick = () => {
     if (m.classList.contains('down')) { m.classList.remove('down'); return; }
     cardModal(cards[Number(m.dataset.i)]);
@@ -1436,6 +1480,8 @@ function renderPackView(el, pack, owner, pod) {
     };
     timer = setTimeout(next, 300);
     $('#revealAll', el).onclick = () => { clearTimeout(timer); downs.forEach(m => m.classList.remove('down')); $('#revealAll', el)?.remove(); };
+    // Leaving mid-reveal (Next pack, Prev/Next, another tab) stops the timer.
+    S.stopReveal = () => clearTimeout(timer);
   }
 }
 
@@ -1561,7 +1607,7 @@ function renderFunPack(el, result) {
       <div class="row">${icon(set, 'lg')}<div><h2 style="margin:0">${esc(set.name)}</h2>
         <div class="small muted">${esc(pack.boosterType || 'Booster')} · ${cards.length} cards · <b>just for fun, not saved</b></div></div></div>
       <div class="row">
-        ${animate ? `<button class="btn sm" id="revealAll">Reveal all</button>` : ''}
+        ${animate ? `<button class="btn sm" id="revealAll">Skip animation</button>` : ''}
         <button class="btn gold" id="funAgain">Open another</button>
       </div>
     </div>
@@ -2827,6 +2873,7 @@ function connect() {
         const pod = podById(info.podId);
         if (pod?.players.some(p => p.id === S.me.id)) toast(info.vote === 'tied' ? `${I.vote} ${esc(pod.name)}: tie! Re-vote between the tied players.` : `${I.vote} ${esc(pod.name)}: ${esc(nameIn(pod, pod.vote.winnerId))} wins the bonus pack.`, 'good');
       }
+      if ((info.vote === 'decided' || info.vote === 'ready') && Date.now() - (S.justVoted || 0) > 3000 && toWheelIfReady(podById(info.podId))) return;
       if (S.spinning || S.opening) return;
       // Player pages and recaps are snapshots; they refresh when reopened.
       if (S.route === 'player' || S.route === 'recap' || S.route === 'admin') return;

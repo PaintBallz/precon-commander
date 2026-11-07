@@ -722,7 +722,9 @@ app.post('/api/pods/:id/winner', wrap(async (req, res) => {
   logEvent(pod.leagueId, 'win', req.user.id, `${winner.name} won ${pod.name}.`);
   botVote(pod);
   if (pod.vote.status === 'done') logVoteDecided(pod);
-  res.json({ pod: view(req, commit(pod)) });
+  // If the vote is already over (off, 2-player pod, or decided by test players),
+  // phones head straight to the wheel.
+  res.json({ pod: view(req, commit(pod, 'state', pod.vote.status === 'open' ? {} : { vote: pod.vote.status === 'done' ? 'decided' : 'ready' })) });
 }));
 
 // Admin-only pack adjustments. Before the spin they change the award; after
@@ -776,7 +778,7 @@ app.post('/api/pods/:id/vote/skip', wrap(async (req, res) => {
   pod.vote.status = 'skipped';
   pod.vote.decidedAt = now();
   logAdmin(req, { action: 'skip-vote', summary: `Skipped ${pod.name}'s bonus-pack vote.`, leagueId: pod.leagueId });
-  res.json({ pod: view(req, commit(pod)) });
+  res.json({ pod: view(req, commit(pod, 'state', { vote: 'ready' })) });
 }));
 
 // The one spin per pod. Only the winner (or the admin) can pull the lever.
