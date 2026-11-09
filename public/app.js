@@ -495,8 +495,6 @@ async function renderAccount(view) {
       <form class="panel grid" id="profForm">
         <h2>Profile</h2>
         <label>${me.email ? `Email <span class="dim small">(for password recovery)</span> <span class="current-email">${esc(me.email)}</span>` : 'Email <span class="dim small">(for password recovery)</span>'}<input name="email" type="email" autocomplete="off" maxlength="254" placeholder="${me.email ? 'Enter a new email to change it' : 'Add an email'}"></label>
-        <label>Your precon / commander<input name="precon" value="${esc(me.precon)}" maxlength="80" placeholder="e.g. Animated Army"></label>
-        <p class="small muted" style="margin:0">Your precon fills in automatically when you join a pod. Its cards aren't listed in your pool.</p>
         <button class="btn gold">Save profile</button>
       </form>
       <form class="panel grid" id="pwForm">
@@ -505,7 +503,6 @@ async function renderAccount(view) {
         <button class="btn gold">Change password</button>
       </form>
     </div>
-    ${isAdmin() ? '' : '<div id="deckBox"></div>'}
     <div id="fbBox"></div>
     <div id="adminBox"></div>
     ${isAdmin() ? '' : `<form class="panel grid danger-zone" id="delForm">
@@ -522,7 +519,6 @@ async function renderAccount(view) {
     try { await post('/auth/delete', f); S.me = null; toast('Your account was deleted.', 'good'); location.hash = ''; location.reload(); } catch (err) { fail(err); }
   });
   renderFeedback($('#fbBox', view));
-  renderDeckPanel($('#deckBox', view));
   $('#profForm', view).onsubmit = async e => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.target));
@@ -541,7 +537,7 @@ async function renderAccount(view) {
 
 // =============== LEAGUE TAB ===============
 const LIMITS = { min: 3, max: 16, podMin: 3, podMax: 4 };
-const FEED_ICONS = { win: 'crown', vote: 'vote', spin: 'wheel', pull: 'spark', clear: 'trash', end: 'flag', league: 'flag', join: 'user', leave: 'x', pod: 'play', rules: 'sliders', discard: 'x', finish: 'check', trade: 'trade' };
+const FEED_ICONS = { win: 'crown', vote: 'vote', spin: 'wheel', pull: 'spark', clear: 'trash', end: 'flag', league: 'flag', join: 'user', leave: 'x', pod: 'play', rules: 'sliders', discard: 'x', finish: 'check', trade: 'trade', precon: 'user' };
 const LEADING_EMOJI = /^\p{Extended_Pictographic}\uFE0F?\s*/u;
 const fmtWhen = iso => new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 async function refreshLeague() { S.leagueDetail = null; S.history = null; S.pools = null; await Promise.all([loadState(), loadSets()]); render(); }
@@ -670,8 +666,11 @@ async function renderLeague(view) {
           : '<p class="muted">No finished pods yet. Standings fill in as pods are finished.</p>'}
       </section>
       <section class="panel">
+        ${preconPanel(league, active)}
         <div class="spread"><h2 style="margin:0">Players</h2><span class="small muted">${league.members.length}/${lim.max}</span></div>
-        <div class="member-list">${league.members.map(m => `<div class="member"><div><b>${plink(m.id, m.username)}</b>${m.leagueAdmin ? ' <span class="chip gold" title="Started the league: can change its rules and kick players">League admin</span>' : ''}${m.admin ? ' <span class="chip gold" title="A player with admin powers">admin</span>' : ''}${m.test ? ' <span class="chip" title="Cannot sign in; an admin plays for it">test player</span>' : ''}${m.id === S.me.id ? ' <span class="dim small">(you)</span>' : ''}<div class="small muted">${esc(m.precon) || 'No precon set'}</div></div>
+        <div class="member-list">${league.members.map(m => `<div class="member"><div><b>${plink(m.id, m.username)}</b>${m.leagueAdmin ? ' <span class="chip gold" title="Started the league: can change its rules and kick players">League admin</span>' : ''}${m.admin ? ' <span class="chip gold" title="A player with admin powers">admin</span>' : ''}${m.test ? ' <span class="chip" title="Cannot sign in; an admin plays for it">test player</span>' : ''}${m.id === S.me.id ? ' <span class="dim small">(you)</span>' : ''}<div class="small muted">${esc(m.precon) || 'No precon set'}${m.preconLocked ? ' <span class="dim">· locked</span>' : ''}</div>${m.preconRequest && league.canManage ? `<div class="small precon-req">Wants to change: ${esc(m.preconRequest.reason)}</div>` : ''}</div>
+          ${commanderThumb(m.commander)}
+          ${league.canManage && active && m.preconRequest ? `<button class="btn gold sm" data-pallow="${m.id}">Allow</button><button class="btn ghost sm" data-pdecline="${m.id}">Decline</button>` : league.canManage && active && m.preconLocked ? `<button class="btn ghost sm" data-pallow="${m.id}" title="Let them save a different precon once">Allow change</button>` : ''}
           ${league.canManage && active && m.id !== S.me.id ? `<button class="btn ghost sm" data-rmm="${m.id}" data-name="${esc(m.username)}" title="Kick from the league">✕</button>` : ''}</div>`).join('') || '<p class="muted">Nobody yet.</p>'}</div>
         ${isAdmin() && active ? `<div class="row" style="margin-top:10px">${candidates.length ? `<select class="input" id="addMember"><option value="">Add a player…</option>${candidates.map(c => `<option value="${c.id}">${esc(c.username)}</option>`).join('')}</select><button class="btn sm" id="addMemberBtn">Add</button>` : '<span class="small muted">Every player is already in a league.</span>'}</div>` : ''}
         ${isAdmin() && active ? `<div class="test-tools">
@@ -720,6 +719,7 @@ async function renderLeague(view) {
     if (!await confirmBox(`Leave ${esc(league.name)}?`, 'You stop getting packs for missed pods and can join or start another league. Your past pods stay in its history.', 'Leave league', true)) return;
     try { await post(`/leagues/${league.id}/leave`); S.viewLeague = null; await refreshLeague(); } catch (err) { fail(err); }
   });
+  wirePrecon(view, league);
   $$('[data-rmm]', view).forEach(b => b.onclick = async () => {
     if (!await confirmBox(`Kick ${esc(b.dataset.name)}?`, `${esc(b.dataset.name)} is removed from ${esc(league.name)}. Their past pods and pool stay in its history. The invite code won't let them back in; only the site admin can re-add them.`, 'Kick', true)) return;
     try { await del(`/leagues/${league.id}/members/${b.dataset.rmm}`); await refreshLeague(); } catch (err) { fail(err); }
@@ -806,7 +806,66 @@ function newPodForm() {
 function memberOptions(selected) {
   const busy = new Map(S.pods.flatMap(pod => pod.players.map(p => [p.id, pod.name])));
   return `<option value="">Pick a player…</option>` + S.members.map(m =>
-    `<option value="${m.id}" ${m.id === selected ? 'selected' : ''} ${busy.has(m.id) ? 'disabled' : ''}>${esc(m.username)}${busy.has(m.id) ? ` (in ${esc(busy.get(m.id))})` : ''}</option>`).join('');
+    `<option value="${m.id}" ${m.id === selected ? 'selected' : ''} ${busy.has(m.id) || !m.precon ? 'disabled' : ''}>${esc(m.username)}${busy.has(m.id) ? ` (in ${esc(busy.get(m.id))})` : m.precon ? '' : ' (no precon)'}</option>`).join('');
+}
+
+// ---------------- precon, commander card and deck for this league ----------------
+const myRow = league => league?.members.find(m => m.id === S.me.id) || null;
+const commanderThumb = c => c?.image ? `<a class="cmd-thumb" href="${esc(c.uri || '#')}" target="_blank" rel="noopener" title="${esc(c.name)}"><img ${cardSrc(c.image, '60px')} alt="${esc(c.name)}" loading="lazy"></a>` : '';
+function preconPanel(league, active) {
+  const me = myRow(league);
+  const missing = league.members.filter(m => !m.precon);
+  const who = league.canManage && active && missing.length ? `<p class="small precon-missing">Still need a precon: <b>${missing.map(m => esc(m.username)).join(', ')}</b></p>` : '';
+  if (!me || !active) return who;
+  const c = me.commander;
+  return `<div class="precon-box" id="preconBox">
+    <h2>Your precon for this league</h2>
+    ${me.preconLocked ? `<p class="precon-now"><b>${esc(me.precon)}</b> <span class="chip">Locked</span></p>
+      ${me.preconRequest ? `<p class="small muted">Change requested: "${esc(me.preconRequest.reason)}". Waiting for an admin.</p>` : `<button type="button" class="btn ghost sm" id="preconRequest">Request a change</button>`}`
+    : `<form id="preconForm" class="precon-form">
+        <input name="precon" list="preconList" value="${esc(me.precon)}" maxlength="80" required placeholder="Start typing your precon…" autocomplete="off" aria-label="Your precon">
+        <datalist id="preconList"></datalist>
+        <button class="btn gold">Save</button>
+      </form>
+      <p class="small muted">Needed before you can start or play in a pod or open packs. Once saved, you can't change it for this league unless an admin allows it.</p>`}
+    <form id="commanderForm" class="precon-form commander-form">
+      ${commanderThumb(c)}
+      <label>Commander card <span class="dim small">(picture only, change it any time)</span>
+        <input name="card" value="${esc(c?.name || '')}" maxlength="150" placeholder="Type a card name" autocomplete="off"></label>
+      <button class="btn">Update</button>
+    </form>
+    <details class="deck-details"><summary>Deck list for this league</summary><div id="deckBox"></div></details>
+    ${who}
+  </div>`;
+}
+function wirePrecon(view, league) {
+  const again = async p => { try { const r = await p; if (r) { await loadState(); render(); } } catch (err) { fail(err); } };
+  const url = `/leagues/${league.id}`;
+  const form = $('#preconForm', view);
+  if (form) {
+    const fill = () => { const l = $('#preconList', view); if (l) l.innerHTML = (S.preconNames || []).map(n => `<option value="${esc(n)}"></option>`).join(''); };
+    if (S.preconNames) fill(); else api('/precons').then(r => { S.preconNames = r.names; fill(); }).catch(() => {});
+    form.onsubmit = async e => {
+      e.preventDefault();
+      const precon = form.precon.value.trim();
+      if (!precon) return;
+      if (!await confirmBox('Lock in this precon?', `<b>${esc(precon)}</b> will be your precon for ${esc(league.name)}. <b>You can't change it for this league after saving.</b> Only the league admin or a site admin can allow a change.`, 'Save and lock')) return;
+      again(api(`${url}/precon`, { method: 'PUT', body: { precon } }).then(r => { toast('Precon locked in.', 'good'); return r; }));
+    };
+  }
+  $('#preconRequest', view)?.addEventListener('click', async () => {
+    const f = await formBox('Request a precon change', 'The league admin or a site admin will see this and can reopen your precon.', [{ name: 'reason', label: 'Why do you want to change it?' }], 'Send request');
+    if (f) again(post(`${url}/precon/request`, { reason: f.reason }));
+  });
+  const cf = $('#commanderForm', view);
+  if (cf) cf.onsubmit = e => {
+    e.preventDefault();
+    again(api(`${url}/commander`, { method: 'PUT', body: { card: cf.card.value } }).then(r => { toast('Commander card updated.', 'good'); return r; }));
+  };
+  $$('[data-pallow]', view).forEach(b => b.onclick = () => again(post(`${url}/members/${b.dataset.pallow}/precon/allow`)));
+  $$('[data-pdecline]', view).forEach(b => b.onclick = () => again(post(`${url}/members/${b.dataset.pdecline}/precon/decline`)));
+  const deckBox = $('#deckBox', view);
+  if (deckBox) renderDeckPanel(deckBox);
 }
 
 function wirePods(view) {
@@ -820,9 +879,9 @@ function wirePods(view) {
       const m = S.members.find(x => x.id === userId);
       d.innerHTML = `<span class="num">${n}</span>
         <select class="input" name="userId" ${isAdmin() || n > 1 ? '' : 'disabled'}>${memberOptions(userId)}</select>
-        <input type="text" class="precon" name="precon" placeholder="Precon / commander" value="${esc(m?.precon || '')}" maxlength="80">
+        <span class="precon small muted">${esc(m?.precon || '')}</span>
         <button type="button" class="btn ghost sm rm" title="Remove" ${n === 1 && !isAdmin() ? 'disabled' : ''}>✕</button>`;
-      $('select', d).onchange = e => { const mm = S.members.find(x => x.id === e.target.value); $('.precon', d).value = mm?.precon || ''; };
+      $('select', d).onchange = e => { const mm = S.members.find(x => x.id === e.target.value); $('.precon', d).textContent = mm?.precon || ''; };
       $('.rm', d).onclick = () => { if (rows.children.length > LIMITS.podMin) { d.remove(); $$('.num', rows).forEach((e, i) => e.textContent = i + 1); } };
       rows.append(d);
     };
@@ -831,7 +890,7 @@ function wirePods(view) {
     $('#addP', form).onclick = () => rows.children.length < LIMITS.podMax ? addRow() : toast(`A pod has at most ${LIMITS.podMax} players.`, 'err');
     form.onsubmit = async e => {
       e.preventDefault();
-      const players = $$('.pf-row', rows).map(r => ({ userId: $('select', r).value, precon: $('.precon', r).value }));
+      const players = $$('.pf-row', rows).map(r => ({ userId: $('select', r).value }));
       if (players.some(p => !p.userId)) return toast('Pick a league member for every row (or remove the empty row).', 'err');
       try { const r = await post('/pods', { players, league: S.league?.id }); S.podId = r.pod.id; await loadState(); render(); toast(`${esc(r.pod.name)} is on. Good luck!`, 'good'); } catch (err) { fail(err); }
     };
@@ -1002,10 +1061,10 @@ function playerCard(p, pod, member) {
   const opened = p.packs.filter(k => k.status === 'opened').length;
   return `<div class="pcard ${won ? 'winner' : ''} ${p.id === S.me.id ? 'me' : ''}">
     ${won ? `<span class="crown">${I.crown}</span>` : ''}
-    <div>
+    <div class="pcard-head">${commanderThumb(S.members.find(m => m.id === p.id)?.commander)}<div>
       <div class="pname">${esc(p.name)}${p.id === S.me.id ? ' <span class="dim small">(you)</span>' : ''}${pod.vote?.winnerId === p.id ? ` <span class="chip gold" title="Won the bonus-pack vote">${I.vote} +1</span>` : ''}</div>
       ${p.precon ? `<div class="precon">${esc(p.precon)}</div>` : ''}
-    </div>
+    </div></div>
     ${pod.status === 'playing'
       ? (member ? `<button class="btn gold" data-pod="${pod.id}" data-win="${p.id}">${I.crown} Won the game</button>` : '<span class="dim small">Playing…</span>')
       : `<div class="pips">${pips || '<span class="dim small">No packs</span>'}</div>
@@ -1447,7 +1506,7 @@ function renderPackView(el, pack, owner, pod) {
         <div class="btype">${kindLabel(pack.set.code)}</div>
       </div>
       <div style="text-align:center">
-        ${mine ? `<button class="btn gold big" id="openBtn">Open ${owner.id === S.me.id ? 'your' : `${esc(owner.name)}'s`} pack</button>` : `<p class="muted">Only ${esc(owner.name)} can open this pack.</p>`}
+        ${mine && S.members.some(m => m.id === owner.id && !m.precon) ? `<a class="btn gold big" href="#league">${owner.id === S.me.id ? 'Save your precon first' : `${esc(owner.name)} needs a precon first`}</a>` : mine ? `<button class="btn gold big" id="openBtn">Open ${owner.id === S.me.id ? 'your' : `${esc(owner.name)}'s`} pack</button>` : `<p class="muted">Only ${esc(owner.name)} can open this pack.</p>`}
         ${canSac ? `<div style="margin-top:12px"><button class="btn danger" id="sacBtn">${I.flame} Sacrifice a Pack</button><div class="sac-note">Give up another ${esc(pack.set.name)} pack and make this one any set.</div></div>` : ''}
         ${isAdmin() ? `<div style="margin-top:12px"><button class="btn danger sm" id="delPack">${I.trash} Delete pack (admin)</button></div>` : ''}
         ${meta && !meta.realPack ? `<p class="small dim" style="margin-top:10px">Generated from this set's booster cards: commons, uncommons, a rare (sometimes mythic), and the odd foil.</p>` : ''}
@@ -1554,6 +1613,8 @@ function renderHow(view) {
       ${section('Joining a league', list([
         'Open an invite link, or enter a 6-letter invite code. You can be in one league at a time.',
         'A league has 3–16 players.',
+        "Save your precon for the league on the <a href=\"#league\">League</a> tab. You need one before you can start or play in a pod or open packs, each player's must be different, and it locks once saved. To change it, request a change from the league admin or a site admin.",
+        'You can set a commander card picture too, and change it any time.',
         "<b>Joining late?</b> You get catch-up packs for the pods you missed, so you aren't far behind.",
       ]))}
       ${section('Playing a pod', list([
@@ -1592,9 +1653,9 @@ function renderHow(view) {
         "When a league ends, it's saved as a read-only archive with a season recap and awards.",
       ]))}
       ${section('Fun Packs', '<p>Open boosters from any set just for fun, from one pack up to a full box. Nothing is saved, and nothing counts toward your pool or the league.</p>')}
-      ${section('Your deck list', '<p>Add your deck on the <a href="#account">Account</a> page from a Moxfield or Archidekt link, or paste a list. It appears on your player page.</p>')}
+      ${section('Your deck list', '<p>Add your deck for each league on the <a href="#league">League</a> tab from a Moxfield or Archidekt link, or paste a list. It appears on your player page.</p>')}
       ${section('Who runs what', list([
-        '<b>League admin:</b> whoever started the league. They can change its pack rules and remove players from it, but only in their own league.',
+        '<b>League admin:</b> whoever started the league. They can change its pack rules, remove players and allow precon changes, but only in their own league.',
         "<b>Site admins:</b> can step into any league without joining it. They can add players, edit the wheel, hand out packs, fix mistakes, and skip a stuck vote or spin if someone doesn't show up.",
       ]))}
       ${section('Questions or ideas?', '<p>Use <b>Suggest a feature</b> at the bottom of any page, or join the Discord.</p>')}
@@ -2460,6 +2521,7 @@ function wirePulls(view, cards) {
 }
 
 // ---------- deck lists ----------
+const deckUrl = () => `/deck?league=${encodeURIComponent(S.league?.id || '')}`;
 const TYPE_ORDER = ['Creature', 'Planeswalker', 'Battle', 'Instant', 'Sorcery', 'Artifact', 'Enchantment', 'Land'];
 const typeOf = c => { const front = String(c.type).split(' // ')[0]; return TYPE_ORDER.find(t => front.includes(t)) || 'Other'; };
 function deckHtml(deck, { mine = false } = {}) {
@@ -2509,7 +2571,7 @@ function wireDeck(view, deck) {
 async function renderDeckPanel(box) {
   if (!box) return;
   let deck;
-  try { deck = (await api('/deck')).deck; } catch (err) { box.innerHTML = ''; return; }
+  try { deck = (await api(deckUrl())).deck; } catch (err) { box.innerHTML = ''; return; }
   const legends = deck ? deck.cards.filter(c => /legendary|can be your commander/i.test(c.type)) : [];
   const cmdNames = deck ? deck.cards.filter(c => c.board === 'commander').map(c => c.name) : [];
   box.innerHTML = `<form class="panel grid" id="deckForm" style="margin-top:18px">
@@ -2534,21 +2596,21 @@ async function renderDeckPanel(box) {
     const btn = $('#deckGo', box);
     btn.disabled = true; btn.textContent = 'Looking up cards…';
     try {
-      const r = await post('/deck', body);
+      const r = await post(deckUrl(), body);
       toast(`${esc(r.deck.name)} imported: ${r.deck.count} cards${r.deck.missing?.length ? `, ${r.deck.missing.length} not found` : ''}.`, 'good');
       await loadState().catch(() => {});
       renderDeckPanel(box);
     } catch (err) { fail(err); btn.disabled = false; btn.textContent = deck ? 'Update deck' : 'Import deck'; }
   };
   $('#deckDel', box)?.addEventListener('click', async () => {
-    if (!await confirmBox('Remove your deck list?', 'It disappears from your player page. Your precon name stays.', `${I.trash} Remove`, true)) return;
-    try { await del('/deck'); toast('Deck list removed.', 'good'); renderDeckPanel(box); } catch (err) { fail(err); }
+    if (!await confirmBox('Remove your deck list?', 'It disappears from your player page for this league.', `${I.trash} Remove`, true)) return;
+    try { await del(deckUrl()); toast('Deck list removed.', 'good'); renderDeckPanel(box); } catch (err) { fail(err); }
   });
   $('#deckSave', box)?.addEventListener('click', async () => {
     const sel = $('#deckCmd', box);
     const commanders = sel ? $$('input:checked', sel).map(i => i.value) : undefined;
     if (commanders && commanders.length > 2) { toast('Pick at most two commanders.'); return; }
-    try { await api('/deck', { method: 'PUT', body: { name: $('#deckName', box).value, commanders } }); toast('Deck saved.', 'good'); renderDeckPanel(box); } catch (err) { fail(err); }
+    try { await api(deckUrl(), { method: 'PUT', body: { name: $('#deckName', box).value, commanders } }); toast('Deck saved.', 'good'); renderDeckPanel(box); } catch (err) { fail(err); }
   });
 }
 
@@ -2933,6 +2995,15 @@ async function moveCardFlow(c) {
   try { await post(`/admin/pool-cards/${c.id}/move`, { toUserId: f.to, reason: f.reason }); toast(`${esc(c.name)} moved.`, 'good'); S.pools = null; S.history = null; render(); } catch (err) { fail(err); }
 }
 
+function preconBanners() {
+  const l = S.league;
+  if (!l || l.status !== 'active') return '';
+  const me = myRow(l);
+  const asks = l.canManage ? l.members.filter(m => m.preconRequest).length : 0;
+  return `${me && !me.precon ? `<div class="banner ann">${I.flag}<span>Save your precon for ${esc(l.name)} before you can play in a pod or open packs. <a href="#league">Add it on the League tab</a>.</span></div>` : ''}
+    ${asks ? `<div class="banner ann">${I.user}<span>${plural(asks, 'player')} asked to change their precon. <a href="#league">Review on the League tab</a>.</span></div>` : ''}`;
+}
+
 // Banners: the admin's announcement, and "viewing as" while the admin looks through a player's eyes.
 function paintBanners() {
   const box = $('#banners');
@@ -2941,6 +3012,7 @@ function paintBanners() {
   let hidden = null;
   try { hidden = localStorage.getItem('pcc:annHidden'); } catch { /* private mode */ }
   box.innerHTML = `${S.viewAs ? `<div class="banner viewas">${I.user}<span>Viewing the site as <b>${esc(S.me.username)}</b> (read-only). Nothing can be changed until you stop.</span><button class="btn sm gold" id="stopViewAs">Stop viewing</button></div>` : ''}
+    ${preconBanners()}
     ${a?.text && hidden !== a.id ? `<div class="banner ann">${I.flag}<span>${esc(a.text)}</span><button class="chip-x" id="annHide" title="Hide this message" aria-label="Hide this message">✕</button></div>` : ''}`;
   $('#stopViewAs', box)?.addEventListener('click', async () => { try { await post('/admin/view-as/stop'); location.hash = '#admin'; location.reload(); } catch (err) { fail(err); } });
   $('#annHide', box)?.addEventListener('click', () => { try { localStorage.setItem('pcc:annHidden', a.id); } catch { /* private mode */ } paintBanners(); });

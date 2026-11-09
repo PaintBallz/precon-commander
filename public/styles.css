@@ -697,6 +697,19 @@ form .fb-filter label.chip { display: inline-flex; gap: 6px; cursor: pointer; co
 .admin-packs { display: grid; gap: 10px; }
 .admin-pk .row { margin-top: 4px; gap: 6px; }
 .admin-users td { vertical-align: top; }
+.precon-box { margin-bottom: 18px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.precon-box h2 { margin: 0 0 8px; }
+.precon-now { margin: 0 0 8px; }
+.precon-form { display: flex; gap: 8px; align-items: flex-end; margin-bottom: 8px; }
+.precon-form input { flex: 1; min-width: 0; }
+.precon-form label { flex: 1; min-width: 0; }
+.commander-form { margin-top: 12px; }
+.deck-details { margin-top: 12px; }
+.deck-details summary { cursor: pointer; color: var(--muted); }
+.precon-missing, .precon-req { color: var(--accent); margin: 6px 0 0; }
+.cmd-thumb { flex: none; display: block; width: 46px; }
+.cmd-thumb img { display: block; width: 100%; border-radius: 4px; }
+.pcard-head { display: flex; gap: 10px; align-items: flex-start; }
 .how { max-width: 760px; }
 .how-section { margin-bottom: 26px; }
 .how-section h2 { margin: 0 0 8px; }

@@ -24,10 +24,11 @@ import {
   LEAGUE_MIN, LEAGUE_MAX, DEFAULT_RULES, RULE_LIMITS, getLeague, leagueByCode, listLeagues, activeLeagueOf,
   leagueMembers, isMember, addMember, removeMember, wasKicked, createLeague, updateLeague, newLeagueCode, endLeague, deleteLeague,
   logEvent, leagueEvents, migrateToLeagues, leaguesOf,
+  memberRow, hasPrecon, lockPrecon, allowPreconChange, setPreconRequest, setCommander, preconTakenBy,
 } from './leagues.js';
-import { getBoosterSets, BOOSTER_SET_TYPES } from './scryfall.js';
+import { getBoosterSets, BOOSTER_SET_TYPES, findCard, getPreconNames } from './scryfall.js';
 import { openPack, hasRealPack, realPackKind, localPackSets, sheetOdds } from './packs.js';
-import { requireAuth, requireAdmin, authRoutes, seedAdmin, listUsers, getUser, selfUser, setPrecon, deleteAccount } from './auth.js';
+import { requireAuth, requireAdmin, authRoutes, seedAdmin, listUsers, getUser, selfUser, deleteAccount } from './auth.js';
 import { importDeck, editDeck, getDeck, deleteDeck, DeckError } from './decks.js';
 import { playerStats, seasonRecap } from './stats.js';
 import { discordInvite, podFinishedPost, leagueEndedPost } from './discord.js';
@@ -242,7 +243,9 @@ function leagueView(req, l) {
   if (!l) return null;
   const member = isMember(l.id, req.user.id);
   const adminId = leagueAdminId(l);
-  const members = leagueMembers(l.id).map(m => ({ ...m, leagueAdmin: m.id === adminId }));
+  const manage = req.user.isAdmin || isLeagueAdmin(req, l);
+  // A change request's reason is only for the player and whoever can answer it.
+  const members = leagueMembers(l.id).map(m => ({ ...m, leagueAdmin: m.id === adminId, preconRequest: manage || m.id === req.user.id ? m.preconRequest : null }));
   return {
     id: l.id, name: l.name, status: l.status, createdAt: l.createdAt, endedAt: l.endedAt, createdBy: creatorName(l),
     leagueAdmin: adminId ? { id: adminId, username: getUser(adminId)?.username } : null,
@@ -430,6 +433,7 @@ app.post('/api/leagues/:id/test-players', wrap(async (req, res) => {
     } else if (taken.is_test && !activeLeagueOf(taken.id)) u = getUser(taken.id);
     else continue;
     addMember(league.id, u.id, req.user.id);
+    lockPrecon(league.id, u.id, `${u.username} precon`);
     catchUp(league, u);
     added.push(u.username);
   }
@@ -453,6 +457,80 @@ app.delete('/api/leagues/:id/test-players', wrap(async (req, res) => {
 }));
 
 // Kick a player: the league admin or the site admin.
+// ---------- each player's precon and commander card, per league ----------
+function myLeagueRow(req) {
+  const league = requireLeague(req.params.id);
+  if (!isMember(league.id, req.user.id)) throw new HttpError(403, `You're not in ${league.name}.`);
+  if (league.status !== 'active') throw new HttpError(409, `${league.name} has ended.`);
+  return { league, row: memberRow(league.id, req.user.id) };
+}
+const leagueReply = (req, res, league) => { broadcast('state', { leagueId: league.id }); res.json({ league: leagueView(req, getLeague(league.id)) }); };
+
+app.get('/api/precons', wrap(async (req, res) => res.json({ names: await getPreconNames() })));
+
+// Saving locks it for this league; only the league admin or a site admin can reopen it.
+app.put('/api/leagues/:id/precon', wrap(async (req, res) => {
+  const { league, row } = myLeagueRow(req);
+  if (row.precon_locked) throw new HttpError(409, 'Your precon is locked for this league. Ask the league admin or a site admin to allow a change.');
+  const precon = String(req.body?.precon || '').trim().slice(0, 80);
+  if (!precon) throw new HttpError(400, 'Enter your precon.');
+  const taken = preconTakenBy(league.id, precon, req.user.id);
+  if (taken) throw new HttpError(409, `${taken} already has ${precon} in this league. Each player needs their own precon.`);
+  lockPrecon(league.id, req.user.id, precon);
+  // A pod already running shows the new name.
+  for (const pod of activePods(league.id)) {
+    const seat = pod.players.find(p => p.id === req.user.id);
+    if (seat && seat.precon !== precon) { seat.precon = precon; savePod(pod); }
+  }
+  logEvent(league.id, 'precon', req.user.id, `${req.user.username} locked in ${precon}.`);
+  leagueReply(req, res, league);
+}));
+app.post('/api/leagues/:id/precon/request', wrap(async (req, res) => {
+  const { league, row } = myLeagueRow(req);
+  if (!row.precon_locked) throw new HttpError(409, "Your precon isn't locked, so you can change it yourself.");
+  const reason = String(req.body?.reason || '').trim().slice(0, 200);
+  if (!reason) throw new HttpError(400, 'Say why you want to change it.');
+  setPreconRequest(league.id, req.user.id, { reason, at: now() });
+  logEvent(league.id, 'precon', req.user.id, `${req.user.username} asked to change their precon.`);
+  leagueReply(req, res, league);
+}));
+function preconTarget(req) {
+  const league = requireLeague(req.params.id);
+  requireLeagueAdmin(req, league);
+  if (league.status !== 'active') throw new HttpError(409, `${league.name} has ended.`);
+  const u = getUser(req.params.userId);
+  if (!u || !isMember(league.id, u.id)) throw new HttpError(404, `That player isn't in ${league.name}.`);
+  return { league, u };
+}
+app.post('/api/leagues/:id/members/:userId/precon/allow', wrap(async (req, res) => {
+  const { league, u } = preconTarget(req);
+  allowPreconChange(league.id, u.id);
+  logEvent(league.id, 'precon', req.user.id, `${req.user.username} let ${u.username} change their precon.`);
+  if (req.user.isAdmin) logAdmin(req, { action: 'precon-allow', summary: `Allowed ${u.username} to change their precon in ${league.name}.`, leagueId: league.id });
+  leagueReply(req, res, league);
+}));
+app.post('/api/leagues/:id/members/:userId/precon/decline', wrap(async (req, res) => {
+  const { league, u } = preconTarget(req);
+  if (!memberRow(league.id, u.id).precon_request) throw new HttpError(409, `${u.username} hasn't asked to change their precon.`);
+  setPreconRequest(league.id, u.id, null);
+  logEvent(league.id, 'precon', req.user.id, `${req.user.username} declined ${u.username}'s precon change.`);
+  leagueReply(req, res, league);
+}));
+// The commander image isn't locked: players swap it whenever they change commander.
+const commanderLookups = new Map();
+app.put('/api/leagues/:id/commander', wrap(async (req, res) => {
+  const { league } = myLeagueRow(req);
+  const name = String(req.body?.card || '').trim().slice(0, 150);
+  if (!name) { setCommander(league.id, req.user.id, null); return leagueReply(req, res, league); }
+  const recent = (commanderLookups.get(req.user.id) || []).filter(t => Date.now() - t < 3600e3);
+  if (recent.length >= 30) throw new HttpError(429, "That's a lot of lookups. Try again in an hour.");
+  commanderLookups.set(req.user.id, [...recent, Date.now()]);
+  const card = await findCard(name).catch(() => { throw new HttpError(502, "Scryfall couldn't be reached. Try again in a moment."); });
+  if (!card?.image) throw new HttpError(404, `No single card matches "${name}". Try more of its name.`);
+  setCommander(league.id, req.user.id, card);
+  leagueReply(req, res, league);
+}));
+
 app.delete('/api/leagues/:id/members/:userId', wrap(async (req, res) => {
   const league = requireLeague(req.params.id);
   requireLeagueAdmin(req, league);
@@ -664,7 +742,7 @@ app.get('/api/state', wrap(async (req, res) => {
     league: leagueView(req, league), leagues: leagueList(),
     pods: running.map(p => view(req, p)),
     openPods: openPodIds.map(id => view(req, loadPod(id))).filter(Boolean),
-    members: league ? leagueMembers(league.id).map(m => ({ id: m.id, username: m.username, precon: m.precon })) : [],
+    members: league ? leagueMembers(league.id).map(m => ({ id: m.id, username: m.username, precon: m.precon, commander: m.commander })) : [],
     pending,
     tradesWaiting: tradesWaiting(req.user.id),
     ...(req.user.isAdmin ? { feedbackNew: newFeedbackCount() } : {}),
@@ -673,7 +751,7 @@ app.get('/api/state', wrap(async (req, res) => {
 
 app.get('/api/members', wrap(async (req, res) => {
   const league = viewLeague(req);
-  res.json({ members: league ? leagueMembers(league.id).map(m => ({ id: m.id, username: m.username, precon: m.precon })) : [] });
+  res.json({ members: league ? leagueMembers(league.id).map(m => ({ id: m.id, username: m.username, precon: m.precon, commander: m.commander })) : [] });
 }));
 
 app.post('/api/pods', wrap(async (req, res) => {
@@ -692,10 +770,12 @@ app.post('/api/pods', wrap(async (req, res) => {
     if (u.is_admin) throw new HttpError(400, 'The admin account manages the league and does not play in pods.');
     if (!isMember(league.id, u.id)) throw new HttpError(400, `${u.username} is not in ${league.name}.`);
     if (busy.has(u.id)) throw new HttpError(409, `${u.username} is already playing in ${busy.get(u.id).name}.`);
-    const precon = String(w.precon ?? u.precon ?? '').trim().slice(0, 80);
-    return { id: u.id, name: u.username, precon, awarded: 0, sacrificed: 0, packs: [] };
+    return { id: u.id, name: u.username, precon: memberRow(league.id, u.id).precon, awarded: 0, sacrificed: 0, packs: [] };
   });
   if (!req.user.isAdmin && !ids.includes(req.user.id)) throw new HttpError(403, 'Add yourself to the pod (only the admin can start pods for others).');
+  if (isMember(league.id, req.user.id) && !hasPrecon(league.id, req.user.id)) throw new HttpError(409, 'Save your precon on the League tab before starting a pod.');
+  const noPrecon = players.filter(p => !p.precon).map(p => p.name);
+  if (noPrecon.length) throw new HttpError(409, `${names(noPrecon)} ${noPrecon.length > 1 ? 'need' : 'needs'} to save a precon on the League tab before playing in a pod.`);
   const key = `pod_counter:${league.id}`;
   const n = kvGet(key, 0) + 1;
   kvSet(key, n);
@@ -904,6 +984,7 @@ app.post('/api/pods/:id/packs/:packId/open', wrap(async (req, res) => {
   requireOwner(player, req.user);
   if (pack.status === 'opened') return res.json({ pod: view(req, pod), pack });
   if (pack.status !== 'ready') throw new HttpError(409, 'Choose a set for this pack first.');
+  if (pod.leagueId && isMember(pod.leagueId, player.id) && !hasPrecon(pod.leagueId, player.id)) throw new HttpError(409, `${player.name} needs to save a precon on the League tab before opening packs.`);
   if (opening.has(packId)) throw new HttpError(409, 'That pack is already being opened.');
   opening.add(packId);
   try {
@@ -1103,9 +1184,9 @@ app.get('/api/players/:id', wrap(async (req, res) => {
   const stats = await cached(`player:${u.id}:${league?.id || 'all'}`, 10 * 60e3, () => playerStats(u.id, league?.id || null));
   const rank = league ? standings(league.id).findIndex(s => s.id === u.id) : -1;
   res.json({
-    player: { id: u.id, username: u.username, precon: u.precon || '', joined: u.created_at, leagues: theirs.map(l => ({ id: l.id, name: l.name, status: l.status })) },
+    player: { id: u.id, username: u.username, precon: league ? memberRow(league.id, u.id)?.precon || '' : '', joined: u.created_at, leagues: theirs.map(l => ({ id: l.id, name: l.name, status: l.status })) },
     league: league ? { id: league.id, name: league.name, status: league.status, rank: rank >= 0 ? rank + 1 : null } : null,
-    stats, deck: getDeck(u.id),
+    stats, deck: getDeck(u.id, league?.id),
   });
 }));
 app.get('/api/leagues/:id/recap', wrap(async (req, res) => {
@@ -1115,24 +1196,31 @@ app.get('/api/leagues/:id/recap', wrap(async (req, res) => {
 
 const deckFail = err => { if (err instanceof DeckError) throw new HttpError(err.status, err.message); throw err; };
 const deckImports = new Map();
-app.get('/api/deck', (req, res) => res.json({ deck: getDeck(req.user.id) }));
+// Deck lists are per league too.
+function deckLeague(req) {
+  const l = viewLeague(req);
+  if (!l || !isMember(l.id, req.user.id)) throw new HttpError(409, 'Join a league first: deck lists are saved per league.');
+  return l;
+}
+app.get('/api/deck', wrap(async (req, res) => {
+  const l = viewLeague(req);
+  res.json({ deck: l && isMember(l.id, req.user.id) ? getDeck(req.user.id, l.id) : null });
+}));
 app.post('/api/deck', wrap(async (req, res) => {
   // Each import asks Scryfall (and maybe a deck site) for up to ~4 lookups.
   const recent = (deckImports.get(req.user.id) || []).filter(t => Date.now() - t < 3600e3);
   if (recent.length >= 15) throw new HttpError(429, 'That\'s a lot of imports. Try again in an hour.');
   deckImports.set(req.user.id, [...recent, Date.now()]);
   const b = req.body || {};
-  const deck = await importDeck(req.user.id, { url: b.url, text: b.text, name: b.name }).catch(deckFail);
-  // A precon field left blank picks up the deck's name.
-  if (!getUser(req.user.id).precon) setPrecon(req.user.id, deck.name);
+  const deck = await importDeck(req.user.id, deckLeague(req).id, { url: b.url, text: b.text, name: b.name }).catch(deckFail);
   broadcast('state');
   res.json({ deck });
 }));
 app.put('/api/deck', wrap(async (req, res) => {
-  const deck = await Promise.resolve().then(() => editDeck(req.user.id, req.body || {})).catch(deckFail);
+  const deck = await Promise.resolve().then(() => editDeck(req.user.id, deckLeague(req).id, req.body || {})).catch(deckFail);
   res.json({ deck });
 }));
-app.delete('/api/deck', wrap(async (req, res) => { deleteDeck(req.user.id); res.json({ ok: true }); }));
+app.delete('/api/deck', wrap(async (req, res) => { deleteDeck(req.user.id, deckLeague(req).id); res.json({ ok: true }); }));
 
 adminRoutes(app, { wrap, HttpError, broadcast, viewLeague, requireLeague, allSets, wheelFor, settingsFor, setInfo });
 tradeRoutes(app, { wrap, HttpError, broadcast, viewLeague });

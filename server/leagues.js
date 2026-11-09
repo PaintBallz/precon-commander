@@ -52,11 +52,22 @@ export function leaguesOf(userId) {
 
 export function leagueMembers(leagueId, { former = false } = {}) {
   return db.prepare(`
-    SELECT u.id, u.username, u.precon, u.is_test, u.staff, m.joined_at, m.left_at FROM league_members m JOIN users u ON u.id = m.user_id
+    SELECT u.id, u.username, m.precon, m.precon_locked, m.commander, m.precon_request, u.is_test, u.staff, m.joined_at, m.left_at FROM league_members m JOIN users u ON u.id = m.user_id
     WHERE m.league_id = ? ${former ? '' : 'AND m.left_at IS NULL'} AND u.is_admin = 0
     ORDER BY m.left_at IS NOT NULL, u.username COLLATE NOCASE`).all(leagueId)
-    .map(r => ({ id: r.id, username: r.username, precon: r.precon || '', joinedAt: r.joined_at, leftAt: r.left_at || null, ...(r.is_test ? { test: true } : {}), ...(r.staff ? { admin: true } : {}) }));
+    .map(r => ({ id: r.id, username: r.username, precon: r.precon || '', preconLocked: !!r.precon_locked, commander: r.commander ? JSON.parse(r.commander) : null, preconRequest: r.precon_request ? JSON.parse(r.precon_request) : null, joinedAt: r.joined_at, leftAt: r.left_at || null, ...(r.is_test ? { test: true } : {}), ...(r.staff ? { admin: true } : {}) }));
 }
+// ---- a player's precon and commander card for one league ----
+export const memberRow = (leagueId, userId) => db.prepare('SELECT * FROM league_members WHERE league_id = ? AND user_id = ?').get(leagueId, userId);
+export const hasPrecon = (leagueId, userId) => !!memberRow(leagueId, userId)?.precon;
+export const lockPrecon = (leagueId, userId, precon) => db.prepare('UPDATE league_members SET precon = ?, precon_locked = 1, precon_request = NULL WHERE league_id = ? AND user_id = ?').run(precon, leagueId, userId);
+export const allowPreconChange = (leagueId, userId) => db.prepare('UPDATE league_members SET precon_locked = 0, precon_request = NULL WHERE league_id = ? AND user_id = ?').run(leagueId, userId);
+export const setPreconRequest = (leagueId, userId, request) => db.prepare('UPDATE league_members SET precon_request = ? WHERE league_id = ? AND user_id = ?').run(request ? JSON.stringify(request) : null, leagueId, userId);
+export const setCommander = (leagueId, userId, card) => db.prepare('UPDATE league_members SET commander = ? WHERE league_id = ? AND user_id = ?').run(card ? JSON.stringify(card) : null, leagueId, userId);
+// Who in the league already has this precon (any capitalisation), if anyone.
+export const preconTakenBy = (leagueId, precon, exceptUserId) => db.prepare(`SELECT u.username FROM league_members m JOIN users u ON u.id = m.user_id
+  WHERE m.league_id = ? AND m.left_at IS NULL AND m.user_id != ? AND lower(m.precon) = lower(?)`).get(leagueId, exceptUserId, precon)?.username || null;
+
 export const isMember = (leagueId, userId) =>
   !!db.prepare('SELECT 1 FROM league_members WHERE league_id = ? AND user_id = ? AND left_at IS NULL').get(leagueId, userId);
 

@@ -40,6 +40,7 @@ and packs live.
   best pulls and recent pods.
 - **Season recap** with the champion, awards (Most Wins, Kingslayer, Mythic Magnet and more),
   top pulls and final standings, ready to paste into Discord.
+- **A precon for each league**, locked once saved, with a commander picture you can change any time. Admins can allow a change, and players can ask for one.
 - **Deck lists** from a Moxfield or Archidekt link or a pasted list, shown with the commander,
   colour identity, mana curve and card types.
 - **Discord.** Finished pods, season recaps and announcements can be posted to a Discord channel.

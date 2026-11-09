@@ -182,7 +182,6 @@ test('sign-up needs a username, an email and a simple-rules password', async () 
   }
   assert.equal((await anon.post('/api/auth/signup', { agree: true, username: 'nick', email: 'other@example.com', password: PW })).status, 409, 'usernames are unique (any case)');
   assert.equal((await anon.post('/api/auth/signup', { agree: true, username: 'Nick2', email: 'NICK@example.com', password: PW })).status, 409, 'one account per email');
-  await ok(nick.put('/api/auth/profile', { precon: 'Animated Army' }));
   // Logging in by email works too.
   await ok(client().post('/api/auth/login', { username: 'eve@example.com', password: PW }));
 });
@@ -215,6 +214,7 @@ test('starting a league brings in every player who is not in one', async () => {
   assert.deepEqual(league.rules, { winnerPacks: 3, loserPacks: 2, absentPacks: 1, voteBonus: 1 });
   assert.deepEqual(league.limits, { min: 3, max: 16, podMin: 3, podMax: 4 });
   S.league = league.id; S.code = league.code;
+  for (const [c, precon] of [[nick, 'Animated Army'], [mike, 'Death Toll'], [joe, 'Joe Precon'], [dan, 'Dan Precon'], [eve, 'Eve Precon']]) await ok(c.put(`/api/leagues/${league.id}/precon`, { precon }));
 
   const { members } = await ok(mike.get('/api/members'));
   assert.equal(members.length, 5);
@@ -230,6 +230,7 @@ test('players join with the invite code; one league at a time', async () => {
   assert.equal((await fay.post('/api/leagues/join', { code: 'ZZZZZZ' })).status, 404, 'unknown code');
   const { league } = await ok(fay.post('/api/leagues/join', { code: S.code.toLowerCase() }));
   assert.equal(league.members.length, 6, 'codes are not case-sensitive');
+  await ok(fay.put(`/api/leagues/${S.league}/precon`, { precon: 'Fay Precon' }));
   assert.equal((await fay.post('/api/leagues/join', { code: S.code })).status, 409, 'already in it');
   assert.equal((await admin.post('/api/leagues/join', { code: S.code })).status, 400, 'the admin does not join leagues');
 
@@ -333,11 +334,11 @@ test('pods hold 3 to 4 league members', async () => {
   assert.equal((await eve.post('/api/pods', { players: ids(['Nick', 'Mike', 'Joe']) })).status, 403, 'players add themselves');
   const adminId = (await ok(admin.get('/api/auth/me'))).user.id;
   assert.equal((await admin.post('/api/pods', { league: S.league, players: [{ userId: adminId }, ...ids(['Eve', 'Fay'])] })).status, 400, 'the admin account does not play in pods');
-  const { pod } = await ok(nick.post('/api/pods', { players: [...ids(['Nick']), { userId: S.u.Mike.id, precon: 'Death Toll' }, ...ids(['Joe', 'Dan'])] }));
+  const { pod } = await ok(nick.post('/api/pods', { players: [...ids(['Nick']), { userId: S.u.Mike.id, precon: 'Ignored: comes from the league' }, ...ids(['Joe', 'Dan'])] }));
   assert.equal(pod.status, 'playing');
   assert.equal(pod.name, 'Pod 1');
   assert.equal(pod.leagueId, S.league);
-  assert.deepEqual(pod.players.map(p => [p.name, p.precon]), [['Nick', 'Animated Army'], ['Mike', 'Death Toll'], ['Joe', ''], ['Dan', '']]);
+  assert.deepEqual(pod.players.map(p => [p.name, p.precon]), [['Nick', 'Animated Army'], ['Mike', 'Death Toll'], ['Joe', 'Joe Precon'], ['Dan', 'Dan Precon']]);
   assert.equal((await eve.post('/api/pods', { players: ids(['Eve', 'Fay', 'Nick']) })).status, 409, 'Nick is already in a pod');
   S.pod = pod;
 });
@@ -681,6 +682,7 @@ test('a late joiner gets catch-up packs for every pod already spun, through the 
   assert.ok(st.pending.every(k => k.catchup && k.absent), 'labelled as catch-up');
   const pod = await ok(ivy.get(`/api/pods/${st.pending[0].podId}`));
   assert.equal(pod.pod.absentees.find(a => a.id === st.pending[0] && false) ?? pod.pod.absentees.find(a => a.name === 'Ivy').packs[0].set.code, pod.pod.spin.set.code, 'each pack is that pod\'s spun set');
+  await ok(ivy.put(`/api/leagues/${S.league}/precon`, { precon: 'Ivy Precon' }));
   const { pack } = await ok(ivy.post(`/api/pods/${st.pending[0].podId}/packs/${st.pending[0].packId}/open`));
   assert.equal(pack.status, 'opened');
   const ivyRow = (await ok(nick.get(`/api/leagues/${S.league}`))).standings.find(s => s.name === 'Ivy');
@@ -767,7 +769,6 @@ test('deck lists: pasted or linked, looked up on Scryfall, shown on the player p
   const sol = deck.cards.find(c => c.name === 'Sol Ring');
   assert.deepEqual([sol.set, sol.number, sol.cmc, sol.mana], ['c21', '263', 1, '{1}']);
   assert.ok(sol.image.startsWith('https://'));
-  assert.equal((await ok(joe.get('/api/auth/me'))).user.precon, "Atraxa, Praetors' Voice", 'a blank precon picks up the deck name');
   const renamed = (await ok(joe.put('/api/deck', { name: 'Four Color Counters', commanders: [] }))).deck;
   assert.equal(renamed.name, 'Four Color Counters');
   assert.deepEqual(renamed.commanders, []);
@@ -1047,6 +1048,8 @@ test('a player can be made an admin and keeps playing; admins fill a league to 4
   assert.equal((await anon.post('/api/auth/login', { username: r.added[0], password: 'whatever1' })).status, 401, 'test players can\'t sign in');
   // An admin plays for them: a pod with two test players.
   const bots = r.league.members.filter(m => m.test);
+  await ok(gus.put(`/api/leagues/${S.gusLeague}/precon`, { precon: 'Gus Precon' }));
+  await ok(lex.put(`/api/leagues/${S.gusLeague}/precon`, { precon: 'Lex Precon' }));
   const { pod } = await ok(lex.post('/api/pods', { league: S.gusLeague, players: [S.u.Gus.id, ...bots.map(b => b.id)].map(userId => ({ userId })) }));
   let p = (await ok(lex.post(`/api/pods/${pod.id}/winner`, { playerId: bots[0].id }))).pod;
   // Test players vote by themselves; the vote waits only on Gus.
@@ -1314,6 +1317,7 @@ test('ending a league archives it and frees its players; deleting removes it', a
   assert.equal((await nick.post('/api/pods', { league: S.league, players: ['Nick', 'Mike', 'Joe'].map(n => ({ userId: S.u[n].id })) })).status, 409, 'no new pods');
   const { league } = await ok(fay.post('/api/leagues', { name: 'Season 2' }));
   assert.equal(league.members.length, 6, 'a new league can sweep in everyone who is free (Gus is still in his)');
+  for (const [c, precon] of [[nick, 'Season 2 Nick'], [mike, 'Season 2 Mike'], [joe, 'Season 2 Joe']]) await ok(c.put(`/api/leagues/${league.id}/precon`, { precon }));
 
   assert.equal((await gus.del(`/api/leagues/${S.gusLeague}`)).status, 403);
   await ok(admin.del(`/api/leagues/${S.gusLeague}`));
@@ -1412,6 +1416,56 @@ test('players can delete their account; past pods keep them as "Deleted player"'
 test('logging out ends the session', async () => {
   await ok(eve.post('/api/auth/logout'));
   assert.equal((await eve.get('/api/state')).status, 401);
+});
+
+test('precons are per league: required, locked once saved, and reopened only by an admin', async () => {
+  const [zoe, yan, xen, wren] = [client(), client(), client(), client()];
+  const u = {};
+  for (const [name, c] of [['Zoe', zoe], ['Yan', yan], ['Xen', xen], ['Wren', wren]]) u[name] = (await ok(c.post('/api/auth/signup', { agree: true, username: name, email: `${name.toLowerCase()}@example.com`, password: PW }))).user;
+  const { league } = await ok(zoe.post('/api/leagues', { name: 'Precon League', addEveryone: false }));
+  for (const c of [yan, xen, wren]) await ok(c.post('/api/leagues/join', { code: league.code }));
+  const L = `/api/leagues/${league.id}`;
+  const players = ['Zoe', 'Yan', 'Xen'].map(n => ({ userId: u[n].id }));
+  const noneYet = await zoe.post('/api/pods', { players });
+  assert.equal(noneYet.status, 409); assert.match(noneYet.json.error, /precon/i);
+  await ok(zoe.put(`${L}/precon`, { precon: 'Alpha Deck' }));
+  assert.equal((await zoe.put(`${L}/precon`, { precon: 'Other' })).status, 409, 'locked once saved');
+  assert.equal((await yan.put(`${L}/precon`, { precon: 'alpha deck' })).status, 409, 'no two players on the same precon');
+  await ok(yan.put(`${L}/precon`, { precon: 'Beta Deck' }));
+  const missing = await zoe.post('/api/pods', { players });
+  assert.equal(missing.status, 409); assert.match(missing.json.error, /Xen/);
+  await ok(xen.put(`${L}/precon`, { precon: 'Gamma Deck' }));
+
+  // Asking for a change, and who can answer it.
+  assert.equal((await xen.post(`${L}/precon/request`, {})).status, 400, 'needs a reason');
+  await ok(xen.post(`${L}/precon/request`, { reason: 'Picked the wrong one' }));
+  assert.equal((await ok(yan.get('/api/state'))).league.members.find(m => m.username === 'Xen').preconRequest, null, 'the reason is private');
+  assert.equal((await ok(zoe.get('/api/state'))).league.members.find(m => m.username === 'Xen').preconRequest.reason, 'Picked the wrong one');
+  assert.equal((await yan.post(`${L}/members/${u.Xen.id}/precon/allow`)).status, 403, 'players cannot allow changes');
+  await ok(zoe.post(`${L}/members/${u.Xen.id}/precon/decline`));
+  assert.equal((await xen.put(`${L}/precon`, { precon: 'Delta Deck' })).status, 409, 'declined: still locked');
+  await ok(admin.post(`${L}/members/${u.Xen.id}/precon/allow`));
+  await ok(xen.put(`${L}/precon`, { precon: 'Delta Deck' }));
+  assert.equal((await xen.put(`${L}/precon`, { precon: 'Epsilon Deck' })).status, 409, 'one save, then locked again');
+
+  // Packs wait for a precon too.
+  await ok(admin.post('/api/admin/grants', { league: league.id, userIds: [u.Wren.id], count: 1, mode: 'set', setCode: 'lea' }));
+  const k = (await ok(wren.get('/api/state'))).pending[0];
+  const blocked = await wren.post(`/api/pods/${k.podId}/packs/${k.packId}/open`);
+  assert.equal(blocked.status, 409); assert.match(blocked.json.error, /precon/i);
+  await ok(wren.put(`${L}/precon`, { precon: 'Wren Deck' }));
+  await ok(wren.post(`/api/pods/${k.podId}/packs/${k.packId}/open`));
+
+  // The commander picture is separate and never locks.
+  if (LIVE_SCRYFALL) {
+    const r = await ok(zoe.put(`${L}/commander`, { card: 'atraxa praetors' }));
+    assert.equal(r.league.members.find(m => m.username === 'Zoe').commander.name, "Atraxa, Praetors' Voice");
+    assert.equal((await zoe.put(`${L}/commander`, { card: 'zzzz not a card qqq' })).status, 404);
+    await ok(zoe.put(`${L}/commander`, { card: 'Sol Ring' }));
+    assert.ok((await ok(zoe.get('/api/precons'))).names.length > 100, 'official precon names');
+  }
+  // A league's profile no longer carries a precon.
+  assert.ok(!('precon' in (await ok(zoe.get('/api/auth/me'))).user));
 });
 
 test('emails are encrypted at rest, with lookups through a keyed hash', async () => {

@@ -10,13 +10,32 @@ import { db } from './db.js';
 import { fetchCollection } from './scryfall.js';
 
 db.exec(`CREATE TABLE IF NOT EXISTS decks (
-  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  league_id TEXT NOT NULL DEFAULT '',
   name TEXT NOT NULL,
   source TEXT NOT NULL,
   url TEXT,
   data TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, league_id)
 )`);
+// Decks used to be one per account: they move to the player's current league
+// (or the latest one they were in).
+if (!db.prepare("SELECT 1 FROM pragma_table_info('decks') WHERE name = 'league_id'").get()) {
+  db.exec(`BEGIN IMMEDIATE;
+    ALTER TABLE decks RENAME TO decks_old;
+    CREATE TABLE decks (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      league_id TEXT NOT NULL DEFAULT '',
+      name TEXT NOT NULL, source TEXT NOT NULL, url TEXT, data TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY (user_id, league_id)
+    );
+    INSERT INTO decks (user_id, league_id, name, source, url, data, updated_at)
+      SELECT d.user_id, COALESCE((SELECT m.league_id FROM league_members m WHERE m.user_id = d.user_id ORDER BY m.left_at IS NOT NULL, m.joined_at DESC LIMIT 1), ''),
+             d.name, d.source, d.url, d.data, d.updated_at FROM decks_old d;
+    DROP TABLE decks_old;
+    COMMIT;`);
+}
 
 export class DeckError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
 const MAX_LINES = 250;
@@ -191,7 +210,10 @@ function rowOf(r) {
   const d = JSON.parse(r.data);
   return { name: r.name, source: r.source, url: r.url || null, updatedAt: r.updated_at, ...d, ...summary(d.cards) };
 }
-export const getDeck = userId => rowOf(db.prepare('SELECT * FROM decks WHERE user_id = ?').get(userId));
+// One league's deck, or (with no league) the player's most recently updated one.
+export const getDeck = (userId, leagueId) => rowOf(leagueId
+  ? db.prepare('SELECT * FROM decks WHERE user_id = ? AND league_id = ?').get(userId, leagueId)
+  : db.prepare('SELECT * FROM decks WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1').get(userId));
 export function deckSummaries(userIds) {
   const out = new Map();
   for (const id of userIds) {
@@ -200,16 +222,16 @@ export function deckSummaries(userIds) {
   }
   return out;
 }
-export const deleteDeck = userId => db.prepare('DELETE FROM decks WHERE user_id = ?').run(userId).changes > 0;
+export const deleteDeck = (userId, leagueId) => db.prepare('DELETE FROM decks WHERE user_id = ? AND league_id = ?').run(userId, leagueId).changes > 0;
 
-function save(userId, deck) {
-  db.prepare(`INSERT INTO decks (user_id, name, source, url, data, updated_at) VALUES (?, ?, ?, ?, ?, ?)
-              ON CONFLICT(user_id) DO UPDATE SET name = excluded.name, source = excluded.source, url = excluded.url, data = excluded.data, updated_at = excluded.updated_at`)
-    .run(userId, deck.name, deck.source, deck.url || null, JSON.stringify({ cards: deck.cards, missing: deck.missing }), new Date().toISOString());
-  return getDeck(userId);
+function save(userId, leagueId, deck) {
+  db.prepare(`INSERT INTO decks (user_id, league_id, name, source, url, data, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+              ON CONFLICT(user_id, league_id) DO UPDATE SET name = excluded.name, source = excluded.source, url = excluded.url, data = excluded.data, updated_at = excluded.updated_at`)
+    .run(userId, leagueId, deck.name, deck.source, deck.url || null, JSON.stringify({ cards: deck.cards, missing: deck.missing }), new Date().toISOString());
+  return getDeck(userId, leagueId);
 }
 
-export async function importDeck(userId, { url, text, name }) {
+export async function importDeck(userId, leagueId, { url, text, name }) {
   let entries, deckName, source, link = null;
   if (url && String(url).trim()) {
     const src = deckSource(url);
@@ -222,16 +244,16 @@ export async function importDeck(userId, { url, text, name }) {
   const { cards, missing } = await resolve(entries);
   const commanders = cards.filter(c => c.board === 'commander');
   deckName = String(name || deckName || commanders.map(c => c.name.split(' // ')[0]).join(' & ') || 'My deck').trim().slice(0, 80);
-  return save(userId, { name: deckName, source, url: link, cards, missing });
+  return save(userId, leagueId, { name: deckName, source, url: link, cards, missing });
 }
 
 // Pick (or clear) which cards are the commander(s), and rename the deck.
-export function editDeck(userId, { commanders, name }) {
-  const d = getDeck(userId);
+export function editDeck(userId, leagueId, { commanders, name }) {
+  const d = getDeck(userId, leagueId);
   if (!d) throw new DeckError(404, "You haven't imported a deck yet.");
   if (Array.isArray(commanders)) {
     const want = new Set(commanders.slice(0, 2).map(String));
     for (const c of d.cards) c.board = want.has(c.name) ? 'commander' : 'main';
   }
-  return save(userId, { name: name != null ? String(name).trim().slice(0, 80) || d.name : d.name, source: d.source, url: d.url, cards: d.cards, missing: d.missing });
+  return save(userId, leagueId, { name: name != null ? String(name).trim().slice(0, 80) || d.name : d.name, source: d.source, url: d.url, cards: d.cards, missing: d.missing });
 }

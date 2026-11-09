@@ -48,6 +48,34 @@ export function fallbackImage(set, number) {
   return `https://api.scryfall.com/cards/${encodeURIComponent(set)}/${encodeURIComponent(number)}?format=image&version=normal`;
 }
 
+// One card by (roughly) its name, for a player's commander image.
+export async function findCard(name) {
+  const c = await sfFetch(`/cards/named?fuzzy=${encodeURIComponent(name)}`);
+  if (!c) return null;
+  const s = slimCard(c);
+  return { name: s.name, image: s.image, uri: s.uri };
+}
+
+// Official Commander precon names for the suggestions on the precon field, from
+// MTGJSON's deck list. Cached for a week; if it can't be reached the field still
+// takes any name.
+const PRECON_TTL_MS = 7 * 24 * 3600 * 1000;
+export async function getPreconNames() {
+  const cached = kvGet('precon_names');
+  if (cached && Date.now() - cached.fetchedAt < PRECON_TTL_MS) return cached.names;
+  try {
+    const res = await fetch('https://mtgjson.com/api/v5/DeckList.json', { headers: HEADERS, signal: AbortSignal.timeout(20000) });
+    if (!res.ok) throw new Error(`MTGJSON ${res.status}`);
+    const json = await res.json();
+    const names = [...new Set(json.data.filter(d => d.type === 'Commander Deck').map(d => d.name))].sort((a, b) => a.localeCompare(b));
+    kvSet('precon_names', { fetchedAt: Date.now(), names });
+    return names;
+  } catch (err) {
+    console.warn('Could not refresh precon names:', err.message);
+    return cached?.names || [];
+  }
+}
+
 const SETS_TTL_MS = 24 * 3600 * 1000;
 
 // All booster sets, newest first. Cached in the DB and refreshed daily; if

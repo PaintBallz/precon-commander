@@ -27,7 +27,7 @@ export const LIMITS = {
 // Endpoints that call Scryfall, Moxfield/Archidekt or crunch a whole league.
 const HEAVY = [
   ['GET', /^\/api\/players\/[^/]+$/], ['GET', /^\/api\/leagues\/[^/]+\/recap$/], ['GET', /^\/api\/fun\/odds\//],
-  ['POST', /^\/api\/deck$/], ['PUT', /^\/api\/deck$/], ['POST', /^\/api\/fun\/open$/],
+  ['POST', /^\/api\/deck$/], ['PUT', /^\/api\/leagues\/[^/]+\/commander$/], ['PUT', /^\/api\/deck$/], ['POST', /^\/api\/fun\/open$/],
 ];
 // (Opening league packs isn't here: friends at one house share an IP, a pod
 // night opens dozens of packs at once, and each pack can only be opened once.)

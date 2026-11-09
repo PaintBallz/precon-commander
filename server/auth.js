@@ -65,12 +65,11 @@ const userCols = 'id, username, email, is_admin, staff, is_test, must_change, pr
 // Never carries an email: admins, View as and the player list get this. Only
 // selfUser, for a person's own signed-in session, carries theirs, and only masked.
 export function publicUser(r) {
-  return r && { id: r.id, username: r.username, isAdmin: !!(r.is_admin || r.staff), adminAccount: !!r.is_admin, staff: !!r.staff, ...(r.is_test ? { test: true } : {}), mustChange: !!r.must_change, precon: r.precon || '', createdAt: r.created_at,
+  return r && { id: r.id, username: r.username, isAdmin: !!(r.is_admin || r.staff), adminAccount: !!r.is_admin, staff: !!r.staff, ...(r.is_test ? { test: true } : {}), mustChange: !!r.must_change, createdAt: r.created_at,
     ...(r.suspended_at ? { suspended: true, suspendedAt: r.suspended_at, suspendedReason: r.suspended_reason || '' } : {}) };
 }
 export const selfUser = r => r && { ...publicUser(r), email: maskEmail(decryptEmail(r.email)) };
 export const getUser = id => db.prepare(`SELECT ${userCols} FROM users WHERE id = ?`).get(id);
-export const setPrecon = (id, precon) => db.prepare('UPDATE users SET precon = ? WHERE id = ?').run(String(precon).trim().slice(0, 80), id);
 export const listUsers = () => db.prepare(`SELECT ${userCols} FROM users ORDER BY username COLLATE NOCASE`).all();
 const byLogin = login => db.prepare('SELECT * FROM users WHERE username = ? OR email_hash = ?').get(login, hashEmail(login));
 
@@ -245,7 +244,6 @@ export function authRoutes(app, wrap, onChange = () => {}) {
       if (other && other.id !== req.user.id) throw new AuthError(409, 'An account already uses that email.');
       db.prepare('UPDATE users SET email = ?, email_hash = ? WHERE id = ?').run(encryptEmail(email), hashEmail(email), req.user.id);
     }
-    if (b.precon != null) db.prepare('UPDATE users SET precon = ? WHERE id = ?').run(String(b.precon).trim().slice(0, 80), req.user.id);
     res.json({ user: selfUser(getUser(req.user.id)) });
   }));
 

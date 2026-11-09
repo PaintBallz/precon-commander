@@ -236,6 +236,16 @@ for (const [table, col, def] of [
 ]) {
   if (!db.prepare(`SELECT 1 FROM pragma_table_info('${table}') WHERE name = ?`).get(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
 }
+// Precons are per league (league_members), locked once saved. Whatever was on a
+// player's profile before this carries into each of their leagues, locked.
+if (!db.prepare("SELECT 1 FROM pragma_table_info('league_members') WHERE name = 'precon'").get()) {
+  db.exec(`ALTER TABLE league_members ADD COLUMN precon TEXT NOT NULL DEFAULT '';
+    ALTER TABLE league_members ADD COLUMN precon_locked INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE league_members ADD COLUMN commander TEXT;
+    ALTER TABLE league_members ADD COLUMN precon_request TEXT;
+    UPDATE league_members SET precon = COALESCE((SELECT trim(u.precon) FROM users u WHERE u.id = user_id), '');
+    UPDATE league_members SET precon_locked = 1 WHERE precon <> '';`);
+}
 // Emails are stored encrypted, with a keyed hash for lookups (see emailcrypt.js).
 // Any still in plain text are converted once, then the file is rebuilt so the
 // old text doesn't linger in free pages or the WAL.
