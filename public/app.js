@@ -494,7 +494,7 @@ async function renderAccount(view) {
     <div class="account-grid">
       <form class="panel grid" id="profForm">
         <h2>Profile</h2>
-        <label>Email <span class="dim small">(for password recovery)</span><input name="email" type="email" value="${esc(me.email)}" maxlength="254" ${me.email ? '' : 'placeholder="Add an email"'}></label>
+        <label>${me.email ? `Email <span class="dim small">(for password recovery)</span> <span class="current-email">${esc(me.email)}</span>` : 'Email <span class="dim small">(for password recovery)</span>'}<input name="email" type="email" autocomplete="off" maxlength="254" placeholder="${me.email ? 'Enter a new email to change it' : 'Add an email'}"></label>
         <label>Your precon / commander<input name="precon" value="${esc(me.precon)}" maxlength="80" placeholder="e.g. Animated Army"></label>
         <p class="small muted" style="margin:0">Your precon fills in automatically when you join a pod. Its cards aren't listed in your pool.</p>
         <button class="btn gold">Save profile</button>
@@ -527,7 +527,7 @@ async function renderAccount(view) {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.target));
     if (!f.email) delete f.email;
-    try { const r = await api('/auth/profile', { method: 'PUT', body: f }); S.me = r.user; paintMe(); toast('Profile saved.', 'good'); } catch (err) { fail(err); }
+    try { const r = await api('/auth/profile', { method: 'PUT', body: f }); S.me = r.user; paintMe(); if (f.email) render(); toast('Profile saved.', 'good'); } catch (err) { fail(err); }
   };
   $('#pwForm', view).onsubmit = async e => {
     e.preventDefault();
@@ -2691,9 +2691,9 @@ async function renderAdmin(view) {
     <section class="panel" style="margin-top:16px;overflow-x:auto">
       <h2>${I.user} Players</h2>
       <p class="small muted">${users.emailEnabled ? 'Password-reset emails are on.' : 'Password-reset emails are <b>off</b>: use <b>Reset link</b> and send the link yourself.'} <b>View as</b> shows the site exactly as that player sees it, read-only.</p>
-      <table class="standings admin-users"><thead><tr><th>Player</th><th>Email</th><th>Joined</th><th></th></tr></thead>
+      <table class="standings admin-users"><thead><tr><th>Player</th><th>Joined</th><th></th></tr></thead>
       <tbody>${users.users.map(u => `<tr class="${u.suspended ? 'dim' : ''}"><td><b>${u.adminAccount ? esc(u.username) : plink(u.id, u.username)}</b>${u.adminAccount ? ' <span class="chip gold">admin account</span>' : u.staff ? ' <span class="chip gold" title="A player with admin powers">admin</span>' : ''}${u.test ? ' <span class="chip" title="Cannot sign in; an admin plays for it">test player</span>' : ''}${u.suspended ? ` <span class="chip" title="${esc(u.suspendedReason)}">suspended</span>` : ''}<div class="small muted">${esc(u.precon) || ''}</div></td>
-        <td class="small">${esc(u.email) || '<span class="dim">—</span>'}</td><td class="small muted">${new Date(u.createdAt).toLocaleDateString()}</td>
+        <td class="small muted">${new Date(u.createdAt).toLocaleDateString()}</td>
         <td class="admin-acts">${u.id === S.me.id || u.adminAccount ? '' : `
           ${isAdminAccount() && !u.test ? `<button class="btn sm ${u.staff ? '' : 'gold'}" data-ua="${u.staff ? 'unstaff' : 'staff'}" data-id="${u.id}" data-name="${esc(u.username)}">${u.staff ? 'Remove admin' : 'Make admin'}</button>` : ''}
           <button class="btn sm" data-ua="view" data-id="${u.id}" data-name="${esc(u.username)}">View as</button>
@@ -2713,7 +2713,7 @@ async function renderAdmin(view) {
       </section>
       <section class="panel">
         <div class="spread"><h2 style="margin:0">Backups</h2><button class="btn sm gold" id="backupNow">Back up now</button></div>
-        <p class="small muted">A full copy of the database is made every 24 hours (the newest 14 are kept) in <code>pre-con-commander/data/backups</code> on the server. Downloads hold every account's email and password hash: keep them private.</p>
+        <p class="small muted">A full copy of the database is made every 24 hours (the newest 14 are kept) in <code>pre-con-commander/data/backups</code> on the server. Downloads hold every account's password hash and encrypted email: keep them private.</p>
         <div class="admin-backups">${backups.backups.map(b => `<div class="spread small"><span>${fmtWhen(b.at)} · ${b.auto ? 'automatic' : 'manual'} · ${kb(b.size)}</span><a class="btn sm" href="/api/admin/backups/${encodeURIComponent(b.name)}" download>Download</a></div>`).join('') || '<p class="muted">No backups yet. The first automatic one is made a minute after the site starts.</p>'}</div>
       </section>
     </div>`;

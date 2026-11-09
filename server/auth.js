@@ -1,6 +1,7 @@
 // League accounts: username + password login, email for recovery, one admin.
 // Passwords are scrypt-hashed; sessions are random tokens in an HttpOnly cookie.
 import crypto from 'node:crypto';
+import { encryptEmail, decryptEmail, hashEmail, maskEmail } from './emailcrypt.js';
 import { db } from './db.js';
 import { sendMail, mailEnabled } from './mail.js';
 import { clientIp } from './ratelimit.js';
@@ -61,14 +62,17 @@ const now = () => new Date().toISOString();
 const userCols = 'id, username, email, is_admin, staff, is_test, must_change, precon, created_at, suspended_at, suspended_reason';
 // isAdmin: may use admin powers (the admin account, or a player made an admin).
 // adminAccount: the original admin account, which runs the site and never plays.
+// Never carries an email: admins, View as and the player list get this. Only
+// selfUser, for a person's own signed-in session, carries theirs, and only masked.
 export function publicUser(r) {
-  return r && { id: r.id, username: r.username, email: r.email || '', isAdmin: !!(r.is_admin || r.staff), adminAccount: !!r.is_admin, staff: !!r.staff, ...(r.is_test ? { test: true } : {}), mustChange: !!r.must_change, precon: r.precon || '', createdAt: r.created_at,
+  return r && { id: r.id, username: r.username, isAdmin: !!(r.is_admin || r.staff), adminAccount: !!r.is_admin, staff: !!r.staff, ...(r.is_test ? { test: true } : {}), mustChange: !!r.must_change, precon: r.precon || '', createdAt: r.created_at,
     ...(r.suspended_at ? { suspended: true, suspendedAt: r.suspended_at, suspendedReason: r.suspended_reason || '' } : {}) };
 }
+export const selfUser = r => r && { ...publicUser(r), email: maskEmail(decryptEmail(r.email)) };
 export const getUser = id => db.prepare(`SELECT ${userCols} FROM users WHERE id = ?`).get(id);
 export const setPrecon = (id, precon) => db.prepare('UPDATE users SET precon = ? WHERE id = ?').run(String(precon).trim().slice(0, 80), id);
 export const listUsers = () => db.prepare(`SELECT ${userCols} FROM users ORDER BY username COLLATE NOCASE`).all();
-const byLogin = login => db.prepare('SELECT * FROM users WHERE username = ? OR email = ?').get(login, login);
+const byLogin = login => db.prepare('SELECT * FROM users WHERE username = ? OR email_hash = ?').get(login, hashEmail(login));
 
 function setPassword(userId, pw, mustChange = 0) {
   db.prepare('UPDATE users SET pass_hash = ?, must_change = ? WHERE id = ?').run(hashPassword(pw), mustChange, userId);
@@ -174,7 +178,7 @@ export function requireAdmin(req) {
 export function authRoutes(app, wrap, onChange = () => {}) {
   app.get('/api/auth/me', (req, res) => {
     const s = sessionOf(req);
-    const user = s?.viewAs ? { ...publicUser(s.viewAs), viewAs: true } : publicUser(s?.user) || null;
+    const user = s?.viewAs ? { ...publicUser(s.viewAs), viewAs: true } : selfUser(s?.user) || null;
     res.json({ user, ...(s?.viewAs ? { viewAs: { admin: s.user.username } } : {}), passwordRules: PASSWORD_RULES, emailEnabled: mailEnabled() });
   });
 
@@ -190,13 +194,13 @@ export function authRoutes(app, wrap, onChange = () => {}) {
     // test which emails have accounts.
     const taken = msg => { noteFailure(key); return new AuthError(409, msg); };
     if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) throw taken('That username is taken.');
-    if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) throw taken('An account already uses that email.');
+    if (db.prepare('SELECT 1 FROM users WHERE email_hash = ?').get(hashEmail(email))) throw taken('An account already uses that email.');
     const id = crypto.randomUUID();
-    db.prepare('INSERT INTO users (id, username, email, pass_hash, is_admin, must_change, created_at, terms_accepted_at) VALUES (?, ?, ?, ?, 0, 0, ?, ?)')
-      .run(id, username, email, hashPassword(password), now(), now());
+    db.prepare('INSERT INTO users (id, username, email, email_hash, pass_hash, is_admin, must_change, created_at, terms_accepted_at) VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?)')
+      .run(id, username, encryptEmail(email), hashEmail(email), hashPassword(password), now(), now());
     noteFailure(key);
     startSession(req, res, id);
-    res.json({ user: publicUser(getUser(id)) });
+    res.json({ user: selfUser(getUser(id)) });
   }));
 
   app.post('/api/auth/login', wrap(async (req, res) => {
@@ -214,7 +218,7 @@ export function authRoutes(app, wrap, onChange = () => {}) {
     if (u.suspended_at) throw new AuthError(403, `This account is suspended${u.suspended_reason ? `: ${u.suspended_reason}` : ''}. Ask the admin.`);
     failures.delete(key);
     startSession(req, res, u.id);
-    res.json({ user: publicUser(getUser(u.id)) });
+    res.json({ user: selfUser(getUser(u.id)) });
   }));
 
   app.post('/api/auth/logout', (req, res) => { endSession(req, res); res.json({ ok: true }); });
@@ -229,7 +233,7 @@ export function authRoutes(app, wrap, onChange = () => {}) {
     // Sign out every other device.
     const t = parseCookies(req.headers.cookie)[COOKIE];
     db.prepare('DELETE FROM sessions WHERE user_id = ? AND token != ?').run(u.id, t);
-    res.json({ user: publicUser(getUser(u.id)) });
+    res.json({ user: selfUser(getUser(u.id)) });
   }));
 
   app.put('/api/auth/profile', wrap(async (req, res) => {
@@ -237,12 +241,12 @@ export function authRoutes(app, wrap, onChange = () => {}) {
     if (b.email != null) {
       const email = String(b.email).trim().toLowerCase();
       checkEmail(email);
-      const other = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+      const other = db.prepare('SELECT id FROM users WHERE email_hash = ?').get(hashEmail(email));
       if (other && other.id !== req.user.id) throw new AuthError(409, 'An account already uses that email.');
-      db.prepare('UPDATE users SET email = ? WHERE id = ?').run(email, req.user.id);
+      db.prepare('UPDATE users SET email = ?, email_hash = ? WHERE id = ?').run(encryptEmail(email), hashEmail(email), req.user.id);
     }
     if (b.precon != null) db.prepare('UPDATE users SET precon = ? WHERE id = ?').run(String(b.precon).trim().slice(0, 80), req.user.id);
-    res.json({ user: publicUser(getUser(req.user.id)) });
+    res.json({ user: selfUser(getUser(req.user.id)) });
   }));
 
   // Forgot password: email a one-hour reset link. Same answer whether or not
@@ -253,11 +257,11 @@ export function authRoutes(app, wrap, onChange = () => {}) {
     const key = `forgot|${clientIp(req)}`;
     if (throttled(key)) throw new AuthError(429, 'Too many reset requests. Try again later.');
     noteFailure(key);
-    const u = email && db.prepare('SELECT id, username, email FROM users WHERE email = ?').get(email);
+    const u = email && db.prepare('SELECT id, username, email FROM users WHERE email_hash = ?').get(hashEmail(email));
     if (u) {
       const link = createResetLink(u.id);
       await sendMail({
-        to: u.email,
+        to: decryptEmail(u.email),
         subject: 'Reset your Pre-Con Commander password',
         text: `Hi ${u.username},\n\nUse this link to set a new password (it works for ${RESET_MINUTES} minutes):\n${link}\n\nIf you didn't ask for this, you can ignore this email.`,
       }).catch(err => console.error('Reset email failed:', err.message));
@@ -274,7 +278,7 @@ export function authRoutes(app, wrap, onChange = () => {}) {
     db.prepare('DELETE FROM reset_tokens WHERE user_id = ?').run(row.user_id);
     db.prepare('DELETE FROM sessions WHERE user_id = ?').run(row.user_id);
     startSession(req, res, row.user_id);
-    res.json({ user: publicUser(getUser(row.user_id)) });
+    res.json({ user: selfUser(getUser(row.user_id)) });
   }));
 
   // Delete your own account (password required). The admin account can't be

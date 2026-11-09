@@ -697,6 +697,7 @@ form .fb-filter label.chip { display: inline-flex; gap: 6px; cursor: pointer; co
 .admin-packs { display: grid; gap: 10px; }
 .admin-pk .row { margin-top: 4px; gap: 6px; }
 .admin-users td { vertical-align: top; }
+.current-email { color: var(--text); margin-left: 6px; text-transform: none; letter-spacing: 0; }
 .admin-acts { text-align: right; white-space: normal; }
 .admin-acts .btn { margin: 2px 0 2px 4px; }
 .admin-log { display: grid; gap: 2px; max-height: 520px; overflow-y: auto; }

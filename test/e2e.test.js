@@ -84,7 +84,7 @@ before(async () => {
     cwd: ROOT,
     env: { ...process.env, PORT: String(PORT), DATA_DIR, SMTP_HOST: '', MAIL_FROM: '', CF_EMAIL_TOKEN: '',
       // The whole suite runs from one IP; the last test checks the heavy limit.
-      RATE_ALL_PER_MIN: '100000', RATE_API_PER_MIN: '100000', RATE_HEAVY_PER_MIN: '200', SIGNUPS_PER_HOUR: '20', ADMIN_INITIAL_PASSWORD: 'changeme',
+      RATE_ALL_PER_MIN: '100000', RATE_API_PER_MIN: '100000', RATE_HEAVY_PER_MIN: '200', SIGNUPS_PER_HOUR: '20', EMAIL_KEY: Buffer.alloc(32, 7).toString('base64'), ADMIN_INITIAL_PASSWORD: 'changeme',
       DISCORD_WEBHOOK_URL: `http://127.0.0.1:${HOOK_PORT}/api/webhooks/123/test-token`, DISCORD_INVITE: 'https://discord.gg/pcctest' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -986,9 +986,17 @@ test('player tools: rename, suspend, sign out everywhere, view as (read-only)', 
   await ok(admin.post(`/api/admin/users/${S.u.Hal.id}/signout`));
   assert.equal((await hal.get('/api/state')).status, 401, 'signed out everywhere');
 
+  // Admins never see an address; a player sees only their own.
+  const adminList = await ok(admin.get('/api/admin/users'));
+  assert.ok(adminList.users.length > 3);
+  assert.ok(!JSON.stringify(adminList).includes('@') && adminList.users.every(u => !('email' in u)), 'the admin player list has no emails');
+  assert.equal((await ok(nick.get('/api/auth/me'))).user.email, 'ni***@example.com', 'players see only a masked version of their own');
+  assert.equal((await ok(nick.get('/api/state'))).me.email, 'ni***@example.com', 'the page data carries the same masked version');
   await ok(admin.post(`/api/admin/view-as/${S.u.Nick.id}`));
   const me = await ok(admin.get('/api/auth/me'));
   assert.equal(me.user.username, 'Nick');
+  assert.ok(!('email' in me.user), 'View as does not reveal the email');
+  assert.ok(!JSON.stringify(await ok(admin.get('/api/state'))).includes('@example.com'), 'nor does the state View as loads');
   assert.ok(me.viewAs?.admin);
   assert.equal((await ok(admin.get('/api/state'))).me.username, 'Nick', 'the site answers as Nick');
   const blocked = await admin.post('/api/pods', { players: [] });
@@ -1406,6 +1414,24 @@ test('logging out ends the session', async () => {
   assert.equal((await eve.get('/api/state')).status, 401);
 });
 
+test('emails are encrypted at rest, with lookups through a keyed hash', async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const raw = new DatabaseSync(path.join(DATA_DIR, 'app.db'), { readOnly: true });
+  try {
+    const rows = raw.prepare('SELECT email, email_hash FROM users WHERE email IS NOT NULL').all();
+    assert.ok(rows.length >= 4);
+    for (const r of rows) {
+      assert.match(r.email, /^enc1:/, 'stored as ciphertext');
+      assert.ok(!r.email.includes('@') && r.email_hash && !r.email_hash.includes('@'));
+    }
+    assert.equal(new Set(rows.map(r => r.email)).size, rows.length);
+  } finally { raw.close(); }
+  for (const f of ['app.db', 'app.db-wal']) {
+    const file = path.join(DATA_DIR, f);
+    if (fs.existsSync(file)) assert.ok(!fs.readFileSync(file).includes('nick@example.com'), `no plain address in ${f}`);
+  }
+});
+
 test('every filter and sort the app runs has an index', async () => {
   const db = new DatabaseSync(path.join(DATA_DIR, 'app.db'), { readOnly: true });
   try {
@@ -1421,7 +1447,7 @@ test('every filter and sort the app runs has an index', async () => {
       ["SELECT * FROM feedback WHERE status = 'new' ORDER BY id DESC", 'feedback_status'],
       ['SELECT * FROM league_events WHERE league_id = ? ORDER BY id DESC LIMIT 60', 'league_events_league'],
       ['SELECT * FROM league_members WHERE user_id = ? AND left_at IS NULL', 'league_members_user'],
-      ['SELECT * FROM users WHERE username = ? OR email = ?', 'sqlite_autoindex_users'],
+      ['SELECT * FROM users WHERE username = ? OR email_hash = ?', 'users_email_hash'],
     ];
     for (const [sql, index] of checks) {
       const p = plan(sql, ...Array((sql.match(/\?/g) || []).length).fill('x'));

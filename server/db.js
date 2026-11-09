@@ -18,6 +18,7 @@
 // (The old single-game `games` table and the pre-table `pods_legacy_json` are
 // left in place, unused.)
 import { DatabaseSync } from 'node:sqlite';
+import { encryptEmail, hashEmail } from './emailcrypt.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -25,7 +26,7 @@ const DATA_DIR = process.env.DATA_DIR || path.resolve('data');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 export const db = new DatabaseSync(path.join(DATA_DIR, 'app.db'));
-db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
+db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON;');
 
 // Pods used to be one JSON document per row; move that table aside so the
 // relational one can take its name, then import its rows below.
@@ -234,6 +235,22 @@ for (const [table, col, def] of [
   ['users', 'is_test', 'INTEGER NOT NULL DEFAULT 0'],
 ]) {
   if (!db.prepare(`SELECT 1 FROM pragma_table_info('${table}') WHERE name = ?`).get(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
+}
+// Emails are stored encrypted, with a keyed hash for lookups (see emailcrypt.js).
+// Any still in plain text are converted once, then the file is rebuilt so the
+// old text doesn't linger in free pages or the WAL.
+if (!db.prepare("SELECT 1 FROM pragma_table_info('users') WHERE name = 'email_hash'").get()) db.exec('ALTER TABLE users ADD COLUMN email_hash TEXT');
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_email_hash ON users(email_hash)');
+{
+  const plain = db.prepare("SELECT id, email FROM users WHERE email IS NOT NULL AND email NOT LIKE 'enc1:%'").all();
+  if (plain.length) {
+    const set = db.prepare('UPDATE users SET email = ?, email_hash = ? WHERE id = ?');
+    db.exec('BEGIN IMMEDIATE');
+    try { for (const u of plain) set.run(encryptEmail(u.email), hashEmail(u.email), u.id); db.exec('COMMIT'); }
+    catch (err) { db.exec('ROLLBACK'); throw err; }
+    db.exec('VACUUM; PRAGMA wal_checkpoint(TRUNCATE);');
+    console.log(`Encrypted ${plain.length} stored email address(es).`);
+  }
 }
 // One index per filter or sort the app runs (see EXPLAIN QUERY PLAN checks in
 // the e2e test). Primary keys and UNIQUE columns (users.username/email,

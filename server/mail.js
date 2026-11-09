@@ -18,7 +18,12 @@ const fromName = MAIL_FROM_NAME || 'Pre-Con Commander';
 export const lastMail = { at: null, ok: null, error: null };
 export async function sendMail(msg) {
   try { await send(msg); Object.assign(lastMail, { at: new Date().toISOString(), ok: true, error: null }); }
-  catch (err) { Object.assign(lastMail, { at: new Date().toISOString(), ok: false, error: err.message }); throw err; }
+  catch (err) {
+    // A mail server's error can quote the recipient: keep addresses out of the dashboard and logs.
+    err.message = String(err.message).replace(/[^\s<>"']+@[^\s<>"']+/g, '[address hidden]');
+    Object.assign(lastMail, { at: new Date().toISOString(), ok: false, error: err.message });
+    throw err;
+  }
 }
 async function send({ to, subject, text, html }) {
   if (!mailEnabled()) throw new Error('Email is not configured');
