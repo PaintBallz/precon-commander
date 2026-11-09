@@ -697,7 +697,13 @@ form .fb-filter label.chip { display: inline-flex; gap: 6px; cursor: pointer; co
 .admin-packs { display: grid; gap: 10px; }
 .admin-pk .row { margin-top: 4px; gap: 6px; }
 .admin-users td { vertical-align: top; }
-.precon-box { margin-bottom: 18px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.precon-box { display: flex; gap: 24px; align-items: flex-start; margin-bottom: 16px; }
+.precon-body { flex: 1; min-width: 0; max-width: 620px; }
+.cmd-hero { flex: none; display: block; width: 230px; }
+.cmd-hero img { display: block; width: 100%; border-radius: 11px; box-shadow: 0 8px 28px rgba(0,0,0,.6); }
+.cmd-hero.empty { aspect-ratio: 63 / 88; display: flex; align-items: center; justify-content: center; padding: 16px; text-align: center; color: var(--muted); border: 2px dashed var(--line2); border-radius: 11px; }
+.member .btn { white-space: nowrap; flex: none; }
+@media (max-width: 600px) { .precon-box { flex-direction: column; align-items: center; } .precon-body { width: 100%; } .cmd-hero { width: 200px; } }
 .precon-box h2 { margin: 0 0 8px; }
 .precon-now { margin: 0 0 8px; }
 .precon-form { display: flex; gap: 8px; align-items: flex-end; margin-bottom: 8px; }
@@ -707,9 +713,9 @@ form .fb-filter label.chip { display: inline-flex; gap: 6px; cursor: pointer; co
 .deck-details { margin-top: 12px; }
 .deck-details summary { cursor: pointer; color: var(--muted); }
 .precon-missing, .precon-req { color: var(--accent); margin: 6px 0 0; }
-.cmd-thumb { flex: none; display: block; width: 46px; }
+.cmd-thumb { flex: none; display: block; width: 84px; }
 .cmd-thumb img { display: block; width: 100%; border-radius: 4px; }
-.pcard-head { display: flex; gap: 10px; align-items: flex-start; }
+.pcard-head { display: flex; gap: 12px; align-items: flex-start; }
 .how { max-width: 760px; }
 .how-section { margin-bottom: 26px; }
 .how-section h2 { margin: 0 0 8px; }

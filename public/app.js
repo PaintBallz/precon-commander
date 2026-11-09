@@ -669,6 +669,7 @@ async function renderLeague(view) {
     </div>
     ${active && league.members.length < lim.min ? `<div class="panel warn-box">${esc(league.name)} needs at least ${lim.min} players before a pod can start. Share the invite code.</div>` : ''}
     ${!league.isMember && !isAdmin() ? `<div class="panel warn-box">You're viewing ${esc(league.name)}. ${S.myLeagueId ? '' : active ? 'Ask a member for its invite code to join.' : ''}</div>` : ''}
+    ${preconPanel(league, active)}
     <div class="league-grid">
       <section class="panel" style="overflow-x:auto">
         <h2>Standings</h2>
@@ -677,10 +678,8 @@ async function renderLeague(view) {
           : '<p class="muted">No finished pods yet. Standings fill in as pods are finished.</p>'}
       </section>
       <section class="panel">
-        ${preconPanel(league, active)}
         <div class="spread"><h2 style="margin:0">Players</h2><span class="small muted">${league.members.length}/${lim.max}</span></div>
         <div class="member-list">${league.members.map(m => `<div class="member"><div><b>${plink(m.id, m.username)}</b>${m.leagueAdmin ? ' <span class="chip gold" title="Started the league: can change its rules and kick players">League admin</span>' : ''}${m.admin ? ' <span class="chip gold" title="A player with admin powers">admin</span>' : ''}${m.test ? ' <span class="chip" title="Cannot sign in; an admin plays for it">test player</span>' : ''}${m.id === S.me.id ? ' <span class="dim small">(you)</span>' : ''}<div class="small muted">${esc(m.precon) || 'No precon set'}${m.preconLocked ? ' <span class="dim">· locked</span>' : ''}</div>${m.preconRequest && league.canManage ? `<div class="small precon-req">Wants to change: ${esc(m.preconRequest.reason)}</div>` : ''}</div>
-          ${commanderThumb(m.commander)}
           ${league.canManage && active && m.preconRequest ? `<button class="btn gold sm" data-pallow="${m.id}">Allow</button><button class="btn ghost sm" data-pdecline="${m.id}">Decline</button>` : league.canManage && active && m.preconLocked ? `<button class="btn ghost sm" data-pallow="${m.id}" title="Let them save a different precon once">Allow change</button>` : ''}
           ${league.canManage && active && m.id !== S.me.id ? `<button class="btn ghost sm" data-rmm="${m.id}" data-name="${esc(m.username)}" title="Kick from the league">✕</button>` : ''}</div>`).join('') || '<p class="muted">Nobody yet.</p>'}</div>
         ${isAdmin() && active ? `<div class="row" style="margin-top:10px">${candidates.length ? `<select class="input" id="addMember"><option value="">Add a player…</option>${candidates.map(c => `<option value="${c.id}">${esc(c.username)}</option>`).join('')}</select><button class="btn sm" id="addMemberBtn">Add</button>` : '<span class="small muted">Every player is already in a league.</span>'}</div>` : ''}
@@ -827,9 +826,11 @@ function preconPanel(league, active) {
   const me = myRow(league);
   const missing = league.members.filter(m => !m.precon);
   const who = league.canManage && active && missing.length ? `<p class="small precon-missing">Still need a precon: <b>${missing.map(m => esc(m.username)).join(', ')}</b></p>` : '';
-  if (!me || !active) return who;
+  if (!me || !active) return who ? `<section class="panel precon-box">${who}</section>` : '';
   const c = me.commander;
-  return `<div class="precon-box" id="preconBox">
+  return `<section class="panel precon-box" id="preconBox">
+    ${c?.image ? `<a class="cmd-hero" href="${esc(c.uri || '#')}" target="_blank" rel="noopener" title="${esc(c.name)}"><img ${cardSrc(c.image, '230px')} alt="${esc(c.name)}"></a>` : `<div class="cmd-hero empty">No commander picture yet</div>`}
+    <div class="precon-body">
     <h2>Your precon for this league</h2>
     ${me.preconLocked ? `<p class="precon-now"><b>${esc(me.precon)}</b> <span class="chip">Locked</span></p>
       ${me.preconRequest ? `<p class="small muted">Change requested: "${esc(me.preconRequest.reason)}". Waiting for an admin.</p>` : `<button type="button" class="btn ghost sm" id="preconRequest">Request a change</button>`}`
@@ -840,14 +841,14 @@ function preconPanel(league, active) {
       </form>
       <p class="small muted">Needed before you can start or play in a pod or open packs. Once saved, you can't change it for this league unless an admin allows it.</p>`}
     <form id="commanderForm" class="precon-form commander-form">
-      ${commanderThumb(c)}
       <label>Commander card <span class="dim small">(picture only, change it any time)</span>
         <input name="card" value="${esc(c?.name || '')}" maxlength="150" placeholder="Type a card name" autocomplete="off"></label>
       <button class="btn">Update</button>
     </form>
     <details class="deck-details"><summary>Deck list for this league</summary><div id="deckBox"></div></details>
     ${who}
-  </div>`;
+    </div>
+  </section>`;
 }
 function wirePrecon(view, league) {
   const again = async p => { try { const r = await p; if (r) { await loadState(); render(); } } catch (err) { fail(err); } };
