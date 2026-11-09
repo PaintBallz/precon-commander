@@ -233,6 +233,7 @@ for (const [table, col, def] of [
   ['users', 'staff', 'INTEGER NOT NULL DEFAULT 0'],
   // A test player the admin added to fill a league; it can't sign in.
   ['users', 'is_test', 'INTEGER NOT NULL DEFAULT 0'],
+  ['users', 'username_changed_at', 'TEXT'],
 ]) {
   if (!db.prepare(`SELECT 1 FROM pragma_table_info('${table}') WHERE name = ?`).get(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
 }

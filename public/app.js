@@ -494,6 +494,8 @@ async function renderAccount(view) {
     <div class="account-grid">
       <form class="panel grid" id="profForm">
         <h2>Profile</h2>
+        ${me.canRename ? `<label>Username${me.isAdmin ? '' : ' <span class="dim small">(you can change this once)</span>'}<input name="username" value="${esc(me.username)}" required minlength="3" maxlength="20" autocomplete="off"></label>`
+          : me.viewAs ? '' : `<p class="small muted" style="margin:0">Username: <b>${esc(me.username)}</b>. You've used your one change.</p>`}
         <label>${me.email ? `Email <span class="dim small">(for password recovery)</span> <span class="current-email">${esc(me.email)}</span>` : 'Email <span class="dim small">(for password recovery)</span>'}<input name="email" type="email" autocomplete="off" maxlength="254" placeholder="${me.email ? 'Enter a new email to change it' : 'Add an email'}"></label>
         <button class="btn gold">Save profile</button>
       </form>
@@ -523,7 +525,16 @@ async function renderAccount(view) {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.target));
     if (!f.email) delete f.email;
-    try { const r = await api('/auth/profile', { method: 'PUT', body: f }); S.me = r.user; paintMe(); if (f.email) render(); toast('Profile saved.', 'good'); } catch (err) { fail(err); }
+    const renamed = f.username != null && f.username.trim() !== me.username;
+    if (!renamed) delete f.username;
+    if (renamed && !me.isAdmin && !await confirmBox('Change your username?', `You'll become <b>${esc(f.username.trim())}</b>. <b>You can only do this once.</b>`, 'Change username')) return;
+    try {
+      const r = await api('/auth/profile', { method: 'PUT', body: f });
+      S.me = r.user; paintMe();
+      if (renamed) { S.history = null; S.pools = null; await loadState(); }
+      if (f.email || renamed) render();
+      toast('Profile saved.', 'good');
+    } catch (err) { fail(err); }
   };
   $('#pwForm', view).onsubmit = async e => {
     e.preventDefault();

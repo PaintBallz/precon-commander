@@ -1468,6 +1468,31 @@ test('precons are per league: required, locked once saved, and reopened only by 
   assert.ok(!('precon' in (await ok(zoe.get('/api/auth/me'))).user));
 });
 
+test('players change their username once, admins whenever; emails any time', async () => {
+  const quin = client();
+  const id = (await ok(quin.post('/api/auth/signup', { agree: true, username: 'Quin', email: 'quin@example.com', password: PW }))).user.id;
+  assert.equal((await ok(quin.get('/api/auth/me'))).user.canRename, true);
+  assert.equal((await ok(quin.get('/api/state'))).me.canRename, true, 'the page data says so too');
+  assert.equal((await quin.put('/api/auth/profile', { username: 'x' })).status, 400, 'username rules apply');
+  assert.equal((await quin.put('/api/auth/profile', { username: 'Mike' })).status, 409, 'taken');
+  assert.equal((await ok(quin.put('/api/auth/profile', { username: 'Quin' }))).user.canRename, true, 'keeping the same name uses nothing');
+  const r = await ok(quin.put('/api/auth/profile', { username: 'Quinn' }));
+  assert.equal(r.user.username, 'Quinn');
+  assert.equal(r.user.canRename, false, 'failed tries did not use it, this one did');
+  assert.equal((await quin.put('/api/auth/profile', { username: 'Quinton' })).status, 403, 'only once');
+  await ok(quin.put('/api/auth/profile', { email: 'new.quin@example.com' }));
+  await ok(quin.put('/api/auth/profile', { email: 'newer.quin@example.com' }));
+  await ok(client().post('/api/auth/login', { username: 'Quinn', password: PW }));
+  await ok(client().post('/api/auth/login', { username: 'newer.quin@example.com', password: PW }));
+  // Admins: as often as they like, for themselves and for players.
+  await ok(admin.put(`/api/admin/users/${id}`, { username: 'Quincy', reason: 'test' }));
+  assert.equal((await ok(quin.get('/api/auth/me'))).user.username, 'Quincy');
+  await ok(admin.put('/api/auth/profile', { username: 'sitehead' }));
+  const back = await ok(admin.put('/api/auth/profile', { username: 'admin' }));
+  assert.equal(back.user.username, 'admin');
+  assert.equal(back.user.canRename, true);
+});
+
 test('emails are encrypted at rest, with lookups through a keyed hash', async () => {
   const { DatabaseSync } = await import('node:sqlite');
   const raw = new DatabaseSync(path.join(DATA_DIR, 'app.db'), { readOnly: true });

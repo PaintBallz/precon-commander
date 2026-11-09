@@ -737,7 +737,7 @@ app.get('/api/state', wrap(async (req, res) => {
   const running = league ? activePods(league.id) : [];
   const openPodIds = [...new Set(pending.filter(k => k.podStatus === 'done').map(k => k.podId))];
   res.json({
-    version, me: req.realUser ? req.user : { ...req.user, email: selfUser(getUser(req.user.id)).email }, myLeagueId: mine?.id || null,
+    version, me: req.realUser ? req.user : selfUser(getUser(req.user.id)), myLeagueId: mine?.id || null,
     announcement: currentAnnouncement(), viewAs: req.realUser ? { admin: req.realUser.username } : null,
     league: leagueView(req, league), leagues: leagueList(),
     pods: running.map(p => view(req, p)),

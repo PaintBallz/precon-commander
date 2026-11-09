@@ -2,10 +2,10 @@
 // Passwords are scrypt-hashed; sessions are random tokens in an HttpOnly cookie.
 import crypto from 'node:crypto';
 import { encryptEmail, decryptEmail, hashEmail, maskEmail } from './emailcrypt.js';
-import { db } from './db.js';
+import { db, transaction } from './db.js';
 import { sendMail, mailEnabled } from './mail.js';
 import { clientIp } from './ratelimit.js';
-import { logAdmin } from './adminlog.js';
+import { logAdmin, renameEverywhere } from './adminlog.js';
 
 const COOKIE = 'pcc_sid';
 const SESSION_DAYS = 30;
@@ -59,7 +59,7 @@ const DUMMY_HASH = hashPassword(crypto.randomBytes(16).toString('hex'));
 const now = () => new Date().toISOString();
 
 // ---------- users ----------
-const userCols = 'id, username, email, is_admin, staff, is_test, must_change, precon, created_at, suspended_at, suspended_reason';
+const userCols = 'id, username, email, is_admin, staff, is_test, must_change, precon, created_at, suspended_at, suspended_reason, username_changed_at';
 // isAdmin: may use admin powers (the admin account, or a player made an admin).
 // adminAccount: the original admin account, which runs the site and never plays.
 // Never carries an email: admins, View as and the player list get this. Only
@@ -68,7 +68,9 @@ export function publicUser(r) {
   return r && { id: r.id, username: r.username, isAdmin: !!(r.is_admin || r.staff), adminAccount: !!r.is_admin, staff: !!r.staff, ...(r.is_test ? { test: true } : {}), mustChange: !!r.must_change, createdAt: r.created_at,
     ...(r.suspended_at ? { suspended: true, suspendedAt: r.suspended_at, suspendedReason: r.suspended_reason || '' } : {}) };
 }
-export const selfUser = r => r && { ...publicUser(r), email: maskEmail(decryptEmail(r.email)) };
+// Players can change their own username once; admins whenever they like.
+const canRename = r => !!(r.is_admin || r.staff || !r.username_changed_at);
+export const selfUser = r => r && { ...publicUser(r), email: maskEmail(decryptEmail(r.email)), canRename: canRename(r) };
 export const getUser = id => db.prepare(`SELECT ${userCols} FROM users WHERE id = ?`).get(id);
 export const listUsers = () => db.prepare(`SELECT ${userCols} FROM users ORDER BY username COLLATE NOCASE`).all();
 const byLogin = login => db.prepare('SELECT * FROM users WHERE username = ? OR email_hash = ?').get(login, hashEmail(login));
@@ -243,6 +245,18 @@ export function authRoutes(app, wrap, onChange = () => {}) {
       const other = db.prepare('SELECT id FROM users WHERE email_hash = ?').get(hashEmail(email));
       if (other && other.id !== req.user.id) throw new AuthError(409, 'An account already uses that email.');
       db.prepare('UPDATE users SET email = ?, email_hash = ? WHERE id = ?').run(encryptEmail(email), hashEmail(email), req.user.id);
+    }
+    if (b.username != null && String(b.username).trim() !== req.user.username) {
+      const username = String(b.username).trim();
+      checkUsername(username);
+      const me = getUser(req.user.id);
+      if (!canRename(me)) throw new AuthError(403, "You've already used your one username change. Ask an admin if it needs fixing.");
+      if (db.prepare('SELECT 1 FROM users WHERE username = ? AND id != ?').get(username, me.id)) throw new AuthError(409, 'That username is taken.');
+      transaction(() => {
+        renameEverywhere(me.id, username);
+        if (!me.is_admin && !me.staff) db.prepare('UPDATE users SET username_changed_at = ? WHERE id = ?').run(now(), me.id);
+      });
+      onChange();
     }
     res.json({ user: selfUser(getUser(req.user.id)) });
   }));
