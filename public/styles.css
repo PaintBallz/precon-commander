@@ -697,6 +697,14 @@ form .fb-filter label.chip { display: inline-flex; gap: 6px; cursor: pointer; co
 .admin-packs { display: grid; gap: 10px; }
 .admin-pk .row { margin-top: 4px; gap: 6px; }
 .admin-users td { vertical-align: top; }
+.how { max-width: 760px; }
+.how-section { margin-bottom: 26px; }
+.how-section h2 { margin: 0 0 8px; }
+.how-section p { margin: 0 0 8px; }
+.how-section ul, .how-section ol { margin: 0; padding-left: 22px; }
+.how-section li { margin-bottom: 6px; }
+.how-table td:first-child { white-space: normal; }
+.how-table { max-width: 480px; }
 .current-email { color: var(--text); margin-left: 6px; text-transform: none; letter-spacing: 0; }
 .admin-acts { text-align: right; white-space: normal; }
 .admin-acts .btn { margin: 2px 0 2px 4px; }

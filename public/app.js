@@ -283,7 +283,7 @@ async function copyText(text, what = 'List') {
 }
 
 // ---------------- routing ----------------
-const ROUTES = ['league', 'pods', 'wheel', 'packs', 'pools', 'sets', 'history', 'fun', 'account', 'player', 'recap', 'admin', 'trades', 'join'];
+const ROUTES = ['league', 'pods', 'wheel', 'packs', 'pools', 'sets', 'history', 'fun', 'account', 'player', 'recap', 'admin', 'trades', 'join', 'how'];
 function parseRoute() {
   const [r, q] = location.hash.replace(/^#/, '').split('?');
   S.route = ROUTES.includes(r) ? r : 'pods';
@@ -337,7 +337,7 @@ function render() {
   layoutTabs();
   const view = $('#view');
   if (S.route !== 'wheel') stopWheelLoop();
-  ({ league: renderLeague, pods: renderPods, wheel: renderWheel, packs: renderPacks, pools: renderPools, sets: renderSets, history: renderHistory, fun: renderFun, account: renderAccount, player: renderPlayer, recap: renderRecap, admin: renderAdmin, trades: renderTrades, join: renderJoin })[S.route](view);
+  ({ league: renderLeague, pods: renderPods, wheel: renderWheel, packs: renderPacks, pools: renderPools, sets: renderSets, history: renderHistory, fun: renderFun, how: renderHow, account: renderAccount, player: renderPlayer, recap: renderRecap, admin: renderAdmin, trades: renderTrades, join: renderJoin })[S.route](view);
 }
 
 function confirmBox(title, body, okLabel = 'OK', danger = false) {
@@ -1525,6 +1525,80 @@ function renderPackView(el, pack, owner, pod) {
     // Leaving mid-reveal (Next pack, Prev/Next, another tab) stops the timer.
     S.stopReveal = () => clearTimeout(timer);
   }
+}
+
+// =============== HOW IT WORKS ===============
+// The pack numbers come from the league being viewed, so they stay correct if
+// its rules change; without a league they show the defaults.
+function renderHow(view) {
+  const r = { winnerPacks: 3, loserPacks: 2, voteBonus: 1, absentPacks: 1, ...(S.league?.rules || {}) };
+  const section = (title, body) => `<section class="how-section"><h2>${title}</h2>${body}</section>`;
+  const list = items => `<ul>${items.map(i => `<li>${i}</li>`).join('')}</ul>`;
+  const rows = [
+    ['Winner', r.winnerPacks],
+    ['Everyone else in the pod', r.loserPacks],
+    ['Winner of the vote', r.voteBonus ? `+${r.voteBonus} bonus` : 'Vote is off'],
+    ['League members who missed the pod', r.absentPacks],
+  ];
+  view.innerHTML = `
+    <div class="hero"><div><h1>How it works</h1>
+      <p>Everyone starts on a preconstructed Commander deck. Play games, earn booster packs, and upgrade your deck with what you pull.</p></div></div>
+    <div class="how">
+      ${section('The short version', `<ol>
+        <li>Join a league.</li>
+        <li>Play a pod (one game of 3–4 players).</li>
+        <li>Crown the winner, and vote on a bonus pack.</li>
+        <li>The winner spins the wheel to pick the set.</li>
+        <li>Open your packs.</li>
+        <li>Add what you pulled to your deck.</li></ol>`)}
+      ${section('Joining a league', list([
+        'Open an invite link, or enter a 6-letter invite code. You can be in one league at a time.',
+        'A league has 3–16 players.',
+        "<b>Joining late?</b> You get catch-up packs for the pods you missed, so you aren't far behind.",
+      ]))}
+      ${section('Playing a pod', list([
+        'Start a pod on the <a href="#pods">Pods</a> tab with 3–4 league members, each playing their precon. Several pods can run at once.',
+        "When the game ends, tap <b>Won the game</b> on the winner's card.",
+      ]))}
+      ${section('The bonus-pack vote', list([
+        "Everyone in the pod votes for one player to get a bonus pack. You can't vote for yourself.",
+        'Votes stay secret until everyone has voted, and you can change yours until the last vote is in.',
+        'A tie means a re-vote between just the tied players.',
+      ]))}
+      ${section('The wheel', list([
+        "When the vote ends, everyone opens the <a href=\"#wheel\">Wheel</a> page. The winner can't spin until the whole pod is there.",
+        "There's one spin per pod, and every pack from that pod is the set it lands on.",
+      ]))}
+      ${section('Who gets what', `<table class="standings how-table"><thead><tr><th></th><th class="num">Packs${S.league ? '' : ' (default)'}</th></tr></thead>
+        <tbody>${rows.map(([who, n]) => `<tr><td>${who}</td><td class="num">${n}</td></tr>`).join('')}</tbody></table>
+        ${S.league ? `<p class="small muted">These are the rules for ${esc(S.league.name)}.</p>` : ''}`)}
+      ${section('Opening packs', list([
+        'Go to the <a href="#packs">Packs</a> tab and open your packs. Cards flip one by one, with rares last.',
+        '<b>Skip animation</b> shows them all at once, and <b>Open next pack</b> moves on to your next one.',
+        '<b>Prev</b> and <b>Next</b> step between your packs without opening anything.',
+        'Most sets use their real print sheets and odds. A few with no booster data on record get a pack built in the style of that era.',
+      ]))}
+      ${section('Sacrifice a Pack', "<p>Don't want the set? If you have at least 2 unopened packs of the spun set, give one up to turn another into <b>any set you like</b>.</p>")}
+      ${section('Your pool', '<p>Every card you open goes into your pool on the <a href="#pools">Pools</a> tab. These are the cards you may add to your precon. You can search them, filter by pod, and copy them to Moxfield or Archidekt.</p>')}
+      ${section('Trading', list([
+        'Trade with anyone in your league on the <a href="#trades">Trades</a> tab, any number of cards for any number.',
+        'The other player can accept, decline, or counter, and nobody has to be online at the same time.',
+        "Cards you've offered are held while the offer is waiting. Once a trade is accepted, the cards move right away.",
+        'Open trades close when the league ends.',
+      ]))}
+      ${section('Standings and seasons', list([
+        'The <a href="#league">League</a> tab shows standings, players, rules, and an activity feed.',
+        "Tap any name to see that player's stats, rivals, best pulls, and deck.",
+        "When a league ends, it's saved as a read-only archive with a season recap and awards.",
+      ]))}
+      ${section('Fun Packs', '<p>Open boosters from any set just for fun, from one pack up to a full box. Nothing is saved, and nothing counts toward your pool or the league.</p>')}
+      ${section('Your deck list', '<p>Add your deck on the <a href="#account">Account</a> page from a Moxfield or Archidekt link, or paste a list. It appears on your player page.</p>')}
+      ${section('Who runs what', list([
+        '<b>League admin:</b> whoever started the league. They can change its pack rules and remove players from it, but only in their own league.',
+        "<b>Site admins:</b> can step into any league without joining it. They can add players, edit the wheel, hand out packs, fix mistakes, and skip a stuck vote or spin if someone doesn't show up.",
+      ]))}
+      ${section('Questions or ideas?', '<p>Use <b>Suggest a feature</b> at the bottom of any page, or join the Discord.</p>')}
+    </div>`;
 }
 
 // =============== FUN PACKS TAB ===============
