@@ -1,7 +1,7 @@
 // Player stats pages and season recaps. Everything is worked out from finished
 // pods (the same pods the standings count). No prices or card values anywhere:
 // best pulls rank by rarity, foils first.
-import { finishedPods, grantsPods } from './db.js';
+import { finishedPods, grantsPods, leagueSpins } from './db.js';
 
 const pl = (v, word) => `${v} ${word}${v === 1 ? '' : 's'}`;
 const RARITY = { mythic: 4, rare: 3, special: 3, uncommon: 2, common: 1 };
@@ -98,11 +98,10 @@ export async function seasonRecap(leagueId, standings) {
   const pods = finishedPods(leagueId).sort(byDate);
   const people = new Map(standings.map(s => [s.id, { id: s.id, name: s.name, foils: 0, results: [], kingslayer: 0 }]));
   const person = (id, name) => people.get(id) || people.set(id, { id, name, foils: 0, results: [], kingslayer: 0 }).get(id);
-  const spun = new Map(), precons = new Map();
+  const precons = new Map();
   const champion = standings[0]?.wins ? standings[0] : null;
   const allPulls = [];
   for (const pod of pods) {
-    if (pod.spin?.set) { const s = spun.get(pod.spin.set.code) || spun.set(pod.spin.set.code, { name: pod.spin.set.name, icon: pod.spin.set.icon || '', times: 0 }).get(pod.spin.set.code); s.times++; }
     for (const p of pod.players) {
       const r = person(p.id, p.name);
       r.results.push(pod.winnerId === p.id);
@@ -142,6 +141,12 @@ export async function seasonRecap(leagueId, standings) {
     award('sacrifice', 'Sacrificial Lamb', 'Sacrificed the most packs for a set of their choice', r => r.sacrificed, v => pl(v, 'pack')),
   ].filter(a => a && !(a.key === 'kingslayer' && !champion));
   const top = allPulls.filter(valuable).sort(bestFirst).slice(0, 8).map(c => ({ ...pullView(c), owner: c.owner }));
+  // Wins race: each winner's running total, starting from 0 before the first pod.
+  const raceIds = [...new Set(pods.map(p => p.winnerId).filter(Boolean))];
+  const racers = raceIds.map(id => {
+    let n = 0;
+    return { id, name: people.get(id)?.name || '?', wins: [0, ...pods.map(p => (p.winnerId === id ? ++n : n))] };
+  }).sort((a, b) => b.wins.at(-1) - a.wins.at(-1) || a.name.localeCompare(b.name));
 
   const totals = {
     pods: pods.length, packs: rows.reduce((n, r) => n + r.packs, 0), cards: allPulls.length,
@@ -152,7 +157,8 @@ export async function seasonRecap(leagueId, standings) {
   return {
     champion: champion ? { id: champion.id, name: champion.name, wins: champion.wins, pods: champion.pods } : null,
     totals, awards, topPulls: top,
-    spun: [...spun.values()].sort((a, b) => b.times - a.times).slice(0, 5),
+    spins: leagueSpins(leagueId),
+    race: { pods: pods.map(p => p.name), players: racers },
     standings: rows.map(r => ({ id: r.id, name: r.name, active: r.active, pods: r.pods, wins: r.wins, voteWins: r.voteWins, packs: r.packs, mythics: r.mythics, foils: r.foils, streak: r.streak })),
   };
 }

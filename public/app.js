@@ -2690,6 +2690,42 @@ async function renderPlayer(view) {
 }
 
 // ---------- season recap ----------
+const RACE_COLOURS = ['#ff5b1f', '#5dcaa5', '#85b7eb', '#f4c0d1', '#fac775', '#afa9ec', '#97c459', '#f09595', '#b4b2a9', '#378add', '#ed93b1', '#1d9e75'];
+// Running wins per player, pod by pod. Tied lines are nudged apart so both show.
+function winsRace(race, width) {
+  const { pods, players } = race;
+  if (!players.length) return '';
+  const W = Math.max(300, (width || 720) - 48), H = 250, L = 28, Rt = 12, T = 12, B = 26, n = pods.length;
+  const max = Math.max(1, ...players.map(p => p.wins.at(-1)));
+  const x = i => Math.round(L + (W - L - Rt) * i / n);
+  const y = v => Math.round(T + (H - T - B) * (1 - v / max));
+  const tick = Math.ceil(max / 5), xTick = Math.ceil(n / Math.max(2, Math.floor((W - L - Rt) / 42)));
+  let grid = '';
+  for (let v = 0; v <= max; v += tick) grid += `<line x1="${L}" x2="${W - Rt}" y1="${y(v)}" y2="${y(v)}"></line><text x="${L - 8}" y="${y(v) + 4}" text-anchor="end">${v}</text>`;
+  for (let i = xTick; i <= n; i += xTick) grid += `<text x="${x(i)}" y="${H - 6}" text-anchor="middle">${i}</text>`;
+  const lines = players.map((p, idx) => {
+    const c = RACE_COLOURS[idx % RACE_COLOURS.length], nudge = (idx - (players.length - 1) / 2) * 1.5;
+    const pts = p.wins.map((v, i) => [x(i), y(v) + nudge]);
+    return `<g data-racer="${idx}"><polyline fill="none" stroke="${c}" stroke-width="2.5" points="${pts.map(q => q.join(',')).join(' ')}"></polyline>${pts.slice(1).map((q, i) => `<circle cx="${q[0]}" cy="${q[1]}" r="3.5" fill="${c}"><title>${esc(pods[i])}: ${esc(p.name)}, ${plural(p.wins[i + 1], 'win')}</title></circle>`).join('')}</g>`;
+  }).join('');
+  return `<section class="panel race" style="margin-top:16px"><h2>Wins race</h2>
+    <svg class="race-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="Running total of wins for each player, pod by pod"><g class="race-grid">${grid}</g>${lines}</svg>
+    <p class="small dim race-axis">Pods played</p>
+    <div class="race-legend">${players.map((p, idx) => `<button type="button" data-race="${idx}"><i style="background:${RACE_COLOURS[idx % RACE_COLOURS.length]}"></i>${esc(p.name)} <b>${p.wins.at(-1)}</b></button>`).join('')}</div>
+  </section>`;
+}
+// Hovering or tapping a name in the key picks out that player's line.
+function wireRace(view) {
+  const svg = $('.race-svg', view);
+  if (!svg) return;
+  const show = idx => { svg.classList.toggle('picking', idx != null); $$('[data-racer]', svg).forEach(g => g.classList.toggle('picked', g.dataset.racer === idx)); };
+  $$('[data-race]', view).forEach(b => {
+    b.addEventListener('mouseenter', () => show(b.dataset.race));
+    b.addEventListener('mouseleave', () => show(document.activeElement?.dataset?.race ?? null));
+    b.addEventListener('focus', () => show(b.dataset.race));
+    b.addEventListener('blur', () => show(null));
+  });
+}
 async function renderRecap(view) {
   const id = S.params.league || S.viewLeague;
   if (!id) { go('#league'); return; }
@@ -2697,7 +2733,7 @@ async function renderRecap(view) {
   let d;
   try { d = await api(`/leagues/${encodeURIComponent(id)}/recap`); } catch (err) { fail(err); view.innerHTML = ''; return; }
   if (S.route !== 'recap') return;
-  const { league, champion, totals: t, awards, topPulls, spun, standings } = d;
+  const { league, champion, totals: t, awards, topPulls, spins, race, standings } = d;
   const over = league.status === 'ended';
   const span = t.first ? `${fmtDate(t.first)} – ${over ? fmtDate(league.endedAt) : 'today'}` : '';
   view.innerHTML = `
@@ -2718,8 +2754,10 @@ async function renderRecap(view) {
         <table class="standings"><thead><tr><th>Player</th><th class="num">Pods</th><th class="num">Wins</th><th class="num">Win %</th><th class="num" title="Longest win streak">Streak</th><th class="num">Mythics</th><th class="num">Foils</th></tr></thead>
         <tbody>${standings.filter(s => s.pods || s.packs).map((s, i) => `<tr><td>${i === 0 && s.wins ? `${I.crown} ` : ''}<b>${plink(s.id, s.name)}</b></td><td class="num">${s.pods}</td><td class="num">${s.wins}</td><td class="num">${pctOf(s.wins, s.pods)}</td><td class="num">${s.streak}</td><td class="num">${s.mythics}</td><td class="num">${s.foils}</td></tr>`).join('')}</tbody></table>
       </section>
-      ${spun.length ? `<section class="panel"><h2>Most spun sets</h2><div class="set-bars">${spun.map(s => `<div class="sb"><span>${s.icon ? `<img class="set-icon" src="${esc(s.icon)}" alt="">` : ''}${esc(s.name)}</span><i style="width:${Math.round(s.times / spun[0].times * 100)}%"></i><b>${s.times}</b></div>`).join('')}</div></section>` : ''}
-    </div>`}`;
+      ${spins.length ? `<section class="panel"><h2>Sets spun</h2><div class="spin-list" tabindex="0">${spins.map(s => `<div class="spin-row"><b>${s.icon ? `<img class="set-icon" src="${esc(s.icon)}" alt="">` : ''}${esc(s.name)}</b><span class="small muted">${esc(s.pod)} · ${s.at ? fmtDateTime(s.at) : 'Date not recorded'}</span></div>`).join('')}</div></section>` : ''}
+    </div>
+    ${winsRace(race, view.clientWidth)}`}`;
+  wireRace(view);
   wirePulls(view, [...topPulls, ...awards.filter(a => a.card).map(a => a.card)]);
   $('#recapCopy', view)?.addEventListener('click', () => {
     const lines = [

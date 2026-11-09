@@ -750,7 +750,11 @@ test('season recap: champion, awards, totals and standings', async () => {
   assert.ok(!r.awards.some(a => a.key === 'streak'), 'no streak award for a single win');
   assert.equal(r.standings[0].name, 'Nick');
   assert.doesNotMatch(JSON.stringify(r), /usd|price|"value":\d/i, 'no prices or card values');
-  assert.equal(r.spun[0].times, 1);
+  assert.equal(r.spins.at(-1).pod, 'Pod 1', 'the first spin is at the bottom of the list');
+  assert.ok(r.spins.every(s => s.at && s.name), 'every spin has a date and a set');
+  assert.deepEqual(r.spins.map(s => s.at), r.spins.map(s => s.at).sort().reverse(), 'newest first');
+  assert.deepEqual(r.race.pods, ['Pod 1']);
+  assert.deepEqual(r.race.players.map(p => [p.name, p.wins]), [['Nick', [0, 1]]]);
   assert.equal((await joe.get('/api/leagues/nope/recap')).status, 404);
 });
 

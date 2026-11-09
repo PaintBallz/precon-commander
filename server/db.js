@@ -497,6 +497,15 @@ export const setInfoFor = code => getSet(code, new Map());
 // pod-shaped row per league with kind 'grants', so opening, pools and the
 // pending-packs banner work the same as for any pod. It never counts as a
 // game: standings, History and the recap only read kind = 'pod'.
+// Every spin in a league, newest first, including pods still being played out.
+export function leagueSpins(leagueId) {
+  const sets = new Map();
+  return db.prepare("SELECT name, spin_set_code, spin_at FROM pods WHERE league_id = ? AND kind = 'pod' AND spin_set_code IS NOT NULL ORDER BY spin_at DESC").all(leagueId).map(r => {
+    const s = getSet(r.spin_set_code, sets);
+    return { at: r.spin_at, pod: r.name, name: s?.name || r.spin_set_code, icon: s?.icon || '' };
+  });
+}
+
 export const grantsPodId = leagueId => `grants-${leagueId}`;
 export function grantsPod(leagueId, { create = false } = {}) {
   const existing = loadPod(grantsPodId(leagueId));
