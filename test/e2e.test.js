@@ -1042,12 +1042,13 @@ test('a player can be made an admin and keeps playing; admins fill a league to 4
   assert.equal((await lex.put(`/api/admin/users/${adminId}`, { username: 'boss' })).status, 403);
 
   // Fill Gus's league (Gus and Lex) to 4 with test players.
-  const r = await ok(lex.post(`/api/leagues/${S.gusLeague}/test-players`));
+  assert.equal((await lex.post(`/api/leagues/${S.gusLeague}/test-players`)).status, 403, 'player admins and league admins can\'t make test players');
+  const r = await ok(admin.post(`/api/leagues/${S.gusLeague}/test-players`));
   assert.equal(r.added.length, 2);
   assert.ok(r.added.every(n => /^TestBot\d+$/.test(n)));
   assert.equal(r.league.members.length, 4);
   assert.ok(r.league.members.filter(m => m.test).length === 2 && r.league.members.find(m => m.id === S.u.Lex.id).admin);
-  assert.equal((await lex.post(`/api/leagues/${S.gusLeague}/test-players`)).status, 409, 'already 4');
+  assert.equal((await admin.post(`/api/leagues/${S.gusLeague}/test-players`)).status, 409, 'already 4');
   assert.equal((await gus.post(`/api/leagues/${S.gusLeague}/test-players`)).status, 403, 'admins only');
   assert.equal((await anon.post('/api/auth/login', { username: r.added[0], password: 'whatever1' })).status, 401, 'test players can\'t sign in');
   // An admin plays for them: a pod with two test players.
@@ -1065,9 +1066,10 @@ test('a player can be made an admin and keeps playing; admins fill a league to 4
     p = (await ok(gus.post(`/api/pods/${pod.id}/vote`, { candidateId: pick }))).pod;
   }
   assert.equal(p.vote.status, 'done', 'Gus\'s vote finishes it (test players re-vote on a tie)');
-  assert.equal((await lex.del(`/api/leagues/${S.gusLeague}/test-players`)).status, 409, 'not while they\'re in a running pod');
+  assert.equal((await lex.del(`/api/leagues/${S.gusLeague}/test-players`)).status, 403, 'main admin account only');
+  assert.equal((await admin.del(`/api/leagues/${S.gusLeague}/test-players`)).status, 409, 'not while they\'re in a running pod');
   await ok(lex.post(`/api/pods/${pod.id}/discard`));
-  const gone = await ok(lex.del(`/api/leagues/${S.gusLeague}/test-players`));
+  const gone = await ok(admin.del(`/api/leagues/${S.gusLeague}/test-players`));
   assert.equal(gone.removed.length, 2);
   assert.equal(gone.league.members.length, 2);
 

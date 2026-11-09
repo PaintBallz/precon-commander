@@ -683,10 +683,9 @@ async function renderLeague(view) {
           ${league.canManage && active && m.preconRequest ? `<button class="btn gold sm" data-pallow="${m.id}">Allow</button><button class="btn ghost sm" data-pdecline="${m.id}">Decline</button>` : league.canManage && active && m.preconLocked ? `<button class="btn ghost sm" data-pallow="${m.id}" title="Let them save a different precon once">Allow change</button>` : ''}
           ${league.canManage && active && m.id !== S.me.id ? `<button class="btn ghost sm" data-rmm="${m.id}" data-name="${esc(m.username)}" title="Kick from the league">✕</button>` : ''}</div>`).join('') || '<p class="muted">Nobody yet.</p>'}</div>
         ${isAdmin() && active ? `<div class="row" style="margin-top:10px">${candidates.length ? `<select class="input" id="addMember"><option value="">Add a player…</option>${candidates.map(c => `<option value="${c.id}">${esc(c.username)}</option>`).join('')}</select><button class="btn sm" id="addMemberBtn">Add</button>` : '<span class="small muted">Every player is already in a league.</span>'}</div>` : ''}
-        ${isAdmin() && active ? `<div class="test-tools">
+        ${isAdminAccount() && active && (league.members.length < 4 || league.members.some(m => m.test)) ? `<div class="test-tools">
           ${league.members.length < 4 ? `<button class="btn sm" id="addTestBtn">${I.user} Fill to 4 with test players</button>` : ''}
           ${league.members.some(m => m.test) ? `<button class="btn sm danger" id="rmTestBtn">${I.x} Remove test players</button>` : ''}
-          <p class="small muted">Test players let you try a league out: they can't sign in, and as an admin you play for them (start pods, crown the winner, skip the vote, spin and open their packs).</p>
         </div>` : ''}
       </section>
       <section class="panel">
@@ -2983,7 +2982,7 @@ async function renderAdmin(view) {
           await post(`/admin/users/${id}/suspend`, { suspended: true, reason: f.reason }); toast(`${who} is suspended.`, 'good'); break;
         }
         case 'staff':
-          if (!await confirmBox(`Make ${who} an admin?`, `${who} keeps playing as normal and also gets the Admin tab: giving and taking packs, fixing pods, moving cards, player tools, test players, the log and backups. Only you (the main admin account) can make or remove admins.`, 'Make admin')) return;
+          if (!await confirmBox(`Make ${who} an admin?`, `${who} keeps playing as normal and also gets the Admin tab: giving and taking packs, fixing pods, moving cards, player tools, the log and backups. Only you (the main admin account) can make or remove admins.`, 'Make admin')) return;
           await post(`/admin/users/${id}/admin`, { admin: true }); toast(`${who} is now an admin.`, 'good'); break;
         case 'unstaff':
           if (!await confirmBox(`Remove ${who}'s admin powers?`, `${who} stays a player. They're signed out so the change takes effect right away.`, 'Remove admin', true)) return;

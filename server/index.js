@@ -414,6 +414,7 @@ app.post('/api/leagues/:id/members', wrap(async (req, res) => {
 const TEST_FILL = 4;
 app.post('/api/leagues/:id/test-players', wrap(async (req, res) => {
   requireAdmin(req);
+  if (!req.user.adminAccount) throw new HttpError(403, 'Only the main admin account can manage test players.');
   const league = requireLeague(req.params.id);
   if (league.status !== 'active') throw new HttpError(409, `${league.name} has ended.`);
   const have = leagueMembers(league.id).length;
@@ -444,6 +445,7 @@ app.post('/api/leagues/:id/test-players', wrap(async (req, res) => {
 }));
 app.delete('/api/leagues/:id/test-players', wrap(async (req, res) => {
   requireAdmin(req);
+  if (!req.user.adminAccount) throw new HttpError(403, 'Only the main admin account can manage test players.');
   const league = requireLeague(req.params.id);
   const bots = leagueMembers(league.id).filter(m => getUser(m.id)?.is_test);
   if (!bots.length) throw new HttpError(409, `${league.name} has no test players.`);
