@@ -2228,12 +2228,25 @@ function paintDeckEditor(box, pool, r) {
   const poolList = pool.packs.flatMap(k => k.cards.map(c => ({ ...c, precon: k.kind === 'precon' })));
   const poolIds = new Set(poolList.map(c => c.id));
   const used = new Set(deck.cards.filter(c => c.poolId).map(c => c.poolId));
-  const trayCards = poolList.filter(c => !used.has(c.id));
+  // The tray only shows pool cards that aren't in the deck yet. Cards are matched by
+  // name too, since a deck imported from a list isn't linked to pool cards; for
+  // basic lands only the spare copies show.
+  const inDeckNames = new Set(deck.cards.map(c => c.name));
+  const unlinked = new Map();
+  for (const c of deck.cards) if (!c.poolId) unlinked.set(c.name, (unlinked.get(c.name) || 0) + c.qty);
+  const trayCards = poolList.filter(c => !used.has(c.id)).filter(c => {
+    if (!isBasic(c)) return !inDeckNames.has(c.name);
+    const n = unlinked.get(c.name) || 0;
+    if (n > 0) { unlinked.set(c.name, n - 1); return false; }
+    return true;
+  });
+  const poolNames = new Set(poolList.map(c => c.name));
   const base = deck.base || (deck.source === 'pool' ? [] : deck.cards.filter(c => !c.poolId));
   const cuts = [];
   for (const b of base) {
     const have = deck.cards.filter(c => !c.poolId && c.name === b.name).reduce((n, c) => n + c.qty, 0);
-    if (b.qty > have) cuts.push({ ...b, qty: b.qty - have });
+    // A cut card that's also in the pool already shows there, so it isn't listed twice.
+    if (b.qty > have && !poolNames.has(b.name)) cuts.push({ ...b, qty: b.qty - have });
   }
   // Rule checks: shown, never blocked.
   const cmd = deck.cards.filter(c => c.board === 'commander');
