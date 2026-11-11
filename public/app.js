@@ -2851,8 +2851,15 @@ const typeOf = c => { const front = String(c.type).split(' // ')[0]; return TYPE
 const fromPack = c => !!c.poolId && !c.precon;
 function deckHtml(deck, { mine = false } = {}) {
   const packCount = deck.cards.filter(fromPack).reduce((n, c) => n + c.qty, 0);
-  const cmd = deck.cards.filter(c => c.board === 'commander');
-  const main = deck.cards.filter(c => c.board !== 'commander');
+  // Copies of one card (each linked to its own pool card) show as one line.
+  const merged = new Map();
+  for (const c of deck.cards) {
+    const k = c.board + '|' + c.name, m = merged.get(k);
+    if (m) { m.qty += c.qty; m.pack ||= fromPack(c); } else merged.set(k, { ...c, pack: fromPack(c) });
+  }
+  const cards = [...merged.values()];
+  const cmd = cards.filter(c => c.board === 'commander');
+  const main = cards.filter(c => c.board !== 'commander');
   const spells = main.filter(c => typeOf(c) !== 'Land');
   const curve = Array(8).fill(0);
   for (const c of spells) curve[Math.min(7, Math.floor(c.cmc))] += c.qty;
@@ -2877,7 +2884,7 @@ function deckHtml(deck, { mine = false } = {}) {
     </div>
     <div class="deck-types">${groups.map(([t, l]) => `<span class="chip">${t} <b>${l.reduce((n, c) => n + c.qty, 0)}</b></span>`).join('')}</div>
     <div class="deck-list">${groups.map(([t, l]) => `<div class="deck-group"><h4>${t} <span class="dim">(${l.reduce((n, c) => n + c.qty, 0)})</span></h4>
-      ${l.map(c => `<div class="deck-line" data-dc="${esc(c.name)}" tabindex="0" role="button"><span class="q">${c.qty}</span><span class="n"><span class="nm">${esc(c.name)}</span>${c.foil ? '<span class="dim">✦</span>' : ''}${fromPack(c) ? '<span class="tag-pack" title="Pulled from a pack, not part of the precon">From Packs</span>' : ''}</span><span class="m">${manaHtml(c.mana)}</span></div>`).join('')}</div>`).join('')}</div>
+      ${l.map(c => `<div class="deck-line" data-dc="${esc(c.name)}" tabindex="0" role="button"><span class="q">${c.qty}</span><span class="n"><span class="nm">${esc(c.name)}</span>${c.foil ? '<span class="dim">✦</span>' : ''}${c.pack ? '<span class="tag-pack" title="Pulled from a pack, not part of the precon">From Packs</span>' : ''}</span><span class="m">${manaHtml(c.mana)}</span></div>`).join('')}</div>`).join('')}</div>
   </div>`;
 }
 function wireDeck(view, deck) {

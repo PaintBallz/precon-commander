@@ -225,11 +225,46 @@ export function deckSummaries(userIds) {
 }
 export const deleteDeck = (userId, leagueId) => db.prepare('DELETE FROM decks WHERE user_id = ? AND league_id = ?').run(userId, leagueId).changes > 0;
 
-function save(userId, leagueId, deck) {
+function save(userId, leagueId, deck, at = new Date().toISOString()) {
   db.prepare(`INSERT INTO decks (user_id, league_id, name, source, url, data, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
               ON CONFLICT(user_id, league_id) DO UPDATE SET name = excluded.name, source = excluded.source, url = excluded.url, data = excluded.data, updated_at = excluded.updated_at`)
-    .run(userId, leagueId, deck.name, deck.source, deck.url || null, JSON.stringify({ cards: deck.cards, missing: deck.missing, base: deck.base || null }), new Date().toISOString());
+    .run(userId, leagueId, deck.name, deck.source, deck.url || null, JSON.stringify({ cards: deck.cards, missing: deck.missing, base: deck.base || null }), at);
   return getDeck(userId, leagueId);
+}
+
+// A deck imported from a list isn't tied to the player's pool. Link each of its
+// cards to a matching pool card by name (the precon's own copies first, then
+// pulls), one pool card per copy, so the deck editor and the "From Packs" tags
+// work. Cards with no match stay as they are. Saved only if something changed,
+// and the deck's "updated" time stays the same.
+const nameKey = s => String(s || '').split(' // ')[0].trim().toLowerCase();
+export function linkDeckToPool(userId, leagueId, pool) {
+  const d = getDeck(userId, leagueId);
+  if (!d || !d.cards.some(c => !c.poolId)) return d;
+  const used = new Set(d.cards.filter(c => c.poolId).map(c => c.poolId));
+  const free = new Map();
+  for (const r of [...pool].sort((a, b) => Number(b.pack_kind === 'precon') - Number(a.pack_kind === 'precon'))) {
+    if (used.has(r.id)) continue;
+    const k = nameKey(r.name);
+    if (!free.has(k)) free.set(k, []);
+    free.get(k).push(r);
+  }
+  let changed = false;
+  const cards = [];
+  for (const c of d.cards) {
+    if (c.poolId) { cards.push(c); continue; }
+    const spare = free.get(nameKey(c.name)) || [];
+    let left = c.qty;
+    while (left > 0 && spare.length) {
+      const r = spare.shift();
+      cards.push({ ...c, qty: 1, poolId: r.id, ...(r.pack_kind === 'precon' ? { precon: true } : {}) });
+      left--;
+      changed = true;
+    }
+    if (left > 0) cards.push({ ...c, qty: left });
+  }
+  if (!changed) return d;
+  return save(userId, leagueId, { name: d.name, source: d.source, url: d.url, cards, missing: d.missing, base: d.base || d.cards }, d.updatedAt);
 }
 
 export async function importDeck(userId, leagueId, { url, text, name }) {

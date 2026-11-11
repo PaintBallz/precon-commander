@@ -862,6 +862,16 @@ test('deck lists: pasted or linked, looked up on Scryfall, shown on the player p
   assert.equal((await ok(admin.get(`/api/deck?league=${S.league}&player=${S.u.Joe.id}`))).deck.count, 7, 'and so does the main admin account');
   assert.equal((await joe.put(`/api/leagues/${S.league}`, { rules: { showDecks: true } })).status, 403, 'players cannot change it');
   await ok(nick.put(`/api/leagues/${S.league}`, { rules: { showDecks: true } }));
+  // An imported list is linked to the pool by name: the precon's copies first,
+  // so only real pulls count as "from packs".
+  const joePool = (await ok(joe.get('/api/pools'))).pools.find(p => p.username === 'Joe');
+  const pull = joePool.packs.filter(k => k.kind !== 'precon').flatMap(k => k.cards).find(c => !/Basic/.test(c.type) && !c.name.includes('//'));
+  const imported = (await ok(joe.post('/api/deck', { text: `1 ${pull.name}\n2 Forest\n1 Sol Ring` }))).deck;
+  const line = name => imported.cards.filter(c => c.name === name);
+  assert.ok(line(pull.name).every(c => c.poolId && !c.precon), 'the pulled card is linked as a pull');
+  assert.deepEqual(line('Forest').map(c => [c.qty, !!c.poolId, !!c.precon]), [[1, true, true], [1, true, true]], 'basics link one copy each, to the precon first');
+  assert.deepEqual(line('Sol Ring').map(c => !!c.poolId), [false], 'a card that is not in the pool stays unlinked');
+  assert.equal(imported.count, 4);
 });
 
 test('admin log: a deleted card is kept for undo and comes back exactly', async () => {

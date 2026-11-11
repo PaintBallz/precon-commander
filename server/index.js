@@ -30,7 +30,7 @@ import { getBoosterSets, BOOSTER_SET_TYPES, findCard } from './scryfall.js';
 import { keepPreconsFresh, preconNames, preconCount, officialName, givePreconCards, fillMissingPreconCards } from './precons.js';
 import { openPack, hasRealPack, realPackKind, localPackSets, sheetOdds } from './packs.js';
 import { requireAuth, requireAdmin, authRoutes, seedAdmin, listUsers, getUser, selfUser, deleteAccount } from './auth.js';
-import { importDeck, editDeck, getDeck, deleteDeck, DeckError, startFromPool, changeDeck } from './decks.js';
+import { importDeck, editDeck, getDeck, deleteDeck, DeckError, startFromPool, changeDeck, linkDeckToPool } from './decks.js';
 import { playerStats, seasonRecap } from './stats.js';
 import { discordInvite, podFinishedPost, leagueEndedPost } from './discord.js';
 import { cached, cachedSync, clearCache } from './cache.js';
@@ -1232,7 +1232,7 @@ app.get('/api/players/:id', wrap(async (req, res) => {
   res.json({
     player: { id: u.id, username: u.username, precon: league ? memberRow(league.id, u.id)?.precon || '' : '', joined: u.created_at, leagues: theirs.map(l => ({ id: l.id, name: l.name, status: l.status })) },
     league: league ? { id: league.id, name: league.name, status: league.status, rank: rank >= 0 ? rank + 1 : null } : null,
-    stats, ...deckFor(req, u.id, getDeck(u.id, league?.id)),
+    stats, ...deckFor(req, u.id, poolDeck(u.id, league?.id)),
   });
 }));
 app.get('/api/leagues/:id/recap', wrap(async (req, res) => {
@@ -1248,6 +1248,12 @@ function deckLeague(req) {
   if (!l || !isMember(l.id, req.user.id)) throw new HttpError(409, 'Join a league first: deck lists are saved per league.');
   return l;
 }
+// A deck with its cards tied to the player's pool (imported lists are linked by name).
+function poolDeck(userId, leagueId) {
+  const d = getDeck(userId, leagueId);
+  if (!d?.leagueId) return d;
+  return linkDeckToPool(userId, d.leagueId, poolCards(d.leagueId).filter(r => r.user_id === userId)) || d;
+}
 // Someone else's deck: shown unless its league keeps decks private (the
 // "showDecks" rule). The player and the main admin account always see it.
 function deckFor(req, ownerId, deck) {
@@ -1261,11 +1267,11 @@ app.get('/api/deck', wrap(async (req, res) => {
     if (!l) return res.json({ deck: null });
     if (!req.user.adminAccount && !isMember(l.id, req.user.id)) throw new HttpError(403, `You're not in ${l.name}.`);
     const owner = String(req.query.player);
-    const { deck, deckHidden } = deckFor(req, owner, getDeck(owner, l.id));
+    const { deck, deckHidden } = deckFor(req, owner, poolDeck(owner, l.id));
     return res.json({ deck, hidden: deckHidden || (!req.user.adminAccount && l.rules.showDecks === false) });
   }
   const member = l && isMember(l.id, req.user.id);
-  const out = { deck: member ? getDeck(req.user.id, l.id) : null };
+  const out = { deck: member ? poolDeck(req.user.id, l.id) : null };
   // The deck editor also wants to know if the saved precon is an official one it can load.
   if (member && req.query.editor) {
     const precon = memberRow(l.id, req.user.id)?.precon || '';
@@ -1304,9 +1310,10 @@ app.post('/api/deck', wrap(async (req, res) => {
   if (recent.length >= 15) throw new HttpError(429, 'That\'s a lot of imports. Try again in an hour.');
   deckImports.set(req.user.id, [...recent, Date.now()]);
   const b = req.body || {};
-  const deck = await importDeck(req.user.id, deckLeague(req).id, { url: b.url, text: b.text, name: b.name }).catch(deckFail);
+  const l = deckLeague(req);
+  await importDeck(req.user.id, l.id, { url: b.url, text: b.text, name: b.name }).catch(deckFail);
   broadcast('state');
-  res.json({ deck });
+  res.json({ deck: poolDeck(req.user.id, l.id) });
 }));
 app.put('/api/deck', wrap(async (req, res) => {
   const deck = await Promise.resolve().then(() => editDeck(req.user.id, deckLeague(req).id, req.body || {})).catch(deckFail);
