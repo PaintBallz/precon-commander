@@ -1289,12 +1289,13 @@ app.post('/api/deck/start', wrap(async (req, res) => {
   broadcast('state');
   res.json({ deck });
 }));
-// Deck editor: { add: 'pool:<id>' | 'base:<name>' } or { remove: <key> }.
+// Deck editor: { add, remove }, each one key ('pool:<id>' | 'base:<name>') or a list of them.
 app.post('/api/deck/cards', wrap(async (req, res) => {
   const l = deckLeague(req);
   const b = req.body || {};
   const pool = poolCards(l.id).filter(r => r.user_id === req.user.id);
-  const deck = await changeDeck(req.user.id, l.id, { add: b.add ? String(b.add).slice(0, 200) : null, remove: b.remove ? String(b.remove).slice(0, 200) : null, pool }).catch(deckFail);
+  const keys = v => (Array.isArray(v) ? v : v ? [v] : []).slice(0, 200).map(x => String(x).slice(0, 200));
+  const deck = await changeDeck(req.user.id, l.id, { add: keys(b.add), remove: keys(b.remove), pool }).catch(deckFail);
   res.json({ deck });
 }));
 app.post('/api/deck', wrap(async (req, res) => {

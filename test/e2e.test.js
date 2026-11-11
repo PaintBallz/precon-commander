@@ -843,6 +843,13 @@ test('deck lists: pasted or linked, looked up on Scryfall, shown on the player p
   const less = (await ok(joe.post('/api/deck/cards', { remove: `pool:${forest.poolId}` }))).deck;
   assert.equal(less.count, 6, 'one Forest out');
   assert.equal((await ok(joe.post('/api/deck/cards', { add: `pool:${forest.poolId}` }))).deck.count, 7, 'and back in');
+  // Several at once, all or nothing.
+  const two = started.cards.filter(c => c.name === 'Forest').slice(0, 2).map(c => `pool:${c.poolId}`);
+  assert.equal((await ok(joe.post('/api/deck/cards', { remove: two }))).deck.count, 5, 'two Forests out in one go');
+  assert.equal((await joe.post('/api/deck/cards', { add: [...two, 'pool:999999'] })).status, 404, 'one bad card stops the whole change');
+  assert.equal((await ok(joe.get('/api/deck'))).deck.count, 5, 'nothing was added');
+  assert.equal((await joe.post('/api/deck/cards', { add: [two[0], two[0]] })).status, 409, 'the same card twice');
+  assert.equal((await ok(joe.post('/api/deck/cards', { add: two }))).deck.count, 7, 'both back in one go');
   // Others see the latest deck, unless the league admin makes decks private.
   assert.equal((await ok(nick.get(`/api/deck?player=${S.u.Joe.id}`))).deck.count, 7, "another player sees Joe's latest deck");
   const hide = await ok(nick.put(`/api/leagues/${S.league}`, { rules: { showDecks: false } }));

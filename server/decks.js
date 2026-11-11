@@ -269,34 +269,49 @@ export function startFromPool(userId, leagueId, precon, pool) {
   return save(userId, leagueId, { name: p.name, source: 'pool', url: null, cards: rows.map(r => preconCard(p, r)), missing: [], base: null });
 }
 // pool: this player's pool_cards rows in the league.
+// add / remove: one key or a list of them. Everything is checked before the
+// deck is saved, so a change goes through whole or not at all.
+const keyList = v => (Array.isArray(v) ? v : v ? [v] : []);
 export async function changeDeck(userId, leagueId, { add, remove, pool }) {
   const d = getDeck(userId, leagueId);
   if (!d) throw new DeckError(404, 'Start your deck first.');
+  const adds = keyList(add), removes = keyList(remove);
+  if (!adds.length && !removes.length) throw new DeckError(400, 'Pick a card to add or remove.');
+  if (adds.length + removes.length > 150) throw new DeckError(400, "That's too many cards at once.");
   const base = baseOf(d), cards = d.cards;
-  if (remove) {
-    const i = cards.findIndex(c => keyOf(c) === remove);
-    if (i < 0) throw new DeckError(404, "That card isn't in your deck.");
+  for (const key of removes) {
+    const i = cards.findIndex(c => keyOf(c) === key);
+    if (i < 0) throw new DeckError(404, "One of those cards isn't in your deck any more. Reload and try again.");
     if (cards[i].qty > 1) cards[i] = { ...cards[i], qty: cards[i].qty - 1 }; else cards.splice(i, 1);
-  } else if (add?.startsWith('pool:')) {
-    const id = Number(add.slice(5));
-    const pc = pool.find(r => r.id === id);
-    if (!pc) throw new DeckError(404, "That card isn't in your pool.");
-    if (cards.some(c => c.poolId === id)) throw new DeckError(409, 'That card is already in your deck.');
-    if (pc.pack_kind === 'precon') { cards.push(preconCard(findPrecon(pc.pack_note), pc)); }
-    else {
-      const [sf] = await fetchCollection([{ set: pc.set_code, collector_number: pc.number }]).catch(() => [null]);
+  }
+  const inDeck = new Set(cards.filter(c => c.poolId).map(c => c.poolId));
+  const pulled = []; // pulled cards are looked up on Scryfall together
+  for (const key of adds) {
+    if (key.startsWith('pool:')) {
+      const id = Number(key.slice(5));
+      const pc = pool.find(r => r.id === id);
+      if (!pc) throw new DeckError(404, "One of those cards isn't in your pool any more. Reload and try again.");
+      if (inDeck.has(id)) throw new DeckError(409, `${pc.name} is already in your deck.`);
+      inDeck.add(id);
+      if (pc.pack_kind === 'precon') cards.push(preconCard(findPrecon(pc.pack_note), pc)); else pulled.push(pc);
+    } else if (key.startsWith('base:')) {
+      const name = key.slice(5);
+      const b = base.find(c => c.name === name);
+      if (!b) throw new DeckError(404, "That card isn't from your precon.");
+      const have = cards.filter(c => !c.poolId && c.name === name);
+      if (have.reduce((n, c) => n + c.qty, 0) >= b.qty) throw new DeckError(409, `All your copies of ${name} are already in your deck.`);
+      if (have.length) have[0].qty++; else cards.push({ ...b, qty: 1 });
+    } else throw new DeckError(400, 'Pick a card to add or remove.');
+  }
+  if (pulled.length) {
+    const found = await fetchCollection(pulled.map(pc => ({ set: pc.set_code, collector_number: pc.number }))).catch(() => pulled.map(() => null));
+    pulled.forEach((pc, i) => {
+      const sf = found[i];
       const card = sf && sf.name === pc.name ? deckCard({ qty: 1, board: 'main', foil: !!pc.foil }, sf)
         : { qty: 1, board: 'main', foil: !!pc.foil, name: pc.name, set: pc.set_code, number: pc.number, rarity: pc.rarity, type: pc.type || '', mana: '', cmc: 0, colors: [], ci: [], image: pc.image, back: pc.back || null, art: null, uri: pc.uri };
-      cards.push({ ...card, poolId: id });
-    }
-  } else if (add?.startsWith('base:')) {
-    const name = add.slice(5);
-    const b = base.find(c => c.name === name);
-    if (!b) throw new DeckError(404, "That card isn't from your precon.");
-    const have = cards.filter(c => !c.poolId && c.name === name);
-    if (have.reduce((n, c) => n + c.qty, 0) >= b.qty) throw new DeckError(409, 'All of those are already in your deck.');
-    if (have.length) have[0].qty++; else cards.push({ ...b, qty: 1 });
-  } else throw new DeckError(400, 'Pick a card to add or remove.');
+      cards.push({ ...card, poolId: pc.id });
+    });
+  }
   return save(userId, leagueId, { name: d.name, source: d.source, url: d.url, cards, missing: d.missing, base });
 }
 

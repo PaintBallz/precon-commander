@@ -647,7 +647,8 @@ form .fb-filter label.chip { display: inline-flex; gap: 6px; cursor: pointer; co
 .de-count.ok { color: var(--ok); } .de-count.bad { color: var(--danger); }
 .de-problems { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip.bad { color: var(--danger); border-color: var(--danger); white-space: normal; }
-.stacks { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 18px 12px; align-items: start; min-height: 180px; padding: 4px; }
+/* Deck editor cards: 25% bigger than before on wider screens; phones keep two columns. */
+.stacks { display: grid; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 18px 12px; align-items: start; min-height: 180px; padding: 4px; }
 .stacks.drop { outline: 2px dashed var(--accent); outline-offset: 4px; }
 .stack h4 { margin: 0 0 6px; font: 700 .9rem var(--cond); letter-spacing: .05em; text-transform: uppercase; border-bottom: 1px solid var(--line); padding-bottom: 3px; }
 .dcard { position: relative; aspect-ratio: 488 / 680; border-radius: 4.5% / 3.3%; cursor: pointer; background: #222; }
@@ -656,6 +657,9 @@ form .fb-filter label.chip { display: inline-flex; gap: 6px; cursor: pointer; co
 .stack .dcard { box-shadow: 0 -3px 8px rgba(0,0,0,.55); }
 .dcard:hover, .dcard:focus-visible { z-index: 4; }
 .dcard.sel { outline: 3px solid var(--accent); outline-offset: 1px; z-index: 5; }
+.dcard.multi { outline: 3px solid var(--cyan); outline-offset: 1px; z-index: 5; }
+.dcheck { position: absolute; left: 6px; top: 32px; z-index: 4; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: var(--cyan); color: #000; font: 800 .8rem/1 var(--cond); box-shadow: 0 0 0 2px #000; pointer-events: none; }
+@media (max-width: 600px) { .stacks { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); } .dcheck { top: 26px; } }
 .dcard.bad::after { content: ""; position: absolute; inset: 0; border: 3px solid var(--danger); border-radius: inherit; pointer-events: none; }
 .dcard.from-pool::before { content: ""; position: absolute; left: 4px; top: 4px; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px #000; z-index: 1; }
 /* + and −: top right, see-through so the mana cost shows through, and only

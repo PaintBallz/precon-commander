@@ -2193,7 +2193,7 @@ async function renderPools(view) {
 // (and any precon cards you cut) in a tray below. Click a card to pick it and
 // use the bar, double-click a tray card to add it, or drag cards between the
 // tray and the stacks. Rule problems are listed and outlined, never blocked.
-const deckEd = { group: store.get('deckGroup', 'type'), sel: null, q: '', busy: false, undo: [] };
+const deckEd = { group: store.get('deckGroup', 'type'), sel: null, q: '', busy: false, undo: [], multi: new Set(), multiMode: false };
 const deckKey = c => (c.poolId ? `pool:${c.poolId}` : `base:${c.name}`);
 const isBasic = c => /\bBasic\b/.test(c.type || '');
 const TYPE_LABEL = { Creature: 'Creatures', Planeswalker: 'Planeswalkers', Battle: 'Battles', Instant: 'Instants', Sorcery: 'Sorceries', Artifact: 'Artifacts', Enchantment: 'Enchantments', Land: 'Lands' };
@@ -2277,8 +2277,8 @@ function paintDeckEditor(box, pool, r) {
     const id = idOf(it), inDeck = it.w === 'deck';
     const isBad = inDeck && it.keys.some(k => bad.has(k));
     const pulled = it.w !== 'cut' && it.c.poolId !== undefined ? !it.c.precon : it.w === 'pool' && !it.c.precon;
-    return `<div class="dcard ${isBad ? 'bad' : ''} ${deckEd.sel === id ? 'sel' : ''} ${pulled ? 'from-pool' : ''}" data-sel="${esc(id)}" draggable="true" tabindex="0" role="button" title="${esc(it.c.name)}${pulled ? ' (pulled from a pack)' : ''}">
-      <img ${cardSrc(it.c.image, '(max-width: 600px) 45vw, 160px')} alt="${esc(it.c.name)}" loading="lazy">
+    return `<div class="dcard ${isBad ? 'bad' : ''} ${deckEd.sel === id ? 'sel' : ''} ${deckEd.multi.has(id) ? 'multi' : ''} ${pulled ? 'from-pool' : ''}" data-sel="${esc(id)}" draggable="true" tabindex="0" role="button" title="${esc(it.c.name)}${pulled ? ' (pulled from a pack)' : ''}">
+      <img ${cardSrc(it.c.image, '(max-width: 600px) 45vw, 200px')} alt="${esc(it.c.name)}" loading="lazy">${deckEd.multi.has(id) ? '<span class="dcheck" aria-hidden="true">✓</span>' : ''}
       ${inDeck && isBasic(it.c) ? landStepper(it, id) : `${it.keys.length > 1 ? `<span class="dq">×${it.keys.length}</span>` : ''}
       <button type="button" class="dstep ${inDeck ? 'minus' : 'plus'}" data-step="${esc(id)}" aria-label="${inDeck ? 'Take one out of your deck' : 'Put one in your deck'}: ${esc(it.c.name)}" title="${inDeck ? 'Take one out' : 'Put one in'}">${inDeck ? '−' : '+'}</button>`}</div>`;
   }
@@ -2296,6 +2296,13 @@ function paintDeckEditor(box, pool, r) {
   };
   const picked = find(deckEd.sel);
   if (!picked) deckEd.sel = null;
+  // Several picked at once (Ctrl/Shift-click, or "Select several").
+  for (const id of [...deckEd.multi]) if (!find(id)) deckEd.multi.delete(id);
+  const multiItems = [...deckEd.multi].map(find).filter(Boolean);
+  const outs = multiItems.filter(it => it.w === 'deck'), ins = multiItems.filter(it => it.w !== 'deck');
+  const multiBar = () => (multiItems.length
+    ? `<b>${plural(multiItems.length, 'card')} picked<span class="small muted">${outs.length} in your deck · ${ins.length} in your pool</span></b>${outs.length ? `<button class="btn sm danger" data-act="multiOut">− Take out ${outs.length}</button>` : ''}${ins.length ? `<button class="btn sm gold" data-act="multiIn">+ Put in ${ins.length}</button>` : ''}<button class="btn sm ghost" data-act="multiClear">Clear</button>`
+    : '<span class="small muted">Click cards in your deck or your pool to pick them, then take them out or put them in together. Dragging a picked card moves them all.</span>');
   const pulledIn = deck.cards.filter(c => c.poolId && !c.precon).length;
   const canLead = picked?.w === 'deck' && (picked.c.board === 'commander' || /legendary|can be your commander/i.test(picked.c.type));
   const where = it => (it.w === 'deck' ? (it.c.board === 'commander' ? 'Your commander' : 'In your deck') : it.w === 'pool' ? (it.c.precon ? 'In your pool, from your precon' : 'In your pool, pulled from a pack') : 'Cut from your precon');
@@ -2306,6 +2313,7 @@ function paintDeckEditor(box, pool, r) {
       <div class="de-problems">${problems.length ? problems.map(p => `<span class="chip bad">${p}</span>`).join('') : `<span class="chip ok">${I.check} 100 cards, one of each, all in your colors</span>`}</div>
       <div class="row">
         <select class="input" id="deGroup" title="How to group your deck"><option value="type">Group by type</option><option value="cmc" ${byCmc ? 'selected' : ''}>Group by mana value</option></select>
+        <button class="btn sm ${deckEd.multiMode ? 'gold' : ''}" id="deMulti" aria-pressed="${deckEd.multiMode}">${deckEd.multiMode ? `${I.check} Done selecting` : 'Select several'}</button>
         <button class="btn sm" id="deCopy">${I.copy} Copy list</button>
         ${r.officialPrecon ? `<button class="btn sm ghost" id="deReset">Start over</button>` : ''}
       </div>
@@ -2313,10 +2321,10 @@ function paintDeckEditor(box, pool, r) {
     <h3 class="de-label">Your deck</h3>
     <div class="stacks" id="deStacks" data-drop="deck">${stacks(deckItems, false)}</div>
     <div class="panel de-tray">
-      <div class="spread"><h3 class="de-label" style="margin:0">Your pool <span class="dim">${trayItems.reduce((n, it) => n + it.keys.length, 0)} not in your deck</span></h3><input type="search" id="deQ" placeholder="Search your pool…" value="${esc(deckEd.q)}"></div>
+      <div class="spread"><h3 class="de-label" style="margin:0">Your pool <span class="dim">${trayItems.reduce((n, it) => n + it.keys.length, 0)} not in your deck</span></h3><span class="row" style="gap:6px"><input type="search" id="deQ" placeholder="Search your pool…" value="${esc(deckEd.q)}">${deckEd.multiMode || deckEd.multi.size ? '<button class="btn sm ghost" id="dePickAll" title="Pick every pool card the search shows">Pick all shown</button>' : ''}</span></div>
       <div class="stacks" id="deTray" data-drop="tray"></div>
     </div>
-    <div class="de-bar">${picked ? `<img ${cardSrc(picked.c.image, '40px')} alt=""><b>${esc(picked.c.name)}${picked.keys.length > 1 ? ` ×${picked.keys.length}` : ''}<span class="small muted">${where(picked)}</span></b>${picked.w === 'deck' ? `<button class="btn sm danger" data-act="step">− Take one out</button>${canLead ? `<button class="btn sm" data-act="lead">${I.crown} ${picked.c.board === 'commander' ? 'Not the commander' : 'Make commander'}</button>` : ''}` : `<button class="btn sm gold" data-act="step">+ Put one in</button>`}<button class="btn sm ghost" data-act="zoom">View card</button><button class="btn sm ghost" data-act="clear" aria-label="Unpick">${I.x}</button>` : `<span class="small muted">Hover over a card (or tap it) for <b>+</b> and <b>−</b> in its corner, drag cards between your deck and your pool, or click a card for more.</span>`}${deckEd.undo.length ? `<button class="btn sm ghost de-undo" data-act="undo" title="Undo: ${esc(deckEd.undo.at(-1).label)}">↶ Undo last change</button>` : ''}</div>`;
+    <div class="de-bar">${multiItems.length || deckEd.multiMode ? multiBar() : picked ? `<img ${cardSrc(picked.c.image, '40px')} alt=""><b>${esc(picked.c.name)}${picked.keys.length > 1 ? ` ×${picked.keys.length}` : ''}<span class="small muted">${where(picked)}</span></b>${picked.w === 'deck' ? `<button class="btn sm danger" data-act="step">− Take one out</button>${canLead ? `<button class="btn sm" data-act="lead">${I.crown} ${picked.c.board === 'commander' ? 'Not the commander' : 'Make commander'}</button>` : ''}` : `<button class="btn sm gold" data-act="step">+ Put one in</button>`}<button class="btn sm ghost" data-act="zoom">View card</button><button class="btn sm ghost" data-act="clear" aria-label="Unpick">${I.x}</button>` : `<span class="small muted">Hover over a card (or tap it) for <b>+</b> and <b>−</b> in its corner, drag cards between your deck and your pool, or click a card for more. Ctrl- or Shift-click to pick several.</span>`}${deckEd.undo.length ? `<button class="btn sm ghost de-undo" data-act="undo" title="Undo: ${esc(deckEd.undo.at(-1).label)}">↶ Undo last change</button>` : ''}</div>`;
   const paintTray = () => {
     const q = deckEd.q.trim().toLowerCase();
     const hit = it => !q || it.c.name.toLowerCase().includes(q) || (it.c.type || '').toLowerCase().includes(q);
@@ -2341,14 +2349,29 @@ function paintDeckEditor(box, pool, r) {
     if (it.w === 'deck') act({ remove: k }, { add: k }, `took out ${it.c.name}`);
     else act({ add: k }, { remove: k }, `put in ${it.c.name}`);
   };
+  // Take out / put in every picked card (one copy each), as one change and one undo.
+  const many = (items, dir) => {
+    if (!items.length) return;
+    const keys = items.map(it => (dir === 'out' ? it.keys.at(-1) : it.keys[0]));
+    for (const it of items) deckEd.multi.delete(idOf(it));
+    act(dir === 'out' ? { remove: keys } : { add: keys }, dir === 'out' ? { add: keys } : { remove: keys }, `${dir === 'out' ? 'took out' : 'put in'} ${plural(keys.length, 'card')}`);
+  };
   const setLeaders = async (names, undoLabel, before) => {
     try { r.deck = (await api('/deck' + lq(), { method: 'PUT', body: { commanders: names } })).deck; if (undoLabel) remember({ lead: before }, undoLabel); redraw(); } catch (err) { fail(err); }
   };
   function wireCards() {
     $$('[data-sel]', box).forEach(el => {
-      el.onclick = () => { deckEd.sel = deckEd.sel === el.dataset.sel ? null : el.dataset.sel; redraw(); };
+      el.onclick = e => {
+        const id = el.dataset.sel;
+        if (deckEd.multiMode || deckEd.multi.size || e.ctrlKey || e.metaKey || e.shiftKey) {
+          if (deckEd.sel && deckEd.sel !== id) deckEd.multi.add(deckEd.sel);
+          deckEd.sel = null;
+          if (deckEd.multi.has(id)) deckEd.multi.delete(id); else deckEd.multi.add(id);
+        } else deckEd.sel = deckEd.sel === id ? null : id;
+        redraw();
+      };
       el.onkeydown = e => { if (e.target === el && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); el.click(); } };
-      el.ondragstart = e => { e.dataTransfer.setData('text/plain', el.dataset.sel); e.dataTransfer.effectAllowed = 'move'; };
+      el.ondragstart = e => { e.dataTransfer.setData('text/plain', deckEd.multi.has(el.dataset.sel) && deckEd.multi.size > 1 ? 'multi' : el.dataset.sel); e.dataTransfer.effectAllowed = 'move'; };
     });
     $$('[data-step]', box).forEach(b => b.onclick = e => { e.stopPropagation(); step(b.dataset.step); });
     $$('.dland', box).forEach(s => s.addEventListener('click', e => e.stopPropagation()));
@@ -2361,13 +2384,20 @@ function paintDeckEditor(box, pool, r) {
     zone.ondrop = e => {
       e.preventDefault(); zone.classList.remove('drop');
       const id = e.dataTransfer.getData('text/plain');
-      if (id && wants(id)) step(id);
+      if (id === 'multi') many(zone.dataset.drop === 'deck' ? ins : outs, zone.dataset.drop === 'deck' ? 'in' : 'out');
+      else if (id && wants(id)) step(id);
     };
   });
   paintTray();
   $('#deQ', box).oninput = e => { deckEd.q = e.target.value; paintTray(); };
   $('#deGroup', box).onchange = e => { deckEd.group = e.target.value; store.set('deckGroup', deckEd.group); redraw(); };
   $('#deCopy', box).onclick = () => copyText(deckText(deck), deck.name);
+  $('#deMulti', box).onclick = () => { deckEd.multiMode = !deckEd.multiMode; if (!deckEd.multiMode) deckEd.multi.clear(); else if (deckEd.sel) { deckEd.multi.add(deckEd.sel); deckEd.sel = null; } redraw(); };
+  $('#dePickAll', box)?.addEventListener('click', () => {
+    const q = deckEd.q.trim().toLowerCase();
+    for (const it of trayItems) if (!q || it.c.name.toLowerCase().includes(q) || (it.c.type || '').toLowerCase().includes(q)) deckEd.multi.add(idOf(it));
+    redraw();
+  });
   $('#deReset', box)?.addEventListener('click', async e => {
     if (!await confirmBox('Start over?', `Your deck goes back to the <b>${esc(r.officialPrecon)}</b> cards. Every pulled card you put in goes back to your pool.`, 'Start over', true)) return;
     startDeck(box, pool, r, e.target);
@@ -2377,6 +2407,9 @@ function paintDeckEditor(box, pool, r) {
     if (a === 'clear') { deckEd.sel = null; redraw(); }
     else if (a === 'zoom') cardModal({ ...picked.c, id: null });
     else if (a === 'step') step(deckEd.sel);
+    else if (a === 'multiOut') many(outs, 'out');
+    else if (a === 'multiIn') many(ins, 'in');
+    else if (a === 'multiClear') { deckEd.multi.clear(); redraw(); }
     else if (a === 'undo') {
       const u = deckEd.undo.pop();
       if (!u) return;
