@@ -615,13 +615,16 @@ app.put('/api/leagues/:id', wrap(async (req, res) => {
       if (!Number.isFinite(n) || n < lo || n > hi) throw new HttpError(400, `${k} must be ${lo}–${hi}.`);
       rules[k] = n;
     }
+    if (b.rules.showDecks != null) rules.showDecks = !!b.rules.showDecks;
     changes.rules = rules;
   }
+  const decksBefore = league.rules.showDecks !== false;
   const updated = updateLeague(league.id, changes);
   if (changes.rules) {
     const r = changes.rules;
     const by = req.user.isAdmin ? 'The site admin' : `${req.user.username} (league admin)`;
     logEvent(league.id, 'rules', req.user.id, `${by} changed the rules: winner ${r.winnerPacks}, others ${r.loserPacks}, absent ${r.absentPacks}, vote bonus ${r.voteBonus} pack(s). Running pods keep the rules they started with.`);
+    if ((r.showDecks !== false) !== decksBefore) logEvent(league.id, 'rules', req.user.id, r.showDecks !== false ? `${by} let players see each other's decks.` : `${by} made decks private: players only see their own.`);
   }
   broadcast('state', { leagueId: league.id });
   res.json({ league: leagueView(req, updated) });
@@ -1229,7 +1232,7 @@ app.get('/api/players/:id', wrap(async (req, res) => {
   res.json({
     player: { id: u.id, username: u.username, precon: league ? memberRow(league.id, u.id)?.precon || '' : '', joined: u.created_at, leagues: theirs.map(l => ({ id: l.id, name: l.name, status: l.status })) },
     league: league ? { id: league.id, name: league.name, status: league.status, rank: rank >= 0 ? rank + 1 : null } : null,
-    stats, deck: getDeck(u.id, league?.id),
+    stats, ...deckFor(req, u.id, getDeck(u.id, league?.id)),
   });
 }));
 app.get('/api/leagues/:id/recap', wrap(async (req, res) => {
@@ -1245,8 +1248,22 @@ function deckLeague(req) {
   if (!l || !isMember(l.id, req.user.id)) throw new HttpError(409, 'Join a league first: deck lists are saved per league.');
   return l;
 }
+// Someone else's deck: shown unless its league keeps decks private (the
+// "showDecks" rule). The player and the main admin account always see it.
+function deckFor(req, ownerId, deck) {
+  const open = !deck || ownerId === req.user.id || req.user.adminAccount || getLeague(deck.leagueId)?.rules.showDecks !== false;
+  return { deck: open ? deck : null, deckHidden: !open };
+}
 app.get('/api/deck', wrap(async (req, res) => {
   const l = viewLeague(req);
+  // ?player=<id>: another player's latest deck in this league (Pools → Deck).
+  if (req.query.player && req.query.player !== req.user.id) {
+    if (!l) return res.json({ deck: null });
+    if (!req.user.adminAccount && !isMember(l.id, req.user.id)) throw new HttpError(403, `You're not in ${l.name}.`);
+    const owner = String(req.query.player);
+    const { deck, deckHidden } = deckFor(req, owner, getDeck(owner, l.id));
+    return res.json({ deck, hidden: deckHidden || (!req.user.adminAccount && l.rules.showDecks === false) });
+  }
   const member = l && isMember(l.id, req.user.id);
   const out = { deck: member ? getDeck(req.user.id, l.id) : null };
   // The deck editor also wants to know if the saved precon is an official one it can load.

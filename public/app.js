@@ -700,6 +700,7 @@ async function renderLeague(view) {
             <label>Vote bonus<input type="number" name="voteBonus" min="0" max="5" value="${r.voteBonus}"></label>
           </div>
           <p class="small muted" style="margin:0">0 turns absent packs or the vote off. Running pods keep the rules they started with.</p>
+          <label class="check"><input type="checkbox" name="showDecks" ${r.showDecks !== false ? 'checked' : ''}> Players can see each other's decks</label>
           <button class="btn gold">Save rules</button>
         </form>` : `<ul class="rules-list">
           <li>${I.crown} Winner: <b>${plural(r.winnerPacks, 'pack')}</b></li>
@@ -707,6 +708,7 @@ async function renderLeague(view) {
           <li>${I.vote} Bonus-pack vote: ${r.voteBonus ? `<b>+${plural(r.voteBonus, 'pack')}</b>` : 'off'}</li>
           <li>${I.pack} Missed a pod: ${r.absentPacks ? `<b>${plural(r.absentPacks, 'pack')}</b> of the spun set` : 'nothing'}</li>
           <li>${I.wheel} One spin per pod, by the winner. Pods have ${lim.podMin}–${lim.podMax} players.</li>
+          <li>${I.user} Decks: ${r.showDecks !== false ? 'players can see each other\'s decks in Pools' : 'private, each player only sees their own'}</li>
         </ul>`}
       </section>
       <section class="panel">
@@ -755,7 +757,7 @@ async function renderLeague(view) {
   $('#rulesForm', view)?.addEventListener('submit', async e => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.target));
-    const rules = Object.fromEntries(['winnerPacks', 'loserPacks', 'absentPacks', 'voteBonus'].map(k => [k, Number(f[k])]));
+    const rules = { ...Object.fromEntries(['winnerPacks', 'loserPacks', 'absentPacks', 'voteBonus'].map(k => [k, Number(f[k])])), showDecks: !!f.showDecks };
     try { await api(`/leagues/${league.id}`, { method: 'PUT', body: { ...(f.name != null ? { name: f.name } : {}), rules } }); toast('Rules saved.', 'good'); await refreshLeague(); } catch (err) { fail(err); }
   });
   $('#newCode', view)?.addEventListener('click', async () => {
@@ -2122,14 +2124,15 @@ async function renderPools(view) {
   }
   const count = r => cards.filter(c => c.rarity === r).length;
   const mine = pool.userId === S.me.id;
-  const deckMode = mine && S.params.view === 'deck';
+  const canSeeDeck = mine || isAdminAccount() || S.league?.rules?.showDecks !== false;
+  const deckMode = canSeeDeck && S.params.view === 'deck';
   const head = `
     <div class="hero"><div><h1>${esc(S.league?.name || 'League')} Pools</h1><p>Every card a player can use in this league: their precon's cards, plus everything they've opened in its pods, including packs for pods they missed (discarded pods don't count).${mine ? ' Build your deck from them in the Deck editor.' : ''}</p></div></div>
     <div class="player-tabs">${pools.map(p => `<a href="#pools?player=${p.userId}" class="${p.userId === pool.userId ? 'sel' : ''}">${esc(p.username)} <span class="dim">${p.packs.reduce((s, k) => s + k.cards.length, 0)}</span></a>`).join('')}</div>
-    ${mine ? `<div class="mode-tabs"><a href="#pools?player=${pool.userId}" class="${deckMode ? '' : 'sel'}">Cards</a><a href="#pools?player=${pool.userId}&view=deck" class="${deckMode ? 'sel' : ''}">Deck editor</a></div>` : ''}`;
+    ${canSeeDeck ? `<div class="mode-tabs"><a href="#pools?player=${pool.userId}" class="${deckMode ? '' : 'sel'}">Cards</a><a href="#pools?player=${pool.userId}&view=deck" class="${deckMode ? 'sel' : ''}">${mine ? 'Deck editor' : 'Deck'}</a></div>` : ''}`;
   if (deckMode) {
     view.innerHTML = head + '<div id="deckEd"><div class="spinner"></div></div>';
-    renderDeckEditor($('#deckEd', view), pool);
+    (mine ? renderDeckEditor : renderOtherDeck)($('#deckEd', view), pool);
     return;
   }
   view.innerHTML = `${head}
@@ -2359,6 +2362,15 @@ function paintDeckEditor(box, pool, r) {
       try { r.deck = (await api('/deck' + lq(), { method: 'PUT', body: { commanders: next } })).deck; redraw(); } catch (err) { fail(err); }
     }
   });
+}
+// Another player's latest deck, read-only.
+async function renderOtherDeck(box, pool) {
+  let r;
+  try { r = await api(`/deck?player=${encodeURIComponent(pool.userId)}${lq('&')}`); } catch (err) { box.innerHTML = ''; fail(err); return; }
+  if (S.route !== 'pools' || !box.isConnected) return;
+  box.innerHTML = r.deck ? `<section class="panel">${deckHtml(r.deck)}</section>`
+    : `<div class="empty"><p>${r.hidden ? 'This league keeps decks private: each player only sees their own.' : `${esc(pool.username)} hasn't built a deck yet.`}</p></div>`;
+  if (r.deck) wireDeck(box, r.deck);
 }
 async function startDeck(box, pool, r, btn) {
   btn.disabled = true;
@@ -2771,7 +2783,7 @@ function deckHtml(deck, { mine = false } = {}) {
   const peak = Math.max(1, ...curve);
   const groups = TYPE_ORDER.concat('Other').map(t => [t, main.filter(c => typeOf(c) === t).sort((a, b) => a.cmc - b.cmc || a.name.localeCompare(b.name))]).filter(([, l]) => l.length);
   const avg = spells.length ? spells.reduce((n, c) => n + c.cmc * c.qty, 0) / spells.reduce((n, c) => n + c.qty, 0) : 0;
-  const src = deck.url ? `<a href="${esc(deck.url)}" target="_blank" rel="noopener">${deck.source === 'moxfield' ? 'Moxfield' : 'Archidekt'} ↗</a>` : 'pasted list';
+  const src = deck.url ? `<a href="${esc(deck.url)}" target="_blank" rel="noopener">${deck.source === 'moxfield' ? 'Moxfield' : 'Archidekt'} ↗</a>` : deck.source === 'pool' || deck.source === 'precon' ? 'the deck editor' : 'pasted list';
   return `<div class="deck">
     <div class="deck-head">
       ${cmd.map(c => `<img class="deck-cmd" ${cardSrc(c.image, '150px')} alt="${esc(c.name)}" data-dc="${esc(c.name)}" tabindex="0" role="button">`).join('')}
@@ -2856,7 +2868,7 @@ async function renderPlayer(view) {
   const q = S.params.league ? `?league=${encodeURIComponent(S.params.league)}` : '';
   try { d = await api(`/players/${encodeURIComponent(id)}${q}`); } catch (err) { view.innerHTML = `<div class="empty"><h2>Player not found</h2><p>${esc(err.message)}</p><p><a href="#league">Back to the league</a></p></div>`; return; }
   if (S.route !== 'player' || S.params.id !== id) return;
-  const { player, league, stats, deck } = d;
+  const { player, league, stats, deck, deckHidden } = d;
   const t = stats.totals;
   const mine = player.id === S.me.id;
   const scope = league ? league.id : 'all';
@@ -2901,7 +2913,7 @@ async function renderPlayer(view) {
       <tbody>${stats.recent.map(p => `<tr><td><b>${esc(p.name)}</b><div class="small muted">${fmtDate(p.at)}</div></td><td>${p.won ? `<span class="res w">W</span>` : `<span class="res l">L</span> <span class="small muted">${esc(p.winner || '—')}</span>`}${p.vote ? ` ${I.vote}` : ''}</td><td class="small">${esc(p.precon) || '<span class="dim">—</span>'}</td><td class="small">${p.others.map(esc).join(', ')}</td><td class="small">${esc(p.spun || '—')}</td></tr>`).join('')}</tbody></table></section>` : ''}
     ` : `<div class="panel muted">${league ? `No finished pods in ${esc(league.name)} yet.` : 'No finished pods yet.'}</div>`}
     <section class="panel" style="margin-top:16px"><h2>Deck</h2>
-      ${deck ? deckHtml(deck, { mine }) : `<p class="muted">${mine ? 'You haven\'t added your deck list yet. <a href="#account">Import it from Moxfield, Archidekt or a pasted list</a>.' : 'No deck list yet.'}</p>`}
+      ${deck ? deckHtml(deck, { mine }) : `<p class="muted">${mine ? 'You haven\'t added your deck list yet. <a href="#account">Import it from Moxfield, Archidekt or a pasted list</a>.' : deckHidden ? 'This league keeps decks private.' : 'No deck list yet.'}</p>`}
     </section>`;
   wirePulls(view, stats.bestPulls);
   if (deck) wireDeck(view, deck);

@@ -8,7 +8,8 @@ import { officialName } from './precons.js';
 
 export const LEAGUE_MIN = 3;
 export const LEAGUE_MAX = 16;
-export const DEFAULT_RULES = { winnerPacks: 3, loserPacks: 2, absentPacks: 1, voteBonus: 1 };
+// showDecks: league members can see each other's decks (Pools and player pages).
+export const DEFAULT_RULES = { winnerPacks: 3, loserPacks: 2, absentPacks: 1, voteBonus: 1, showDecks: true };
 export const RULE_LIMITS = { winnerPacks: [0, 10], loserPacks: [0, 10], absentPacks: [0, 5], voteBonus: [0, 5] };
 
 const now = () => new Date().toISOString();

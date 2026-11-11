@@ -50,7 +50,8 @@ and packs live.
   commander, colour identity, mana curve and card types.
 - **Discord.** Finished pods, season recaps and announcements can be posted to a Discord channel.
 - **Suggest a feature.** Players send ideas and bug reports and can see the replies.
-- **League tools.** Whoever starts a league can set its rules and manage its players. Site admins
+- **League tools.** Whoever starts a league can set its rules (pack counts, the vote, and whether
+  players can see each other's decks) and manage its players. Site admins
   can hand out packs, fix finished pods, post announcements and undo their own changes.
 - **No prices anywhere.** Cards are for playing, not for trading on value.
 

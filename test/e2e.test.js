@@ -240,7 +240,7 @@ test('starting a league brings in every player who is not in one', async () => {
   assert.equal(league.status, 'active');
   assert.match(league.code, /^[A-HJ-NP-Z2-9]{6}$/, 'a 6-character invite code');
   assert.deepEqual(league.members.map(m => m.username).sort(), ['Dan', 'Eve', 'Joe', 'Mike', 'Nick'], 'every player, never the admin');
-  assert.deepEqual(league.rules, { winnerPacks: 3, loserPacks: 2, absentPacks: 1, voteBonus: 1 });
+  assert.deepEqual(league.rules, { winnerPacks: 3, loserPacks: 2, absentPacks: 1, voteBonus: 1, showDecks: true });
   assert.deepEqual(league.limits, { min: 3, max: 16, podMin: 3, podMax: 4 });
   S.league = league.id; S.code = league.code;
   for (const [c, precon] of [[nick, 'Animated Army'], [mike, 'Death Toll'], [joe, 'Joe Precon'], [dan, 'Dan Precon'], [eve, 'Eve Precon']]) await ok(c.put(`/api/leagues/${league.id}/precon`, { precon }));
@@ -843,6 +843,18 @@ test('deck lists: pasted or linked, looked up on Scryfall, shown on the player p
   const less = (await ok(joe.post('/api/deck/cards', { remove: `pool:${forest.poolId}` }))).deck;
   assert.equal(less.count, 6, 'one Forest out');
   assert.equal((await ok(joe.post('/api/deck/cards', { add: `pool:${forest.poolId}` }))).deck.count, 7, 'and back in');
+  // Others see the latest deck, unless the league admin makes decks private.
+  assert.equal((await ok(nick.get(`/api/deck?player=${S.u.Joe.id}`))).deck.count, 7, "another player sees Joe's latest deck");
+  const hide = await ok(nick.put(`/api/leagues/${S.league}`, { rules: { showDecks: false } }));
+  assert.equal(hide.league.rules.showDecks, false, 'the league admin turns it off');
+  assert.equal(hide.league.rules.winnerPacks, 3, 'other rules unchanged');
+  assert.deepEqual(await ok(nick.get(`/api/deck?player=${S.u.Joe.id}`)), { deck: null, hidden: true }, 'hidden in Pools');
+  const joePage = await ok(nick.get(`/api/players/${S.u.Joe.id}`));
+  assert.deepEqual([joePage.deck, joePage.deckHidden], [null, true], "and on the player page");
+  assert.equal((await ok(joe.get(`/api/players/${S.u.Joe.id}`))).deck.count, 7, 'Joe still sees his own');
+  assert.equal((await ok(admin.get(`/api/deck?league=${S.league}&player=${S.u.Joe.id}`))).deck.count, 7, 'and so does the main admin account');
+  assert.equal((await joe.put(`/api/leagues/${S.league}`, { rules: { showDecks: true } })).status, 403, 'players cannot change it');
+  await ok(nick.put(`/api/leagues/${S.league}`, { rules: { showDecks: true } }));
 });
 
 test('admin log: a deleted card is kept for undo and comes back exactly', async () => {

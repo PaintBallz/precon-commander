@@ -209,7 +209,7 @@ function summary(cards) {
 function rowOf(r) {
   if (!r) return null;
   const d = JSON.parse(r.data);
-  return { name: r.name, source: r.source, url: r.url || null, updatedAt: r.updated_at, ...d, ...summary(d.cards) };
+  return { name: r.name, source: r.source, url: r.url || null, updatedAt: r.updated_at, leagueId: r.league_id || null, ...d, ...summary(d.cards) };
 }
 // One league's deck, or (with no league) the player's most recently updated one.
 export const getDeck = (userId, leagueId) => rowOf(leagueId
