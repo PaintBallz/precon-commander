@@ -332,6 +332,7 @@ function render() {
   S.stopReveal?.(); S.stopReveal = null;
   if (!S.me || S.me.mustChange) { showAuth(); return; }
   queueMicrotask(syncWatch);
+  document.body.dataset.route = S.route; // lets a tab change the page layout (Pools goes full width on computers)
   $('#top').hidden = false;
   $$('#tabs a').forEach(a => a.classList.toggle('active', a.dataset.tab === (S.route === 'player' || S.route === 'recap' || S.route === 'join' ? 'league' : S.route)));
   layoutTabs();
