@@ -782,6 +782,25 @@ test('deck lists: pasted or linked, looked up on Scryfall, shown on the player p
   assert.equal((await ok(joe.get('/api/deck'))).deck, null);
   const again = (await ok(joe.post('/api/deck', { text: "Commander\n1 Atraxa, Praetors' Voice\nDeck\n1 Sol Ring" }))).deck;
   assert.deepEqual(again.commanders, ["Atraxa, Praetors' Voice"], 'a "Commander" section marks the commander');
+  // Deck editor: pool cards swap in and out; cut precon cards come back.
+  const mine = (await ok(joe.get('/api/pools'))).pools.find(p => p.username === 'Joe').packs.flatMap(k => k.cards);
+  const other = (await ok(joe.get('/api/pools'))).pools.find(p => p.username !== 'Joe' && p.packs.length).packs[0].cards[0];
+  const pc = mine.find(c => c.name !== 'Sol Ring');
+  const added = (await ok(joe.post('/api/deck/cards', { add: `pool:${pc.id}` }))).deck;
+  assert.ok(added.cards.some(c => c.poolId === pc.id && c.name === pc.name && c.image), 'a pool card goes in with its picture');
+  assert.equal((await joe.post('/api/deck/cards', { add: `pool:${pc.id}` })).status, 409, 'each pool card goes in once');
+  assert.equal((await joe.post('/api/deck/cards', { add: `pool:${other.id}` })).status, 404, "someone else's pool card can't go in");
+  assert.equal((await joe.post('/api/deck/cards', { add: 'base:Black Lotus' })).status, 404, 'only cards from your precon list come back');
+  const cut = (await ok(joe.post('/api/deck/cards', { remove: 'base:Sol Ring' }))).deck;
+  assert.ok(!cut.cards.some(c => c.name === 'Sol Ring' && !c.poolId), 'a precon card can be cut');
+  assert.ok(cut.base.some(c => c.name === 'Sol Ring'), 'and is kept in the starting list');
+  const back = (await ok(joe.post('/api/deck/cards', { add: 'base:Sol Ring' }))).deck;
+  assert.ok(back.cards.some(c => c.name === 'Sol Ring'), 'and can be put back');
+  assert.equal((await joe.post('/api/deck/cards', { add: 'base:Sol Ring' })).status, 409, 'but only as many as the precon had');
+  const out = (await ok(joe.post('/api/deck/cards', { remove: `pool:${pc.id}` }))).deck;
+  assert.ok(!out.cards.some(c => c.poolId === pc.id), 'a pool card goes back to the pool');
+  assert.equal((await ok(joe.get('/api/pools'))).pools.find(p => p.username === 'Joe').packs.flatMap(k => k.cards).length, mine.length, 'the pool itself never changes');
+  assert.equal((await joe.post('/api/deck/start')).status, 404, "'Joe Precon' isn't an official precon, so there's no list to load");
 });
 
 test('admin log: a deleted card is kept for undo and comes back exactly', async () => {

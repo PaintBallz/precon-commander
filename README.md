@@ -41,8 +41,11 @@ and packs live.
 - **Season recap** with the champion, awards (Most Wins, Kingslayer, Mythic Magnet and more),
   top pulls and final standings, ready to paste into Discord.
 - **A precon for each league**, locked once saved, with a commander picture you can change any time. Admins can allow a change, and players can ask for one.
-- **Deck lists** from a Moxfield or Archidekt link or a pasted list, shown with the commander,
-  colour identity, mana curve and card types.
+- **Deck editor** in the Pools tab: your deck as stacks of card pictures, starting from your
+  precon's official list, with your pool in a tray to swap cards in and out. It flags decks that
+  aren't 100 cards, have duplicates or go outside the commander's colours.
+- **Deck lists** can also come from a Moxfield or Archidekt link or a pasted list, shown with the
+  commander, colour identity, mana curve and card types.
 - **Discord.** Finished pods, season recaps and announcements can be posted to a Discord channel.
 - **Suggest a feature.** Players send ideas and bug reports and can see the replies.
 - **League tools.** Whoever starts a league can set its rules and manage its players. Site admins

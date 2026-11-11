@@ -26,10 +26,10 @@ import {
   logEvent, leagueEvents, migrateToLeagues, leaguesOf,
   memberRow, hasPrecon, lockPrecon, allowPreconChange, setPreconRequest, setCommander, preconTakenBy,
 } from './leagues.js';
-import { getBoosterSets, BOOSTER_SET_TYPES, findCard, getPreconNames } from './scryfall.js';
+import { getBoosterSets, BOOSTER_SET_TYPES, findCard, getPreconNames, findPrecon } from './scryfall.js';
 import { openPack, hasRealPack, realPackKind, localPackSets, sheetOdds } from './packs.js';
 import { requireAuth, requireAdmin, authRoutes, seedAdmin, listUsers, getUser, selfUser, deleteAccount } from './auth.js';
-import { importDeck, editDeck, getDeck, deleteDeck, DeckError } from './decks.js';
+import { importDeck, editDeck, getDeck, deleteDeck, DeckError, startFromPrecon, changeDeck } from './decks.js';
 import { playerStats, seasonRecap } from './stats.js';
 import { discordInvite, podFinishedPost, leagueEndedPost } from './discord.js';
 import { cached, cachedSync, clearCache } from './cache.js';
@@ -1206,7 +1206,38 @@ function deckLeague(req) {
 }
 app.get('/api/deck', wrap(async (req, res) => {
   const l = viewLeague(req);
-  res.json({ deck: l && isMember(l.id, req.user.id) ? getDeck(req.user.id, l.id) : null });
+  const member = l && isMember(l.id, req.user.id);
+  const out = { deck: member ? getDeck(req.user.id, l.id) : null };
+  // The deck editor also wants to know if the saved precon is an official one it can load.
+  if (member && req.query.editor) {
+    const precon = memberRow(l.id, req.user.id)?.precon || '';
+    out.precon = precon;
+    out.officialPrecon = precon ? (await findPrecon(precon))?.name || null : null;
+  }
+  res.json(out);
+}));
+const deckLookups = req => {
+  const recent = (deckImports.get(req.user.id) || []).filter(t => Date.now() - t < 3600e3);
+  if (recent.length >= 15) throw new HttpError(429, 'That\'s a lot of imports. Try again in an hour.');
+  deckImports.set(req.user.id, [...recent, Date.now()]);
+};
+// Start (or start over) from the official list of the precon saved for this league.
+app.post('/api/deck/start', wrap(async (req, res) => {
+  const l = deckLeague(req);
+  const precon = memberRow(l.id, req.user.id)?.precon;
+  if (!precon) throw new HttpError(409, 'Save your precon on the League tab first.');
+  deckLookups(req);
+  const deck = await startFromPrecon(req.user.id, l.id, precon).catch(deckFail);
+  broadcast('state');
+  res.json({ deck });
+}));
+// Deck editor: { add: 'pool:<id>' | 'base:<name>' } or { remove: <key> }.
+app.post('/api/deck/cards', wrap(async (req, res) => {
+  const l = deckLeague(req);
+  const b = req.body || {};
+  const pool = poolCards(l.id).filter(r => r.user_id === req.user.id);
+  const deck = await changeDeck(req.user.id, l.id, { add: b.add ? String(b.add).slice(0, 200) : null, remove: b.remove ? String(b.remove).slice(0, 200) : null, pool }).catch(deckFail);
+  res.json({ deck });
 }));
 app.post('/api/deck', wrap(async (req, res) => {
   // Each import asks Scryfall (and maybe a deck site) for up to ~4 lookups.

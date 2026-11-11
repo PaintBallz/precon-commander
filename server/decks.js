@@ -7,7 +7,7 @@
 // fixed public API addresses (the link just supplies the deck id), so a link
 // can't make the server request anything else.
 import { db } from './db.js';
-import { fetchCollection } from './scryfall.js';
+import { fetchCollection, getPreconDeck } from './scryfall.js';
 
 db.exec(`CREATE TABLE IF NOT EXISTS decks (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -227,7 +227,7 @@ export const deleteDeck = (userId, leagueId) => db.prepare('DELETE FROM decks WH
 function save(userId, leagueId, deck) {
   db.prepare(`INSERT INTO decks (user_id, league_id, name, source, url, data, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
               ON CONFLICT(user_id, league_id) DO UPDATE SET name = excluded.name, source = excluded.source, url = excluded.url, data = excluded.data, updated_at = excluded.updated_at`)
-    .run(userId, leagueId, deck.name, deck.source, deck.url || null, JSON.stringify({ cards: deck.cards, missing: deck.missing }), new Date().toISOString());
+    .run(userId, leagueId, deck.name, deck.source, deck.url || null, JSON.stringify({ cards: deck.cards, missing: deck.missing, base: deck.base || null }), new Date().toISOString());
   return getDeck(userId, leagueId);
 }
 
@@ -244,7 +244,49 @@ export async function importDeck(userId, leagueId, { url, text, name }) {
   const { cards, missing } = await resolve(entries);
   const commanders = cards.filter(c => c.board === 'commander');
   deckName = String(name || deckName || commanders.map(c => c.name.split(' // ')[0]).join(' & ') || 'My deck').trim().slice(0, 80);
-  return save(userId, leagueId, { name: deckName, source, url: link, cards, missing });
+  return save(userId, leagueId, { name: deckName, source, url: link, cards, missing, base: cards });
+}
+
+// ---------- the deck editor (Pools tab) ----------
+// A deck = its starting list (base: the precon, from MTGJSON or an import)
+// plus pool cards swapped in. Each card has a key: pool cards by their pool
+// card id, precon cards by name. Cut precon cards can be put back.
+const keyOf = c => (c.poolId ? `pool:${c.poolId}` : `base:${c.name}`);
+const baseOf = d => d.base || d.cards.filter(c => !c.poolId);
+export async function startFromPrecon(userId, leagueId, precon) {
+  let got;
+  try { got = await getPreconDeck(precon); } catch { throw new DeckError(502, "Couldn't load the precon list right now. Try again in a minute."); }
+  if (!got) throw new DeckError(404, `"${precon}" isn't an official precon name, so there's no list to load. Import your list on the League tab instead.`);
+  const { cards, missing } = await resolve(got.entries);
+  return save(userId, leagueId, { name: got.name, source: 'precon', url: null, cards, missing, base: cards });
+}
+// pool: this player's pool_cards rows in the league.
+export async function changeDeck(userId, leagueId, { add, remove, pool }) {
+  const d = getDeck(userId, leagueId);
+  if (!d) throw new DeckError(404, 'Start your deck first.');
+  const base = baseOf(d), cards = d.cards;
+  if (remove) {
+    const i = cards.findIndex(c => keyOf(c) === remove);
+    if (i < 0) throw new DeckError(404, "That card isn't in your deck.");
+    if (cards[i].qty > 1) cards[i] = { ...cards[i], qty: cards[i].qty - 1 }; else cards.splice(i, 1);
+  } else if (add?.startsWith('pool:')) {
+    const id = Number(add.slice(5));
+    const pc = pool.find(r => r.id === id);
+    if (!pc) throw new DeckError(404, "That card isn't in your pool.");
+    if (cards.some(c => c.poolId === id)) throw new DeckError(409, 'That card is already in your deck.');
+    const [sf] = await fetchCollection([{ set: pc.set_code, collector_number: pc.number }]).catch(() => [null]);
+    const card = sf && sf.name === pc.name ? deckCard({ qty: 1, board: 'main', foil: !!pc.foil }, sf)
+      : { qty: 1, board: 'main', foil: !!pc.foil, name: pc.name, set: pc.set_code, number: pc.number, rarity: pc.rarity, type: pc.type || '', mana: '', cmc: 0, colors: [], ci: [], image: pc.image, back: pc.back || null, art: null, uri: pc.uri };
+    cards.push({ ...card, poolId: id });
+  } else if (add?.startsWith('base:')) {
+    const name = add.slice(5);
+    const b = base.find(c => c.name === name);
+    if (!b) throw new DeckError(404, "That card isn't from your precon.");
+    const have = cards.filter(c => !c.poolId && c.name === name);
+    if (have.reduce((n, c) => n + c.qty, 0) >= b.qty) throw new DeckError(409, 'All of those are already in your deck.');
+    if (have.length) have[0].qty++; else cards.push({ ...b, qty: 1 });
+  } else throw new DeckError(400, 'Pick a card to add or remove.');
+  return save(userId, leagueId, { name: d.name, source: d.source, url: d.url, cards, missing: d.missing, base });
 }
 
 // Pick (or clear) which cards are the commander(s), and rename the deck.
@@ -255,5 +297,5 @@ export function editDeck(userId, leagueId, { commanders, name }) {
     const want = new Set(commanders.slice(0, 2).map(String));
     for (const c of d.cards) c.board = want.has(c.name) ? 'commander' : 'main';
   }
-  return save(userId, leagueId, { name: name != null ? String(name).trim().slice(0, 80) || d.name : d.name, source: d.source, url: d.url, cards: d.cards, missing: d.missing });
+  return save(userId, leagueId, { name: name != null ? String(name).trim().slice(0, 80) || d.name : d.name, source: d.source, url: d.url, cards: d.cards, missing: d.missing, base: d.base });
 }

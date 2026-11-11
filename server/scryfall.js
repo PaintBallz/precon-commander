@@ -60,20 +60,39 @@ export async function findCard(name) {
 // MTGJSON's deck list. Cached for a week; if it can't be reached the field still
 // takes any name.
 const PRECON_TTL_MS = 7 * 24 * 3600 * 1000;
-export async function getPreconNames() {
-  const cached = kvGet('precon_names');
-  if (cached && Date.now() - cached.fetchedAt < PRECON_TTL_MS) return cached.names;
+async function preconList() {
+  const cached = kvGet('precon_list');
+  if (cached && Date.now() - cached.fetchedAt < PRECON_TTL_MS) return cached.decks;
   try {
     const res = await fetch('https://mtgjson.com/api/v5/DeckList.json', { headers: HEADERS, signal: AbortSignal.timeout(20000) });
     if (!res.ok) throw new Error(`MTGJSON ${res.status}`);
     const json = await res.json();
-    const names = [...new Set(json.data.filter(d => d.type === 'Commander Deck').map(d => d.name))].sort((a, b) => a.localeCompare(b));
-    kvSet('precon_names', { fetchedAt: Date.now(), names });
-    return names;
+    const decks = json.data.filter(d => d.type === 'Commander Deck').map(d => ({ name: d.name, file: d.fileName, date: d.releaseDate || '' }));
+    kvSet('precon_list', { fetchedAt: Date.now(), decks });
+    return decks;
   } catch (err) {
     console.warn('Could not refresh precon names:', err.message);
-    return cached?.names || [];
+    return cached?.decks || [];
   }
+}
+export async function getPreconNames() {
+  return [...new Set((await preconList()).map(d => d.name))].sort((a, b) => a.localeCompare(b));
+}
+// The official precon with this name (newest printing if it was reprinted), or null.
+export async function findPrecon(name) {
+  const n = String(name || '').trim().toLowerCase();
+  if (!n) return null;
+  return (await preconList()).filter(d => d.name.toLowerCase() === n).sort((a, b) => b.date.localeCompare(a.date))[0] || null;
+}
+// An official precon's card list from MTGJSON, as deck-import entries.
+export async function getPreconDeck(name) {
+  const d = await findPrecon(name);
+  if (!d || !/^[A-Za-z0-9_-]+$/.test(d.file)) return null;
+  const res = await fetch(`https://mtgjson.com/api/v5/decks/${d.file}.json`, { headers: HEADERS, signal: AbortSignal.timeout(20000) });
+  if (!res.ok) throw new Error(`MTGJSON ${res.status}`);
+  const j = (await res.json()).data || {};
+  const map = (list, board) => (list || []).map(c => ({ qty: c.count || 1, name: c.name, id: c.identifiers?.scryfallId, foil: !!c.isFoil, board }));
+  return { name: d.name, entries: [...map(j.commander, 'commander'), ...map(j.mainBoard, 'main')] };
 }
 
 const SETS_TTL_MS = 24 * 3600 * 1000;
