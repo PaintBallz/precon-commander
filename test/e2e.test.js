@@ -1532,6 +1532,19 @@ test('precons are per league: required, locked once saved, and reopened only by 
   await ok(wren.post(`/api/pods/${k.podId}/packs/${k.packId}/open`));
 
   // The commander picture is separate and never locks.
+  // The main admin account can set or clear any player's precon, in any league.
+  const yanPrecon = () => ok(zoe.get(`/api/pools?league=${league.id}`)).then(r => r.pools.find(p => p.username === 'Yan').packs.filter(k => k.kind === 'precon'));
+  assert.equal((await zoe.put(`${L}/members/${u.Yan.id}/precon`, { precon: 'Epsilon Deck' })).status, 403, 'a league admin cannot');
+  assert.equal((await admin.put(`${L}/members/${u.Yan.id}/precon`, { precon: 'Epsilan Deck' })).status, 400, 'official names only');
+  assert.equal((await admin.put(`${L}/members/${u.Yan.id}/precon`, { precon: 'Alpha Deck' })).status, 409, "not someone else's (Zoe has it)");
+  const set = (await ok(admin.put(`${L}/members/${u.Yan.id}/precon`, { precon: 'epsilon deck' }))).league.members.find(m => m.username === 'Yan');
+  assert.deepEqual([set.precon, set.preconLocked], ['Epsilon Deck', true]);
+  assert.deepEqual((await yanPrecon()).map(k => [k.note, k.cards.length]), [['Epsilon Deck', 7]], 'the old precon cards are swapped out');
+  const cleared = (await ok(admin.put(`${L}/members/${u.Yan.id}/precon`, { precon: '' }))).league.members.find(m => m.username === 'Yan');
+  assert.deepEqual([cleared.precon, cleared.preconLocked], ['', false]);
+  assert.equal((await yanPrecon()).length, 0, 'and cleared');
+  await ok(admin.put(`${L}/members/${u.Yan.id}/precon`, { precon: 'Beta Deck' }));
+  assert.ok((await ok(admin.get('/api/admin/log'))).entries.some(e => e.summary.includes("Yan's precon in Precon League")), 'in the admin log');
   if (LIVE_SCRYFALL) {
     const r = await ok(zoe.put(`${L}/commander`, { card: 'atraxa praetors' }));
     assert.equal(r.league.members.find(m => m.username === 'Zoe').commander.name, "Atraxa, Praetors' Voice");

@@ -527,6 +527,38 @@ app.post('/api/leagues/:id/members/:userId/precon/decline', wrap(async (req, res
   logEvent(league.id, 'precon', req.user.id, `${req.user.username} declined ${u.username}'s precon change.`);
   leagueReply(req, res, league);
 }));
+// The main admin account can set (or clear) any player's precon in any league.
+// Setting one locks it and swaps the precon cards in their pool.
+app.put('/api/leagues/:id/members/:userId/precon', wrap(async (req, res) => {
+  if (!req.user.adminAccount) throw new HttpError(403, "Only the main admin account can edit players' precons.");
+  const league = requireLeague(req.params.id);
+  const u = getUser(req.params.userId);
+  if (!u || !isMember(league.id, u.id)) throw new HttpError(404, `That player isn't in ${league.name}.`);
+  const typed = String(req.body?.precon || '').trim().slice(0, 80);
+  let precon = '';
+  if (typed) {
+    precon = officialName(typed);
+    if (!precon) {
+      if (!preconCount()) throw new HttpError(503, 'The list of precons is still downloading. Try again in a minute.');
+      throw new HttpError(400, `"${typed}" isn't an official precon name. Pick it from the suggestions.`);
+    }
+    const taken = preconTakenBy(league.id, precon, u.id);
+    if (taken) throw new HttpError(409, `${taken} already has ${precon} in ${league.name}. Each player needs their own precon.`);
+  }
+  const before = memberRow(league.id, u.id).precon || '';
+  if (precon === before) return leagueReply(req, res, league);
+  if (precon) lockPrecon(league.id, u.id, precon);
+  else db.prepare("UPDATE league_members SET precon = '', precon_locked = 0, precon_request = NULL WHERE league_id = ? AND user_id = ?").run(league.id, u.id);
+  const added = givePreconCards(league.id, u, precon);
+  for (const pod of activePods(league.id)) {
+    const seat = pod.players.find(p => p.id === u.id);
+    if (seat && seat.precon !== precon) { seat.precon = precon; savePod(pod); }
+  }
+  const text = precon ? `The admin set ${u.username}'s precon to ${precon}${added ? `, and its ${added} cards went into their pool` : ''}.` : `The admin cleared ${u.username}'s precon.`;
+  logEvent(league.id, 'precon', req.user.id, text);
+  logAdmin(req, { action: 'precon-edit', summary: `${u.username}'s precon in ${league.name}: ${before || 'none'} → ${precon || 'none'}.`, leagueId: league.id });
+  leagueReply(req, res, league);
+}));
 // The commander image isn't locked: players swap it whenever they change commander.
 const commanderLookups = new Map();
 app.put('/api/leagues/:id/commander', wrap(async (req, res) => {

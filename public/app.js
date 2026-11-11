@@ -681,6 +681,7 @@ async function renderLeague(view) {
         <div class="spread"><h2 style="margin:0">Players</h2><span class="small muted">${league.members.length}/${lim.max}</span></div>
         <div class="member-list">${league.members.map(m => `<div class="member">${commanderMini(m.commander)}<div class="member-info"><b>${plink(m.id, m.username)}</b>${m.leagueAdmin ? ' <span class="chip gold" title="Started the league: can change its rules and kick players">League admin</span>' : ''}${m.admin ? ' <span class="chip gold" title="A player with admin powers">admin</span>' : ''}${m.test ? ' <span class="chip" title="Cannot sign in; an admin plays for it">test player</span>' : ''}${m.id === S.me.id ? ' <span class="dim small">(you)</span>' : ''}<div class="small muted">${esc(m.precon) || 'No precon set'}${m.preconOk === false ? ' <span class="precon-bad" title="Not an official precon name, so its cards aren\'t in the pool. An admin can allow a change.">!</span>' : ''}${m.preconLocked ? ' <span class="dim">· locked</span>' : ''}</div>${m.preconRequest && league.canManage ? `<div class="small precon-req">Wants to change: ${esc(m.preconRequest.reason)}</div>` : ''}</div>
           ${league.canManage && active && m.preconRequest ? `<button class="btn gold sm" data-pallow="${m.id}">Allow</button><button class="btn ghost sm" data-pdecline="${m.id}">Decline</button>` : league.canManage && active && m.preconLocked ? `<button class="btn ghost sm" data-pallow="${m.id}" title="Let them save a different precon once">Allow change</button>` : ''}
+          ${isAdminAccount() && !m.test ? `<button class="btn ghost sm" data-pedit="${m.id}" title="Main admin: set or clear this player's precon">Edit precon</button>` : ''}
           ${league.canManage && active && m.id !== S.me.id ? `<button class="btn ghost sm" data-rmm="${m.id}" data-name="${esc(m.username)}" title="Kick from the league">✕</button>` : ''}</div>`).join('') || '<p class="muted">Nobody yet.</p>'}</div>
         ${isAdmin() && active ? `<div class="row" style="margin-top:10px">${candidates.length ? `<select class="input" id="addMember"><option value="">Add a player…</option>${candidates.map(c => `<option value="${c.id}">${esc(c.username)}</option>`).join('')}</select><button class="btn sm" id="addMemberBtn">Add</button>` : '<span class="small muted">Every player is already in a league.</span>'}</div>` : ''}
         ${isAdminAccount() && active && (league.members.length < 4 || league.members.some(m => m.test)) ? `<div class="test-tools">
@@ -902,6 +903,13 @@ function wirePrecon(view, league) {
     again(api(`${url}/commander`, { method: 'PUT', body: { card: cf.card.value } }).then(r => { toast('Commander card updated.', 'good'); return r; }));
   };
   $$('[data-pallow]', view).forEach(b => b.onclick = () => again(post(`${url}/members/${b.dataset.pallow}/precon/allow`)));
+  $$('[data-pedit]', view).forEach(b => b.onclick = async () => {
+    const m = league.members.find(x => x.id === b.dataset.pedit);
+    if (!S.preconNames?.length) { try { S.preconNames = (await api('/precons')).names; } catch (err) { fail(err); return; } }
+    const f = await formBox(`Edit ${esc(m.username)}'s precon`, `For ${esc(league.name)}. Pick an official precon name; saving locks it and puts its cards in their pool (replacing the old precon's). Leave it empty to clear it.`,
+      [{ name: 'precon', label: 'Precon', value: m.precon, placeholder: 'Start typing the precon name…', max: 80, suggest: S.preconNames }], 'Save precon');
+    if (f) again(api(`${url}/members/${m.id}/precon`, { method: 'PUT', body: { precon: f.precon } }).then(r => { S.pools = null; toast(f.precon.trim() ? `${esc(m.username)}'s precon saved.` : `${esc(m.username)}'s precon cleared.`, 'good'); return r; }));
+  });
   $$('[data-pdecline]', view).forEach(b => b.onclick = () => again(post(`${url}/members/${b.dataset.pdecline}/precon/decline`)));
   const deckBox = $('#deckBox', view);
   if (deckBox) renderDeckPanel(deckBox);
@@ -2994,7 +3002,7 @@ function formBox(title, body, fields, okLabel = 'Save', danger = false) {
       <h2 style="margin:0">${title}</h2>${body ? `<p class="muted" style="margin:0">${body}</p>` : ''}
       ${fields.map(f => `<label>${f.label}${f.type === 'select'
         ? `<select class="input" name="${f.name}">${f.options.map(o => `<option value="${esc(o.value)}" ${o.value === f.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>`
-        : `<input name="${f.name}" type="${f.type || 'text'}" value="${esc(f.value ?? '')}" placeholder="${esc(f.placeholder || '')}" maxlength="${f.max || 300}" ${f.required ? 'required' : ''}>`}</label>`).join('')}
+        : `<input name="${f.name}" type="${f.type || 'text'}" value="${esc(f.value ?? '')}" placeholder="${esc(f.placeholder || '')}" maxlength="${f.max || 300}" ${f.required ? 'required' : ''} ${f.suggest ? `list="fbx-${f.name}" autocomplete="off"` : ''}>${f.suggest ? `<datalist id="fbx-${f.name}">${f.suggest.map(o => `<option value="${esc(o)}"></option>`).join('')}</datalist>` : ''}`}</label>`).join('')}
       <div class="row" style="justify-content:flex-end"><button type="button" class="btn ghost" data-r="0">Cancel</button><button class="btn ${danger ? 'danger' : 'gold'}">${okLabel}</button></div>
     </form></div></div>`;
     m.hidden = false;
