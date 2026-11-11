@@ -913,3 +913,13 @@ form .fb-filter label.chip { display: inline-flex; gap: 6px; cursor: pointer; co
 .dl-btn:hover:not(:disabled), .dl-btn:focus-visible { background: var(--accent); color: #000; }
 .dl-btn:disabled { opacity: .3; cursor: not-allowed; }
 .de-undo { margin-left: auto; }
+/* ---------- Pools: smooth scrolling ----------
+   The pool grid never flips cards, so it skips the 3D layer each card has for
+   the pack-opening flip, and foils keep a still sheen instead of an endless
+   shimmer (which repainted them every frame). Pack opening is unchanged. */
+#poolCards .mcard { perspective: none; }
+#poolCards .mcard .flip { transform-style: flat; transition: none; }
+#poolCards .mcard .backface { display: none; }
+#poolCards .mcard.foil .face::after { animation: none; opacity: 1; background-position: 50% 0; }
+/* Deck editor: the stacked cards' edge shadow without blur (cheap to draw on ~200 cards). */
+.stack .dcard { box-shadow: 0 -2px 0 rgba(0, 0, 0, .6); }
