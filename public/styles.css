@@ -751,13 +751,15 @@ form .fb-filter label.chip { display: inline-flex; gap: 6px; cursor: pointer; co
 .cmd-hero img { display: block; width: 100%; border-radius: 11px; box-shadow: 0 8px 28px rgba(0,0,0,.6); }
 .cmd-hero.empty { aspect-ratio: 63 / 88; display: flex; align-items: center; justify-content: center; padding: 16px; text-align: center; color: var(--muted); border: 2px dashed var(--line2); border-radius: 11px; }
 .member .btn { white-space: nowrap; flex: none; }
-.member { flex-wrap: wrap; }
-.member-info { flex: 1 1 150px; min-width: 0; }
-/* Buttons stay together and drop under the name when the row is narrow. */
-.member-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-left: auto; max-width: 100%; }
-.member-acts:empty { display: none; }
 .cmd-mini { position: relative; flex: none; display: block; width: 44px; aspect-ratio: 63 / 88; }
 .cmd-mini > img:first-child { display: block; width: 100%; height: 100%; border-radius: 3px; }
+/* Players list: card on the left, name and precon beside it, small buttons under them. */
+.member { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 12px; row-gap: 6px; align-items: start; padding: 7px 10px; }
+.member > .cmd-mini { grid-row: 1 / span 2; width: 64px; }
+.member-info { grid-column: 2; min-width: 0; }
+.member-info .small { margin-top: 1px; }
+.member-acts { grid-column: 2; display: flex; flex-wrap: wrap; gap: 6px; }
+.member-acts .btn.sm { padding: 3px 9px; font-size: .74rem; letter-spacing: .04em; }
 .cmd-mini.none { display: flex; align-items: center; justify-content: center; color: var(--muted); border: 1px dashed var(--line2); border-radius: 3px; }
 .cmd-pop { display: none; position: absolute; z-index: 30; right: calc(100% + 10px); top: 50%; transform: translateY(-50%); width: 240px; max-width: none; border-radius: 11px; box-shadow: 0 8px 28px rgba(0,0,0,.7); pointer-events: none; }
 @media (hover: hover) and (min-width: 901px) { .cmd-mini:hover .cmd-pop { display: block; } }

@@ -823,7 +823,7 @@ function memberOptions(selected) {
 const myRow = league => league?.members.find(m => m.id === S.me.id) || null;
 const commanderThumb = c => c?.image ? `<a class="cmd-thumb" href="${esc(c.uri || '#')}" target="_blank" rel="noopener" title="${esc(c.name)}"><img ${cardSrc(c.image, '60px')} alt="${esc(c.name)}" loading="lazy"></a>` : '';
 const commanderMini = c => c?.image
-  ? `<a class="cmd-mini" href="${esc(c.uri || '#')}" target="_blank" rel="noopener" title="${esc(c.name)}"><img ${cardSrc(c.image, '44px')} alt="${esc(c.name)}" loading="lazy"><img class="cmd-pop" ${cardSrc(c.image, '240px')} alt="" loading="lazy"></a>`
+  ? `<a class="cmd-mini" href="${esc(c.uri || '#')}" target="_blank" rel="noopener" title="${esc(c.name)}"><img ${cardSrc(c.image, '64px')} alt="${esc(c.name)}" loading="lazy"><img class="cmd-pop" ${cardSrc(c.image, '240px')} alt="" loading="lazy"></a>`
   : '<span class="cmd-mini none" title="No commander picture yet">?</span>';
 function preconPanel(league, active) {
   const me = myRow(league);
