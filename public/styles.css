@@ -730,7 +730,9 @@ form .fb-filter label.chip { display: inline-flex; gap: 6px; cursor: pointer; co
 .deck-line { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 6px; padding: 2px 4px; font-size: .9rem; cursor: pointer; align-items: center; }
 .deck-line:hover, .deck-line:focus-visible { background: var(--panel2); }
 .deck-line .q { color: var(--muted); font-family: var(--mono); font-size: .8rem; }
-.deck-line .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.deck-line .n { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.deck-line .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tag-pack { flex: none; padding: 0 5px; border: 1px solid var(--accent); color: var(--accent2); font: 700 .66rem/1.5 var(--cond); letter-spacing: .05em; text-transform: uppercase; white-space: nowrap; }
 .deck-line .m { white-space: nowrap; }
 .deck-line .m { display: inline-flex; align-items: center; }
 .deck-line .m .ms { width: 14px; height: 14px; }

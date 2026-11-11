@@ -2834,7 +2834,10 @@ function wirePulls(view, cards) {
 const deckUrl = () => `/deck?league=${encodeURIComponent(S.league?.id || '')}`;
 const TYPE_ORDER = ['Creature', 'Planeswalker', 'Battle', 'Instant', 'Sorcery', 'Artifact', 'Enchantment', 'Land'];
 const typeOf = c => { const front = String(c.type).split(' // ')[0]; return TYPE_ORDER.find(t => front.includes(t)) || 'Other'; };
+// A card pulled from a pack (in the pool, but not one of the precon's own cards).
+const fromPack = c => !!c.poolId && !c.precon;
 function deckHtml(deck, { mine = false } = {}) {
+  const packCount = deck.cards.filter(fromPack).reduce((n, c) => n + c.qty, 0);
   const cmd = deck.cards.filter(c => c.board === 'commander');
   const main = deck.cards.filter(c => c.board !== 'commander');
   const spells = main.filter(c => typeOf(c) !== 'Land');
@@ -2850,7 +2853,7 @@ function deckHtml(deck, { mine = false } = {}) {
       <div class="deck-meta">
         <h3>${esc(deck.name)}</h3>
         <div class="deck-colors">${colorPips(deck.colors)}</div>
-        <div class="small muted">${deck.count} cards · avg. mana value ${avg.toFixed(2)} · from ${src} · updated ${fmtDate(deck.updatedAt)}</div>
+        <div class="small muted">${deck.count} cards${packCount ? ` · <span class="tag-pack">${packCount} from packs</span>` : ''} · avg. mana value ${avg.toFixed(2)} · from ${src} · updated ${fmtDate(deck.updatedAt)}</div>
         ${cmd.length ? '' : `<div class="small muted">${mine ? 'No commander marked: pick one in your Account page.' : 'No commander marked.'}</div>`}
         ${deck.missing?.length ? `<div class="small" style="color:var(--accent)">Not found on Scryfall: ${deck.missing.map(esc).join(', ')}</div>` : ''}
         <div class="row" style="margin-top:8px"><button class="btn sm" id="deckCopy">${I.copy} Copy list</button></div>
@@ -2861,7 +2864,7 @@ function deckHtml(deck, { mine = false } = {}) {
     </div>
     <div class="deck-types">${groups.map(([t, l]) => `<span class="chip">${t} <b>${l.reduce((n, c) => n + c.qty, 0)}</b></span>`).join('')}</div>
     <div class="deck-list">${groups.map(([t, l]) => `<div class="deck-group"><h4>${t} <span class="dim">(${l.reduce((n, c) => n + c.qty, 0)})</span></h4>
-      ${l.map(c => `<div class="deck-line" data-dc="${esc(c.name)}" tabindex="0" role="button"><span class="q">${c.qty}</span><span class="n">${esc(c.name)}${c.foil ? ' <span class="dim">✦</span>' : ''}</span><span class="m">${manaHtml(c.mana)}</span></div>`).join('')}</div>`).join('')}</div>
+      ${l.map(c => `<div class="deck-line" data-dc="${esc(c.name)}" tabindex="0" role="button"><span class="q">${c.qty}</span><span class="n"><span class="nm">${esc(c.name)}</span>${c.foil ? '<span class="dim">✦</span>' : ''}${fromPack(c) ? '<span class="tag-pack" title="Pulled from a pack, not part of the precon">From Packs</span>' : ''}</span><span class="m">${manaHtml(c.mana)}</span></div>`).join('')}</div>`).join('')}</div>
   </div>`;
 }
 function wireDeck(view, deck) {
