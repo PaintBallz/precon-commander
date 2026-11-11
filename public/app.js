@@ -2193,7 +2193,7 @@ async function renderPools(view) {
 // (and any precon cards you cut) in a tray below. Click a card to pick it and
 // use the bar, double-click a tray card to add it, or drag cards between the
 // tray and the stacks. Rule problems are listed and outlined, never blocked.
-const deckEd = { group: store.get('deckGroup', 'type'), sel: null, q: '', busy: false };
+const deckEd = { group: store.get('deckGroup', 'type'), sel: null, q: '', busy: false, undo: [] };
 const deckKey = c => (c.poolId ? `pool:${c.poolId}` : `base:${c.name}`);
 const isBasic = c => /\bBasic\b/.test(c.type || '');
 const TYPE_LABEL = { Creature: 'Creatures', Planeswalker: 'Planeswalkers', Battle: 'Battles', Instant: 'Instants', Sorcery: 'Sorceries', Artifact: 'Artifacts', Enchantment: 'Enchantments', Land: 'Lands' };
@@ -2208,6 +2208,8 @@ async function renderDeckEditor(box, pool) {
   try { r = await api('/deck?editor=1' + lq('&')); } catch (err) { box.innerHTML = ''; fail(err); return; }
   if (S.route !== 'pools' || !box.isConnected) return;
   deckEd.sel = null;
+  // Undo history belongs to one league's deck.
+  if (deckEd.undoFor !== (S.viewLeague || S.league?.id)) { deckEd.undo = []; deckEd.undoFor = S.viewLeague || S.league?.id; }
   paintDeckEditor(box, pool, r);
 }
 function paintDeckEditor(box, pool, r) {
@@ -2277,8 +2279,15 @@ function paintDeckEditor(box, pool, r) {
     const pulled = it.w !== 'cut' && it.c.poolId !== undefined ? !it.c.precon : it.w === 'pool' && !it.c.precon;
     return `<div class="dcard ${isBad ? 'bad' : ''} ${deckEd.sel === id ? 'sel' : ''} ${pulled ? 'from-pool' : ''}" data-sel="${esc(id)}" draggable="true" tabindex="0" role="button" title="${esc(it.c.name)}${pulled ? ' (pulled from a pack)' : ''}">
       <img ${cardSrc(it.c.image, '(max-width: 600px) 45vw, 160px')} alt="${esc(it.c.name)}" loading="lazy">
-      ${it.keys.length > 1 ? `<span class="dq">×${it.keys.length}</span>` : ''}
-      <button type="button" class="dstep ${inDeck ? 'minus' : 'plus'}" data-step="${esc(id)}" aria-label="${inDeck ? 'Take one out of your deck' : 'Put one in your deck'}: ${esc(it.c.name)}" title="${inDeck ? 'Take one out' : 'Put one in'}">${inDeck ? '−' : '+'}</button></div>`;
+      ${inDeck && isBasic(it.c) ? landStepper(it, id) : `${it.keys.length > 1 ? `<span class="dq">×${it.keys.length}</span>` : ''}
+      <button type="button" class="dstep ${inDeck ? 'minus' : 'plus'}" data-step="${esc(id)}" aria-label="${inDeck ? 'Take one out of your deck' : 'Put one in your deck'}: ${esc(it.c.name)}" title="${inDeck ? 'Take one out' : 'Put one in'}">${inDeck ? '−' : '+'}</button>`}</div>`;
+  }
+  // Basic lands in your deck: an always-there −/×N/+ (they have no mana cost to cover).
+  // + takes another copy from your pool, if you have one.
+  function landStepper(it, id) {
+    const spare = trayItems.find(t => t.c.name === it.c.name);
+    const name = esc(it.c.name);
+    return `<span class="dland"><button type="button" class="dl-btn" data-step="${esc(id)}" aria-label="One less ${name}" title="One less ${name}">−</button><b>×${it.keys.length}</b><button type="button" class="dl-btn" ${spare ? `data-step="${esc(idOf(spare))}" title="One more ${name}"` : `disabled title="No more ${name} in your pool"`} aria-label="One more ${name}">+</button></span>`;
   }
   const find = id => {
     if (!id) return null;
@@ -2307,7 +2316,7 @@ function paintDeckEditor(box, pool, r) {
       <div class="spread"><h3 class="de-label" style="margin:0">Your pool <span class="dim">${trayItems.reduce((n, it) => n + it.keys.length, 0)} not in your deck</span></h3><input type="search" id="deQ" placeholder="Search your pool…" value="${esc(deckEd.q)}"></div>
       <div class="stacks" id="deTray" data-drop="tray"></div>
     </div>
-    <div class="de-bar">${picked ? `<img ${cardSrc(picked.c.image, '40px')} alt=""><b>${esc(picked.c.name)}${picked.keys.length > 1 ? ` ×${picked.keys.length}` : ''}<span class="small muted">${where(picked)}</span></b>${picked.w === 'deck' ? `<button class="btn sm danger" data-act="step">− Take one out</button>${canLead ? `<button class="btn sm" data-act="lead">${I.crown} ${picked.c.board === 'commander' ? 'Not the commander' : 'Make commander'}</button>` : ''}` : `<button class="btn sm gold" data-act="step">+ Put one in</button>`}<button class="btn sm ghost" data-act="zoom">View card</button><button class="btn sm ghost" data-act="clear" aria-label="Unpick">${I.x}</button>` : `<span class="small muted">Use <b>+</b> and <b>−</b> on a card, drag cards between your deck and your pool, or click a card for more.</span>`}</div>`;
+    <div class="de-bar">${picked ? `<img ${cardSrc(picked.c.image, '40px')} alt=""><b>${esc(picked.c.name)}${picked.keys.length > 1 ? ` ×${picked.keys.length}` : ''}<span class="small muted">${where(picked)}</span></b>${picked.w === 'deck' ? `<button class="btn sm danger" data-act="step">− Take one out</button>${canLead ? `<button class="btn sm" data-act="lead">${I.crown} ${picked.c.board === 'commander' ? 'Not the commander' : 'Make commander'}</button>` : ''}` : `<button class="btn sm gold" data-act="step">+ Put one in</button>`}<button class="btn sm ghost" data-act="zoom">View card</button><button class="btn sm ghost" data-act="clear" aria-label="Unpick">${I.x}</button>` : `<span class="small muted">Hover over a card (or tap it) for <b>+</b> and <b>−</b> in its corner, drag cards between your deck and your pool, or click a card for more.</span>`}${deckEd.undo.length ? `<button class="btn sm ghost de-undo" data-act="undo" title="Undo: ${esc(deckEd.undo.at(-1).label)}">↶ Undo last change</button>` : ''}</div>`;
   const paintTray = () => {
     const q = deckEd.q.trim().toLowerCase();
     const hit = it => !q || it.c.name.toLowerCase().includes(q) || (it.c.type || '').toLowerCase().includes(q);
@@ -2315,15 +2324,26 @@ function paintDeckEditor(box, pool, r) {
     wireCards();
   };
   const redraw = () => paintDeckEditor(box, pool, r);
-  const act = async body => {
+  // Each change remembers how to undo it (the last 30, until you leave the editor).
+  const remember = (undo, label) => { deckEd.undo.push({ ...undo, label }); if (deckEd.undo.length > 30) deckEd.undo.shift(); };
+  const act = async (body, undo, label) => {
     if (deckEd.busy) return;
     deckEd.busy = true;
     box.classList.add('busy');
-    try { r.deck = (await post('/deck/cards' + lq(), body)).deck; redraw(); } catch (err) { fail(err); }
+    try { r.deck = (await post('/deck/cards' + lq(), body)).deck; if (undo) remember({ cards: undo }, label); redraw(); } catch (err) { fail(err); }
     finally { deckEd.busy = false; box.classList.remove('busy'); }
   };
   // One copy in or out: a deck card's last copy comes out, a pool card's first goes in.
-  const step = id => { const it = find(id); if (it) act(it.w === 'deck' ? { remove: it.keys.at(-1) } : { add: it.keys[0] }); };
+  const step = id => {
+    const it = find(id);
+    if (!it) return;
+    const k = it.w === 'deck' ? it.keys.at(-1) : it.keys[0];
+    if (it.w === 'deck') act({ remove: k }, { add: k }, `took out ${it.c.name}`);
+    else act({ add: k }, { remove: k }, `put in ${it.c.name}`);
+  };
+  const setLeaders = async (names, undoLabel, before) => {
+    try { r.deck = (await api('/deck' + lq(), { method: 'PUT', body: { commanders: names } })).deck; if (undoLabel) remember({ lead: before }, undoLabel); redraw(); } catch (err) { fail(err); }
+  };
   function wireCards() {
     $$('[data-sel]', box).forEach(el => {
       el.onclick = () => { deckEd.sel = deckEd.sel === el.dataset.sel ? null : el.dataset.sel; redraw(); };
@@ -2331,6 +2351,7 @@ function paintDeckEditor(box, pool, r) {
       el.ondragstart = e => { e.dataTransfer.setData('text/plain', el.dataset.sel); e.dataTransfer.effectAllowed = 'move'; };
     });
     $$('[data-step]', box).forEach(b => b.onclick = e => { e.stopPropagation(); step(b.dataset.step); });
+    $$('.dland', box).forEach(s => s.addEventListener('click', e => e.stopPropagation()));
   }
   // Drop pool cards on your deck to put them in, deck cards on your pool to take them out.
   $$('[data-drop]', box).forEach(zone => {
@@ -2356,10 +2377,15 @@ function paintDeckEditor(box, pool, r) {
     if (a === 'clear') { deckEd.sel = null; redraw(); }
     else if (a === 'zoom') cardModal({ ...picked.c, id: null });
     else if (a === 'step') step(deckEd.sel);
-    else if (a === 'lead') {
+    else if (a === 'undo') {
+      const u = deckEd.undo.pop();
+      if (!u) return;
+      if (u.cards) act(u.cards); else setLeaders(u.lead);
+      toast(`Undone: ${esc(u.label)}.`);
+    } else if (a === 'lead') {
       const now = deck.cards.filter(c => c.board === 'commander').map(c => c.name);
       const next = picked.c.board === 'commander' ? now.filter(n => n !== picked.c.name) : [...now, picked.c.name].slice(-2);
-      try { r.deck = (await api('/deck' + lq(), { method: 'PUT', body: { commanders: next } })).deck; redraw(); } catch (err) { fail(err); }
+      setLeaders(next, picked.c.board === 'commander' ? `unmarked ${picked.c.name} as commander` : `made ${picked.c.name} the commander`, now);
     }
   });
 }
@@ -2375,7 +2401,7 @@ async function renderOtherDeck(box, pool) {
 async function startDeck(box, pool, r, btn) {
   btn.disabled = true;
   btn.textContent = 'Loading the list…';
-  try { r.deck = (await post('/deck/start' + lq())).deck; deckEd.sel = null; paintDeckEditor(box, pool, r); toast('Your deck is ready to edit.', 'good'); }
+  try { r.deck = (await post('/deck/start' + lq())).deck; deckEd.sel = null; deckEd.undo = []; paintDeckEditor(box, pool, r); toast('Your deck is ready to edit.', 'good'); }
   catch (err) { fail(err); btn.disabled = false; btn.textContent = 'Try again'; }
 }
 

@@ -658,10 +658,16 @@ form .fb-filter label.chip { display: inline-flex; gap: 6px; cursor: pointer; co
 .dcard.sel { outline: 3px solid var(--accent); outline-offset: 1px; z-index: 5; }
 .dcard.bad::after { content: ""; position: absolute; inset: 0; border: 3px solid var(--danger); border-radius: inherit; pointer-events: none; }
 .dcard.from-pool::before { content: ""; position: absolute; left: 4px; top: 4px; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px #000; z-index: 1; }
-.dstep { position: absolute; right: 3px; top: 3px; z-index: 3; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 50%; font: 800 1.05rem/1 var(--cond); cursor: pointer; box-shadow: 0 0 0 2px #000; }
-.dstep.plus { background: var(--ok); color: #000; }
-.dstep.minus { background: var(--danger); color: #fff; }
-.dstep:hover, .dstep:focus-visible { transform: scale(1.12); }
+/* + and −: top right, see-through so the mana cost shows through, and only
+   there while you hover over the card, or it's picked or has keyboard focus
+   (on touch screens, tap a card to pick it first). */
+.dstep { position: absolute; right: 3px; top: 3px; z-index: 3; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; border-radius: 50%; font: 800 1.05rem/1 var(--cond); cursor: pointer; color: #fff; text-shadow: 0 0 3px #000, 0 0 2px #000; opacity: 0; pointer-events: none; transition: opacity .12s, background-color .12s; }
+.dstep.plus { background: rgba(29, 158, 117, .38); border: 1.5px solid rgba(159, 225, 203, .85); }
+.dstep.minus { background: rgba(226, 75, 74, .38); border: 1.5px solid rgba(247, 193, 193, .85); }
+.dcard:hover .dstep, .dcard:focus-within .dstep, .dcard.sel .dstep { opacity: 1; pointer-events: auto; }
+.dstep.plus:hover, .dstep.plus:focus-visible { background: rgba(29, 158, 117, .8); }
+.dstep.minus:hover, .dstep.minus:focus-visible { background: rgba(226, 75, 74, .8); }
+@media (hover: none) { .dcard:hover:not(.sel) .dstep { opacity: 0; pointer-events: none; } }
 .de-label { margin: 0 0 8px; font: 700 1rem var(--cond); letter-spacing: .05em; text-transform: uppercase; }
 .dq { position: absolute; right: 31px; top: 5px; z-index: 2; background: var(--accent); color: #000; font: 700 .75rem var(--mono); padding: 0 5px; }
 .de-bar { position: sticky; bottom: 0; z-index: 10; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 12px; margin-top: 14px; background: var(--panel); border-top: 2px solid var(--accent); }
@@ -890,3 +896,10 @@ form .fb-filter label.chip { display: inline-flex; gap: 6px; cursor: pointer; co
 .catchup div { display: grid; gap: 2px; }
 .catchup b { font-family: var(--cond); font-size: 1.3rem; letter-spacing: .02em; }
 .test-tools { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--line2); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+/* Basic lands in the deck editor: −/×N/+ */
+.dland { position: absolute; right: 3px; top: 3px; z-index: 3; display: flex; align-items: center; gap: 2px; padding: 1px; border-radius: 12px; background: rgba(0, 0, 0, .6); box-shadow: 0 0 0 1px rgba(255, 255, 255, .25); }
+.dland b { font: 700 .75rem var(--mono); color: #fff; padding: 0 3px; }
+.dl-btn { width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 50%; background: rgba(255, 255, 255, .16); color: #fff; font: 800 .95rem/1 var(--cond); cursor: pointer; }
+.dl-btn:hover:not(:disabled), .dl-btn:focus-visible { background: var(--accent); color: #000; }
+.dl-btn:disabled { opacity: .3; cursor: not-allowed; }
+.de-undo { margin-left: auto; }
