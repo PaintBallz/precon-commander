@@ -26,10 +26,11 @@ import {
   logEvent, leagueEvents, migrateToLeagues, leaguesOf,
   memberRow, hasPrecon, lockPrecon, allowPreconChange, setPreconRequest, setCommander, preconTakenBy,
 } from './leagues.js';
-import { getBoosterSets, BOOSTER_SET_TYPES, findCard, getPreconNames, findPrecon } from './scryfall.js';
+import { getBoosterSets, BOOSTER_SET_TYPES, findCard } from './scryfall.js';
+import { keepPreconsFresh, preconNames, preconCount, officialName, givePreconCards, fillMissingPreconCards } from './precons.js';
 import { openPack, hasRealPack, realPackKind, localPackSets, sheetOdds } from './packs.js';
 import { requireAuth, requireAdmin, authRoutes, seedAdmin, listUsers, getUser, selfUser, deleteAccount } from './auth.js';
-import { importDeck, editDeck, getDeck, deleteDeck, DeckError, startFromPrecon, changeDeck } from './decks.js';
+import { importDeck, editDeck, getDeck, deleteDeck, DeckError, startFromPool, changeDeck } from './decks.js';
 import { playerStats, seasonRecap } from './stats.js';
 import { discordInvite, podFinishedPost, leagueEndedPost } from './discord.js';
 import { cached, cachedSync, clearCache } from './cache.js';
@@ -266,6 +267,7 @@ function computeStandings(leagueId) {
   const row = (id, name) => rows.get(id) || rows.set(id, { id, name, active: false, pods: 0, wins: 0, voteWins: 0, packs: 0, sacrificed: 0, rares: 0, mythics: 0, missed: 0 }).get(id);
   const count = (s, packs) => {
     for (const k of packs) if (k.status === 'opened') {
+      if (k.kind === 'precon') continue; // the precon's own cards aren't pulls
       if (k.kind !== 'trade') s.packs++; // a trade pack only carries a moved card
       for (const c of k.cards) { if (c.rarity === 'mythic') s.mythics++; if (c.rarity === 'rare') s.rares++; }
     }
@@ -468,14 +470,20 @@ function myLeagueRow(req) {
 }
 const leagueReply = (req, res, league) => { broadcast('state', { leagueId: league.id }); res.json({ league: leagueView(req, getLeague(league.id)) }); };
 
-app.get('/api/precons', wrap(async (req, res) => res.json({ names: await getPreconNames() })));
+app.get('/api/precons', (req, res) => res.json({ names: preconNames() }));
 
 // Saving locks it for this league; only the league admin or a site admin can reopen it.
 app.put('/api/leagues/:id/precon', wrap(async (req, res) => {
   const { league, row } = myLeagueRow(req);
   if (row.precon_locked) throw new HttpError(409, 'Your precon is locked for this league. Ask the league admin or a site admin to allow a change.');
-  const precon = String(req.body?.precon || '').trim().slice(0, 80);
-  if (!precon) throw new HttpError(400, 'Enter your precon.');
+  const typed = String(req.body?.precon || '').trim().slice(0, 80);
+  if (!typed) throw new HttpError(400, 'Enter your precon.');
+  // Only official precon names: its cards go into the pool.
+  const precon = officialName(typed);
+  if (!precon) {
+    if (!preconCount()) throw new HttpError(503, 'The list of precons is still downloading. Try again in a minute.');
+    throw new HttpError(400, `"${typed}" isn't an official precon name. Type the name printed on the box (not your commander's name), exactly as spelled, and pick it from the suggestions.`);
+  }
   const taken = preconTakenBy(league.id, precon, req.user.id);
   if (taken) throw new HttpError(409, `${taken} already has ${precon} in this league. Each player needs their own precon.`);
   lockPrecon(league.id, req.user.id, precon);
@@ -484,7 +492,8 @@ app.put('/api/leagues/:id/precon', wrap(async (req, res) => {
     const seat = pod.players.find(p => p.id === req.user.id);
     if (seat && seat.precon !== precon) { seat.precon = precon; savePod(pod); }
   }
-  logEvent(league.id, 'precon', req.user.id, `${req.user.username} locked in ${precon}.`);
+  const added = givePreconCards(league.id, req.user, precon);
+  logEvent(league.id, 'precon', req.user.id, `${req.user.username} locked in ${precon}${added ? `, and its ${added} cards went into their pool` : ''}.`);
   leagueReply(req, res, league);
 }));
 app.post('/api/leagues/:id/precon/request', wrap(async (req, res) => {
@@ -1212,7 +1221,7 @@ app.get('/api/deck', wrap(async (req, res) => {
   if (member && req.query.editor) {
     const precon = memberRow(l.id, req.user.id)?.precon || '';
     out.precon = precon;
-    out.officialPrecon = precon ? (await findPrecon(precon))?.name || null : null;
+    out.officialPrecon = precon ? officialName(precon) : null;
   }
   res.json(out);
 }));
@@ -1226,8 +1235,8 @@ app.post('/api/deck/start', wrap(async (req, res) => {
   const l = deckLeague(req);
   const precon = memberRow(l.id, req.user.id)?.precon;
   if (!precon) throw new HttpError(409, 'Save your precon on the League tab first.');
-  deckLookups(req);
-  const deck = await startFromPrecon(req.user.id, l.id, precon).catch(deckFail);
+  const pool = poolCards(l.id).filter(r => r.user_id === req.user.id);
+  const deck = await Promise.resolve().then(() => startFromPool(req.user.id, l.id, precon, pool)).catch(deckFail);
   broadcast('state');
   res.json({ deck });
 }));
@@ -1259,6 +1268,9 @@ adminRoutes(app, { wrap, HttpError, broadcast, viewLeague, requireLeague, allSet
 tradeRoutes(app, { wrap, HttpError, broadcast, viewLeague });
 
 seedAdmin();
+// Official precon lists: downloaded once (new releases weekly). Then anyone who
+// locked in an official precon before its list was here gets its cards.
+keepPreconsFresh(() => { for (const leagueId of fillMissingPreconCards()) broadcast('state', { leagueId }); });
 migrateToLeagues(globalSettings());
 app.listen(PORT, () => {
   console.log(`Pre-Con Commander listening on :${PORT}`);

@@ -30,7 +30,32 @@ let server, serverLog = '';
 // A stand-in for Discord: catches the site's webhook posts.
 const HOOK_PORT = PORT - 1;
 const discordPosts = [];
+// It also stands in for MTGJSON: every precon name the tests use is an
+// "official" precon with a commander, a signet and five Forests (7 cards).
+const MOCK_PRECONS = ['Animated Army', 'Death Toll', 'Joe Precon', 'Dan Precon', 'Eve Precon', 'Fay Precon', 'Ivy Precon', 'Gus Precon', 'Lex Precon',
+  'Season 2 Nick', 'Season 2 Mike', 'Season 2 Joe', 'Alpha Deck', 'Beta Deck', 'Gamma Deck', 'Delta Deck', 'Epsilon Deck', 'Wren Deck', 'Other'];
+const fileOf = name => name.replace(/[^A-Za-z0-9]/g, '') + '_TST';
+const mockCard = (i, n, extra) => ({ count: 1, setCode: 'TST', number: `${i}${n}`, layout: 'normal', isFoil: false,
+  identifiers: { scryfallId: `00000000-0000-4000-8000-${String(i * 10 + n.length).padStart(12, '0')}` }, ...extra });
+const mockDeck = i => ({ data: {
+  commander: [mockCard(i, 'c', { name: `Commander of ${MOCK_PRECONS[i]}`, type: 'Legendary Creature — Human', manaValue: 3, manaCost: '{1}{G}{U}', colors: ['G', 'U'], colorIdentity: ['G', 'U'], rarity: 'mythic' })],
+  mainBoard: [mockCard(i, 's', { name: 'Mock Signet', type: 'Artifact', manaValue: 2, manaCost: '{2}', colors: [], colorIdentity: [], rarity: 'uncommon' }),
+    mockCard(i, 'f', { name: 'Forest', count: 5, type: 'Basic Land — Forest', manaValue: 0, manaCost: '', colors: [], colorIdentity: ['G'], rarity: 'common' })],
+} });
+let mockDecksServed = 0;
 const hookServer = http.createServer((req, res) => {
+  if (req.url === '/mtgjson/DeckList.json') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ data: [...MOCK_PRECONS.map((name, i) => ({ name, fileName: fileOf(name), code: 'TST', releaseDate: '2024-01-01', type: 'Commander Deck' })),
+      { name: 'Not A Commander Deck', fileName: 'Nope_TST', type: 'Starter Kit' }] }));
+  }
+  const m = req.url.match(/^\/mtgjson\/decks\/(\w+)\.json$/);
+  if (m) {
+    const i = MOCK_PRECONS.findIndex(n => fileOf(n) === m[1]);
+    mockDecksServed++;
+    res.writeHead(i < 0 ? 404 : 200, { 'Content-Type': 'application/json' });
+    return res.end(i < 0 ? '{}' : JSON.stringify(mockDeck(i)));
+  }
   let b = ''; req.on('data', d => { b += d; });
   req.on('end', () => { discordPosts.push({ path: req.url, body: JSON.parse(b || '{}') }); res.writeHead(204); res.end(); });
 });
@@ -85,13 +110,17 @@ before(async () => {
     env: { ...process.env, PORT: String(PORT), DATA_DIR, SMTP_HOST: '', MAIL_FROM: '', CF_EMAIL_TOKEN: '',
       // The whole suite runs from one IP; the last test checks the heavy limit.
       RATE_ALL_PER_MIN: '100000', RATE_API_PER_MIN: '100000', RATE_HEAVY_PER_MIN: '200', SIGNUPS_PER_HOUR: '20', EMAIL_KEY: Buffer.alloc(32, 7).toString('base64'), ADMIN_INITIAL_PASSWORD: 'changeme',
-      DISCORD_WEBHOOK_URL: `http://127.0.0.1:${HOOK_PORT}/api/webhooks/123/test-token`, DISCORD_INVITE: 'https://discord.gg/pcctest' },
+      DISCORD_WEBHOOK_URL: `http://127.0.0.1:${HOOK_PORT}/api/webhooks/123/test-token`, DISCORD_INVITE: 'https://discord.gg/pcctest',
+      MTGJSON_BASE: `http://127.0.0.1:${HOOK_PORT}/mtgjson`, MTGJSON_DELAY_MS: '0' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   server.stdout.on('data', d => { serverLog += d; });
   server.stderr.on('data', d => { serverLog += d; });
   for (let i = 0; i < 100; i++) {
-    try { if ((await fetch(BASE + '/healthz')).ok) return; } catch { /* not up yet */ }
+    try {
+      // Up, and the precon lists are downloaded.
+      if ((await fetch(BASE + '/healthz')).ok && mockDecksServed >= MOCK_PRECONS.length) { await new Promise(r => setTimeout(r, 300)); return; }
+    } catch { /* not up yet */ }
     await new Promise(r => setTimeout(r, 100));
   }
   throw new Error('Test server did not start:\n' + serverLog);
@@ -447,13 +476,13 @@ test('only the winner spins, once; league members who missed it get a pack of th
   assert.ok(live, 'spin event reached the other device');
   assert.ok(REAL.includes(spin.setCode), 'landed on a set that is on the wheel');
   for (const p of pod.players) {
-    assert.equal(p.packs.length, p.awarded, `${p.name} has all their packs`);
+    assert.equal(p.packs.filter(k => k.kind !== 'precon').length, p.awarded, `${p.name} has all their packs`);
     assert.ok(p.packs.every(k => k.set.code === spin.setCode && k.status === 'ready' && k.source === 'wheel'), `${p.name}'s packs are all the spun set`);
   }
   assert.deepEqual(pod.absentees.map(a => a.name).sort(), ['Eve', 'Fay'], 'every league member not in the pod (never other leagues)');
   for (const a of pod.absentees) {
-    assert.equal(a.packs.length, 1, `${a.name} gets one pack for the missed pod`);
-    assert.equal(a.packs[0].set.code, spin.setCode, 'by default it is the spun set');
+    assert.equal(a.packs.filter(k => k.kind !== 'precon').length, 1, `${a.name} gets one pack for the missed pod`);
+    assert.equal(a.packs.filter(k => k.kind !== 'precon')[0].set.code, spin.setCode, 'by default it is the spun set');
   }
   const again = await nick.post(`/api/pods/${S.pod.id}/spin`);
   assert.equal(again.status, 409, 'there is only one spin per pod');
@@ -464,7 +493,7 @@ test('only the winner spins, once; league members who missed it get a pack of th
 });
 
 test('a spun pack opens as that set\'s regular booster (never Collector)', async () => {
-  const k = player(S.pod, 'Nick').packs[0];
+  const k = player(S.pod, 'Nick').packs.filter(k => k.kind !== 'precon')[0];
   assert.equal((await mike.post(`/api/pods/${S.pod.id}/packs/${k.id}/open`)).status, 403, 'you can only open your own packs');
   const { pack } = await ok(nick.post(`/api/pods/${S.pod.id}/packs/${k.id}/open`));
   assert.equal(pack.status, 'opened');
@@ -483,7 +512,7 @@ test('a spun pack opens as that set\'s regular booster (never Collector)', async
 });
 
 test('an absent player opens their own pack (and can\'t sacrifice a single pack)', async () => {
-  const evePack = S.pod.absentees.find(a => a.name === 'Eve').packs[0];
+  const evePack = S.pod.absentees.find(a => a.name === 'Eve').packs.filter(k => k.kind !== 'precon')[0];
   assert.equal((await mike.post(`/api/pods/${S.pod.id}/packs/${evePack.id}/open`)).status, 403, 'not Mike\'s pack');
   assert.equal((await eve.post(`/api/pods/${S.pod.id}/packs/${evePack.id}/sacrifice`)).status, 409, 'nothing to give up');
   const { pack } = await ok(eve.post(`/api/pods/${S.pod.id}/packs/${evePack.id}/open`));
@@ -502,19 +531,19 @@ test('card images load from Scryfall', { skip: !LIVE_SCRYFALL && 'mock Scryfall'
 
 test('Sacrifice a Pack gives up one spun pack to pick any set for another', async () => {
   const mk = () => player(S.pod, 'Mike');
-  const k = mk().packs[0];
+  const k = mk().packs.filter(k => k.kind !== 'precon')[0];
   assert.equal((await joe.post(`/api/pods/${S.pod.id}/packs/${k.id}/sacrifice`)).status, 403, 'not your pack');
   let { pod } = await ok(mike.post(`/api/pods/${S.pod.id}/packs/${k.id}/sacrifice`));
   S.pod = pod;
   assert.equal(mk().sacrificed, 1);
-  assert.equal(mk().packs.length, 2, 'Mike: 3 packs (2 + vote bonus) − 1 sacrificed');
-  assert.equal(mk().packs[0].status, 'choosing');
+  assert.equal(mk().packs.filter(k => k.kind !== 'precon').length, 2, 'Mike: 3 packs (2 + vote bonus) − 1 sacrificed');
+  assert.equal(mk().packs.filter(k => k.kind !== 'precon')[0].status, 'choosing');
   assert.equal((await mike.post(`/api/pods/${S.pod.id}/packs/${k.id}/open`)).status, 409, 'cannot open before choosing');
   assert.equal((await mike.post(`/api/pods/${S.pod.id}/packs/${k.id}/choose`, { setCode: 'nope' })).status, 400);
 
   ({ pod } = await ok(mike.post(`/api/pods/${S.pod.id}/packs/${k.id}/choose`, { setCode: 'blb' })));
   S.pod = pod;
-  const pack = mk().packs[0];
+  const pack = mk().packs.filter(k => k.kind !== 'precon')[0];
   assert.equal(pack.set.code, 'blb');
   assert.equal(pack.status, 'ready');
   assert.equal(pack.wheelSet.code, S.spin.setCode, 'the spun set is kept for history');
@@ -530,10 +559,10 @@ test('cannot sacrifice without another spun pack to give up', async () => {
   await ok(dan.post(`/api/pods/${S.pod.id}/packs/${a.id}/open`));
   assert.equal((await dan.post(`/api/pods/${S.pod.id}/packs/${b.id}/sacrifice`)).status, 409);
   // Joe sacrifices; his second pack is gone, so he can't sacrifice again.
-  const j = player(S.pod, 'Joe').packs[0];
+  const j = player(S.pod, 'Joe').packs.filter(k => k.kind !== 'precon')[0];
   const { pod } = await ok(joe.post(`/api/pods/${S.pod.id}/packs/${j.id}/sacrifice`));
   S.pod = pod;
-  assert.equal(player(pod, 'Joe').packs.length, 1);
+  assert.equal(player(pod, 'Joe').packs.filter(k => k.kind !== 'precon').length, 1);
   S.joePack = j.id;
 });
 
@@ -562,7 +591,7 @@ test('generated booster for a modern set (Jumpstart): land slot + rare/mythic', 
   assert.equal((await nick.post(`/api/pods/${S.pod.id}/award`, { playerId: S.u.Nick.id, delta: 1 })).status, 403, 'only the admin adjusts packs');
   let { pod } = await ok(admin.post(`/api/pods/${S.pod.id}/award`, { playerId: S.u.Nick.id, delta: 1 }));
   const nk = player(pod, 'Nick');
-  assert.equal(nk.packs.length, 4, 'admin +1 adds a pack of the spun set');
+  assert.equal(nk.packs.filter(k => k.kind !== 'precon').length, 4, 'admin +1 adds a pack of the spun set');
   assert.equal(nk.packs.at(-1).set.code, S.spin.setCode);
   const k = nk.packs.find(x => x.status === 'ready');
   ({ pod } = await ok(nick.post(`/api/pods/${S.pod.id}/packs/${k.id}/sacrifice`)));
@@ -597,18 +626,22 @@ test('pools track each player\'s opened cards in the league, missed pods include
   S.pod = pod;
   for (const name of ['Nick', 'Mike', 'Joe', 'Dan']) {
     const opened = player(pod, name).packs.filter(k => k.status === 'opened');
-    assert.equal(pool(name).packs.length, opened.length, `${name}'s pool has every opened pack (running pod)`);
-    assert.equal(pool(name).packs.flatMap(k => k.cards).length, opened.flatMap(k => k.cards).length);
+    const pulled = pool(name).packs.filter(k => k.kind !== 'precon');
+    assert.equal(pulled.length, opened.length, `${name}'s pool has every opened pack (running pod)`);
+    assert.equal(pulled.flatMap(k => k.cards).length, opened.flatMap(k => k.cards).length);
   }
-  assert.equal(pool('Nick').precon, 'Animated Army', 'the precon is shown but not listed as cards');
-  assert.equal(pool('Eve').packs.length, 1, "Eve's pack for the pod she missed");
-  assert.equal(pool('Eve').packs[0].absent, true);
-  assert.equal(pool('Fay').packs.length, 0, 'Fay has not opened hers yet');
+  assert.equal(pool('Nick').precon, 'Animated Army');
+  const precon = pool('Nick').packs.find(k => k.kind === 'precon');
+  assert.equal(precon?.note, 'Animated Army', "the precon's cards are in the pool");
+  assert.equal(precon.cards.length, 7, 'one card per copy (five Forests)');
+  assert.equal(pool('Eve').packs.filter(k => k.kind !== 'precon').length, 1, "Eve's pack for the pod she missed");
+  assert.equal(pool('Eve').packs.filter(k => k.kind !== 'precon')[0].absent, true);
+  assert.equal(pool('Fay').packs.filter(k => k.kind !== 'precon').length, 0, 'Fay has not opened hers yet');
   assert.equal(pool('admin'), undefined, 'the admin account is not listed in Pools');
   assert.equal(pool('Gus'), undefined, 'other leagues are not listed');
   assert.deepEqual(pool('Nick').pods.map(x => x.id), [S.pod.id], 'pools know which pod each player played');
   assert.equal(pool('Eve').pods[0].absent, true);
-  assert.equal((await ok(gus.get('/api/pools'))).pools.every(p => !p.packs.length), true, "Gus League's pools are separate");
+  assert.equal((await ok(gus.get('/api/pools'))).pools.every(p => !p.packs.filter(k => k.kind !== 'precon').length), true, "Gus League's pools are separate");
 });
 
 test('copied lists match the Moxfield and Archidekt import formats', async () => {
@@ -647,7 +680,7 @@ test('finishing saves the pod to history (and its pool stays)', async () => {
   assert.ok(pods[0].finishedAt);
   assert.ok(player(pods[0], 'Mike').packs.some(k => k.source === 'sacrifice' && k.cards?.length), 'sacrificed packs and pulls are kept');
   const { pools } = await ok(nick.get('/api/pools'));
-  assert.ok(pools.find(p => p.username === 'Mike').packs.length >= 1, 'finished pods stay in the pools');
+  assert.ok(pools.find(p => p.username === 'Mike').packs.filter(k => k.kind !== 'precon').length >= 1, 'finished pods stay in the pools');
 });
 
 test('a missed pod\'s pack can still be opened after the pod is finished', async () => {
@@ -657,7 +690,7 @@ test('a missed pod\'s pack can still be opened after the pod is finished', async
   const { pack } = await ok(fay.post(`/api/pods/${k.podId}/packs/${k.packId}/open`));
   assert.equal(pack.status, 'opened');
   assert.equal((await ok(fay.get('/api/state'))).pending.length, 0);
-  assert.equal((await ok(fay.get('/api/pools'))).pools.find(p => p.username === 'Fay').packs.length, 1);
+  assert.equal((await ok(fay.get('/api/pools'))).pools.find(p => p.username === 'Fay').packs.filter(k => k.kind !== 'precon').length, 1);
 });
 
 test('a late joiner gets catch-up packs for every pod already spun, through the invite link', async () => {
@@ -681,7 +714,7 @@ test('a late joiner gets catch-up packs for every pod already spun, through the 
   assert.equal(st.pending.length, expected, 'the catch-up packs are waiting');
   assert.ok(st.pending.every(k => k.catchup && k.absent), 'labelled as catch-up');
   const pod = await ok(ivy.get(`/api/pods/${st.pending[0].podId}`));
-  assert.equal(pod.pod.absentees.find(a => a.id === st.pending[0] && false) ?? pod.pod.absentees.find(a => a.name === 'Ivy').packs[0].set.code, pod.pod.spin.set.code, 'each pack is that pod\'s spun set');
+  assert.equal(pod.pod.absentees.find(a => a.id === st.pending[0] && false) ?? pod.pod.absentees.find(a => a.name === 'Ivy').packs.filter(k => k.kind !== 'precon')[0].set.code, pod.pod.spin.set.code, 'each pack is that pod\'s spun set');
   await ok(ivy.put(`/api/leagues/${S.league}/precon`, { precon: 'Ivy Precon' }));
   const { pack } = await ok(ivy.post(`/api/pods/${st.pending[0].podId}/packs/${st.pending[0].packId}/open`));
   assert.equal(pack.status, 'opened');
@@ -784,7 +817,7 @@ test('deck lists: pasted or linked, looked up on Scryfall, shown on the player p
   assert.deepEqual(again.commanders, ["Atraxa, Praetors' Voice"], 'a "Commander" section marks the commander');
   // Deck editor: pool cards swap in and out; cut precon cards come back.
   const mine = (await ok(joe.get('/api/pools'))).pools.find(p => p.username === 'Joe').packs.flatMap(k => k.cards);
-  const other = (await ok(joe.get('/api/pools'))).pools.find(p => p.username !== 'Joe' && p.packs.length).packs[0].cards[0];
+  const other = (await ok(joe.get('/api/pools'))).pools.find(p => p.username !== 'Joe' && p.packs.filter(k => k.kind !== 'precon').length).packs.filter(k => k.kind !== 'precon')[0].cards[0];
   const pc = mine.find(c => c.name !== 'Sol Ring');
   const added = (await ok(joe.post('/api/deck/cards', { add: `pool:${pc.id}` }))).deck;
   assert.ok(added.cards.some(c => c.poolId === pc.id && c.name === pc.name && c.image), 'a pool card goes in with its picture');
@@ -800,13 +833,22 @@ test('deck lists: pasted or linked, looked up on Scryfall, shown on the player p
   const out = (await ok(joe.post('/api/deck/cards', { remove: `pool:${pc.id}` }))).deck;
   assert.ok(!out.cards.some(c => c.poolId === pc.id), 'a pool card goes back to the pool');
   assert.equal((await ok(joe.get('/api/pools'))).pools.find(p => p.username === 'Joe').packs.flatMap(k => k.cards).length, mine.length, 'the pool itself never changes');
-  assert.equal((await joe.post('/api/deck/start')).status, 404, "'Joe Precon' isn't an official precon, so there's no list to load");
+  // Starting from the precon: the deck becomes every precon card in the pool.
+  const started = (await ok(joe.post('/api/deck/start'))).deck;
+  assert.equal(started.count, 7);
+  assert.ok(started.cards.every(c => c.poolId && c.precon), 'all from the pool');
+  assert.deepEqual(started.commanders, ['Commander of Joe Precon']);
+  assert.deepEqual(started.colors, ['U', 'G']);
+  const forest = started.cards.find(c => c.name === 'Forest');
+  const less = (await ok(joe.post('/api/deck/cards', { remove: `pool:${forest.poolId}` }))).deck;
+  assert.equal(less.count, 6, 'one Forest out');
+  assert.equal((await ok(joe.post('/api/deck/cards', { add: `pool:${forest.poolId}` }))).deck.count, 7, 'and back in');
 });
 
 test('admin log: a deleted card is kept for undo and comes back exactly', async () => {
   assert.equal((await nick.get('/api/admin/log')).status, 403, 'players can\'t read the admin log');
   const pool = (await ok(nick.get('/api/pools'))).pools.find(p => p.username === 'Nick');
-  const card = pool.packs[0].cards[0];
+  const card = pool.packs.filter(k => k.kind !== 'precon')[0].cards[0];
   await ok(admin.del(`/api/pool-cards/${card.id}`));
   const has = async id => (await ok(nick.get('/api/pools'))).pools.find(p => p.username === 'Nick').packs.some(k => k.cards.some(c => c.id === id));
   assert.equal(await has(card.id), false);
@@ -860,7 +902,7 @@ test('pack manager: give packs (a set, the wheel, their choice), open them, take
   await ok(admin.post(`/api/admin/log/${wheelGrant.id}/undo`));
   assert.equal((await ok(dan.get('/api/state'))).pending.filter(k => k.grant).length, 0, 'undoing a grant removes its unopened packs');
   const unopened = await ok(admin.get(`/api/admin/packs?league=${S.league}`));
-  assert.ok(unopened.players.find(p => p.username === 'Eve').packs.length >= 2, 'the admin sees every unopened pack');
+  assert.ok(unopened.players.find(p => p.username === 'Eve').packs.filter(k => k.kind !== 'precon').length >= 2, 'the admin sees every unopened pack');
 });
 
 test('move a card to another player\'s pool, and undo', async () => {
@@ -884,7 +926,7 @@ test('move a card to another player\'s pool, and undo', async () => {
 
 test('trades: one-way offers, counters with more cards, held cards, accept moves the cards', async () => {
   const pools = async () => (await ok(nick.get('/api/pools'))).pools;
-  const cardsOf = (p, name) => p.find(x => x.username === name).packs.flatMap(k => k.cards);
+  const cardsOf = (p, name) => p.find(x => x.username === name).packs.filter(k => k.kind !== 'precon').flatMap(k => k.cards);
   let p = await pools();
   const [n1, n2, n3] = cardsOf(p, 'Nick');
   const [d1, d2, d3] = cardsOf(p, 'Dan');
@@ -1182,10 +1224,10 @@ test('pods, players, packs, pool cards and leagues are stored as tables', async 
 test('pools can be narrowed to one pod', async () => {
   const all = (await ok(eve.get('/api/pools'))).pools.find(p => p.username === 'Mike');
   const one = (await ok(eve.get(`/api/pools?pod=${S.pod.id}`))).pools.find(p => p.username === 'Mike');
-  assert.ok(one.packs.length >= 1);
+  assert.ok(one.packs.filter(k => k.kind !== 'precon').length >= 1);
   assert.ok(one.packs.every(k => k.podId === S.pod.id && k.podName === 'Pod 1'));
   assert.equal(one.packs.flatMap(k => k.cards).length, all.packs.filter(k => k.podId === S.pod.id).flatMap(k => k.cards).length);
-  assert.equal((await ok(eve.get('/api/pools?pod=nope'))).pools.every(p => !p.packs.length), true);
+  assert.equal((await ok(eve.get('/api/pools?pod=nope'))).pools.every(p => !p.packs.filter(k => k.kind !== 'precon').length), true);
 });
 
 test('wheel odds follow per-set weights and exclusions (admin)', async () => {
@@ -1225,7 +1267,7 @@ test('discarded pods are not in history or pools', async () => {
   const { pods } = await ok(eve.get('/api/history'));
   assert.equal(pods.length, 1);
   const { pools } = await ok(eve.get('/api/pools'));
-  assert.equal(pools.find(p => p.username === 'Eve').packs.length, 1, 'only her missed-pod pack from Pod 1');
+  assert.equal(pools.find(p => p.username === 'Eve').packs.filter(k => k.kind !== 'precon').length, 1, 'only her missed-pod pack from Pod 1');
 });
 
 test('admin can delete a single pulled card and a whole pack', async () => {
@@ -1252,7 +1294,7 @@ test('admin can delete a single pulled card and a whole pack', async () => {
   assert.equal((await joe.del(`/api/pods/${S.pod.id}/packs/${alpha.id}`)).status, 403, 'players cannot delete packs');
   assert.equal((await admin.del(`/api/pods/${S.pod.id}/packs/nope`)).status, 404);
   await ok(admin.del(`/api/pods/${S.pod.id}/packs/${alpha.id}`));
-  assert.equal(player(await histPod(), 'Joe').packs.length, joePacks.length - 1, 'pack is gone from History');
+  assert.equal(player(await histPod(), 'Joe').packs.filter(k => k.kind !== 'precon').length, joePacks.length - 1, 'pack is gone from History');
   assert.ok(!(await poolOf('Joe')).packs.some(k => k.packId === alpha.id), 'and from Joe\'s pool');
   const db = new DatabaseSync(path.join(DATA_DIR, 'app.db'), { readOnly: true });
   try {
@@ -1269,21 +1311,21 @@ async function quickPod(trio, { finish = false } = {}) {
   await ok(admin.post(`/api/pods/${pod.id}/vote/skip`));
   await watchAll(pod.id);
   const spun = (await ok(eve.post(`/api/pods/${pod.id}/spin`))).pod;
-  await ok(eve.post(`/api/pods/${pod.id}/packs/${spun.players[0].packs[0].id}/open`));
+  await ok(eve.post(`/api/pods/${pod.id}/packs/${spun.players[0].packs.filter(k => k.kind !== 'precon')[0].id}/open`));
   if (finish) await ok(eve.post(`/api/pods/${pod.id}/finish`));
   return pod;
 }
 
 test('only the admin can delete pods; history and pools follow', async () => {
   const pod = await quickPod(['Eve', 'Joe', 'Dan']);
-  assert.ok((await ok(eve.get('/api/pools'))).pools.find(p => p.username === 'Eve').packs.length === 2);
+  assert.ok((await ok(eve.get('/api/pools'))).pools.find(p => p.username === 'Eve').packs.filter(k => k.kind !== 'precon').length === 2);
 
   assert.equal((await eve.del(`/api/pods/${pod.id}`)).status, 403, 'players cannot delete');
   assert.equal((await admin.del('/api/pods/nope')).status, 404);
 
   await ok(admin.del(`/api/pods/${pod.id}`));
   assert.equal((await ok(eve.get('/api/state'))).pods.length, 0, 'running pod is gone');
-  assert.equal((await ok(eve.get('/api/pools'))).pools.find(p => p.username === 'Eve').packs.length, 1, 'its cards left the pool');
+  assert.equal((await ok(eve.get('/api/pools'))).pools.find(p => p.username === 'Eve').packs.filter(k => k.kind !== 'precon').length, 1, 'its cards left the pool');
 
   // Standings and player pages are cached; a change must show up right away.
   const nickRow = async () => (await ok(eve.get(`/api/leagues/${S.league}`))).standings.find(s => s.name === 'Nick');
@@ -1376,7 +1418,7 @@ test('fun packs: any set, explained, never saved', async () => {
   assert.equal((await mike.post('/api/fun/open', { set: 'lea', count: 37 })).status, 400, 'more than a box');
   assert.equal((await mike.post('/api/fun/open', { set: 'lea', count: 0 })).status, 400, 'zero packs');
   r = await ok(mike.post('/api/fun/open', { set: 'lea', count: 6 }));
-  assert.equal(r.packs.length, 6);
+  assert.equal(r.packs.filter(k => k.kind !== 'precon').length, 6);
   assert.ok(r.packs.every(p => p.cards.length === 15 && p.explain.source === 'real'));
   assert.ok(new Set(r.packs.map(p => p.cards.map(c => c.number).join())).size > 1, 'packs differ');
   assert.ok(r.packs.every(p => p.explain.slots.every(sl => sl.sheet)), 'slots name their sheet');
@@ -1453,7 +1495,15 @@ test('precons are per league: required, locked once saved, and reopened only by 
   const players = ['Zoe', 'Yan', 'Xen'].map(n => ({ userId: u[n].id }));
   const noneYet = await zoe.post('/api/pods', { players });
   assert.equal(noneYet.status, 409); assert.match(noneYet.json.error, /precon/i);
-  await ok(zoe.put(`${L}/precon`, { precon: 'Alpha Deck' }));
+  const typo = await zoe.put(`${L}/precon`, { precon: 'Alpah Deck' });
+  assert.equal(typo.status, 400, 'only official precon names'); assert.match(typo.json.error, /official precon/);
+  const zoeLeague = (await ok(zoe.put(`${L}/precon`, { precon: 'alpha DECK' }))).league;
+  const zoeRow = zoeLeague.members.find(m => m.username === 'Zoe');
+  assert.equal(zoeRow.precon, 'Alpha Deck', 'saved with the official spelling');
+  assert.equal(zoeRow.preconOk, true);
+  const zoePool = (await ok(zoe.get(`/api/pools?league=${league.id}`))).pools.find(p => p.username === 'Zoe');
+  assert.deepEqual(zoePool.packs.map(k => [k.kind, k.cards.length]), [['precon', 7]], "the precon's cards went into the pool");
+  assert.equal((await ok(zoe.get(`/api/leagues/${league.id}/recap`))).totals.cards, 0, "precon cards aren't pulls");
   assert.equal((await zoe.put(`${L}/precon`, { precon: 'Other' })).status, 409, 'locked once saved');
   assert.equal((await yan.put(`${L}/precon`, { precon: 'alpha deck' })).status, 409, 'no two players on the same precon');
   await ok(yan.put(`${L}/precon`, { precon: 'Beta Deck' }));
@@ -1487,7 +1537,7 @@ test('precons are per league: required, locked once saved, and reopened only by 
     assert.equal(r.league.members.find(m => m.username === 'Zoe').commander.name, "Atraxa, Praetors' Voice");
     assert.equal((await zoe.put(`${L}/commander`, { card: 'zzzz not a card qqq' })).status, 404);
     await ok(zoe.put(`${L}/commander`, { card: 'Sol Ring' }));
-    assert.ok((await ok(zoe.get('/api/precons'))).names.length > 100, 'official precon names');
+    assert.ok((await ok(zoe.get('/api/precons'))).names.includes('Alpha Deck'), 'official precon names');
   }
   // A league's profile no longer carries a precon.
   assert.ok(!('precon' in (await ok(zoe.get('/api/auth/me'))).user));

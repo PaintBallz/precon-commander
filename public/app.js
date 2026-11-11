@@ -679,7 +679,7 @@ async function renderLeague(view) {
       </section>
       <section class="panel">
         <div class="spread"><h2 style="margin:0">Players</h2><span class="small muted">${league.members.length}/${lim.max}</span></div>
-        <div class="member-list">${league.members.map(m => `<div class="member">${commanderMini(m.commander)}<div class="member-info"><b>${plink(m.id, m.username)}</b>${m.leagueAdmin ? ' <span class="chip gold" title="Started the league: can change its rules and kick players">League admin</span>' : ''}${m.admin ? ' <span class="chip gold" title="A player with admin powers">admin</span>' : ''}${m.test ? ' <span class="chip" title="Cannot sign in; an admin plays for it">test player</span>' : ''}${m.id === S.me.id ? ' <span class="dim small">(you)</span>' : ''}<div class="small muted">${esc(m.precon) || 'No precon set'}${m.preconLocked ? ' <span class="dim">· locked</span>' : ''}</div>${m.preconRequest && league.canManage ? `<div class="small precon-req">Wants to change: ${esc(m.preconRequest.reason)}</div>` : ''}</div>
+        <div class="member-list">${league.members.map(m => `<div class="member">${commanderMini(m.commander)}<div class="member-info"><b>${plink(m.id, m.username)}</b>${m.leagueAdmin ? ' <span class="chip gold" title="Started the league: can change its rules and kick players">League admin</span>' : ''}${m.admin ? ' <span class="chip gold" title="A player with admin powers">admin</span>' : ''}${m.test ? ' <span class="chip" title="Cannot sign in; an admin plays for it">test player</span>' : ''}${m.id === S.me.id ? ' <span class="dim small">(you)</span>' : ''}<div class="small muted">${esc(m.precon) || 'No precon set'}${m.preconOk === false ? ' <span class="precon-bad" title="Not an official precon name, so its cards aren\'t in the pool. An admin can allow a change.">!</span>' : ''}${m.preconLocked ? ' <span class="dim">· locked</span>' : ''}</div>${m.preconRequest && league.canManage ? `<div class="small precon-req">Wants to change: ${esc(m.preconRequest.reason)}</div>` : ''}</div>
           ${league.canManage && active && m.preconRequest ? `<button class="btn gold sm" data-pallow="${m.id}">Allow</button><button class="btn ghost sm" data-pdecline="${m.id}">Decline</button>` : league.canManage && active && m.preconLocked ? `<button class="btn ghost sm" data-pallow="${m.id}" title="Let them save a different precon once">Allow change</button>` : ''}
           ${league.canManage && active && m.id !== S.me.id ? `<button class="btn ghost sm" data-rmm="${m.id}" data-name="${esc(m.username)}" title="Kick from the league">✕</button>` : ''}</div>`).join('') || '<p class="muted">Nobody yet.</p>'}</div>
         ${isAdmin() && active ? `<div class="row" style="margin-top:10px">${candidates.length ? `<select class="input" id="addMember"><option value="">Add a player…</option>${candidates.map(c => `<option value="${c.id}">${esc(c.username)}</option>`).join('')}</select><button class="btn sm" id="addMemberBtn">Add</button>` : '<span class="small muted">Every player is already in a league.</span>'}</div>` : ''}
@@ -834,13 +834,19 @@ function preconPanel(league, active) {
     ${c?.image ? `<a class="cmd-hero" href="${esc(c.uri || '#')}" target="_blank" rel="noopener" title="${esc(c.name)}"><img ${cardSrc(c.image, '230px')} alt="${esc(c.name)}"></a>` : `<div class="cmd-hero empty">No commander picture yet</div>`}
     <div class="precon-body">
     <h2>Your precon for this league</h2>
-    ${me.preconLocked ? `<p class="precon-now"><b>${esc(me.precon)}</b> <span class="chip">Locked</span></p>
+    ${me.preconLocked ? `<p class="precon-now"><b>${esc(me.precon)}</b>${me.preconOk === false ? ' <span class="precon-bad" title="Not an official precon name">!</span>' : ''} <span class="chip">Locked</span></p>
+      ${me.preconOk === false ? '<p class="small precon-err">This isn\'t an official precon name, so its cards couldn\'t go into your pool. Ask for a change and pick the right name.</p>' : ''}
       ${me.preconRequest ? `<p class="small muted">Change requested: "${esc(me.preconRequest.reason)}". Waiting for an admin.</p>` : `<button type="button" class="btn ghost sm" id="preconRequest">Request a change</button>`}`
-    : `<form id="preconForm" class="precon-form">
-        <input name="precon" list="preconList" value="${esc(me.precon)}" maxlength="80" required placeholder="Start typing your precon…" autocomplete="off" aria-label="Your precon">
+    : `<form id="preconForm" class="precon-form" novalidate>
+        <span class="precon-field"><input name="precon" list="preconList" value="${esc(me.precon)}" maxlength="80" required placeholder="Start typing your precon's name…" autocomplete="off" aria-label="Your precon" aria-describedby="preconMsg"><span class="precon-flag" id="preconFlag" aria-hidden="true"></span></span>
         <datalist id="preconList"></datalist>
+        <button type="button" class="btn ghost info-btn" id="preconInfo" aria-expanded="false" aria-controls="preconHelp" title="How to enter your precon">i</button>
         <button class="btn gold">Save</button>
       </form>
+      <div class="precon-help small" id="preconHelp" hidden>
+        <b>Use the precon's name only, exactly as it's printed on the box.</b> For example <i>Grand Larceny</i> or <i>Riders of Rohan</i>, not your commander's name. Spelling and typos matter, so pick it from the suggestions as you type. A red <span class="precon-bad">!</span> means the name doesn't match an official precon. When you save, the precon's cards go into your pool.
+      </div>
+      <p class="small precon-err" id="preconMsg" hidden></p>
       <p class="small muted">Needed before you can start or play in a pod or open packs. Once saved, you can't change it for this league unless an admin allows it.</p>`}
     <form id="commanderForm" class="precon-form commander-form">
       <label>Commander card <span class="dim small">(picture only, change it any time)</span>
@@ -857,14 +863,33 @@ function wirePrecon(view, league) {
   const url = `/leagues/${league.id}`;
   const form = $('#preconForm', view);
   if (form) {
-    const fill = () => { const l = $('#preconList', view); if (l) l.innerHTML = (S.preconNames || []).map(n => `<option value="${esc(n)}"></option>`).join(''); };
-    if (S.preconNames) fill(); else api('/precons').then(r => { S.preconNames = r.names; fill(); }).catch(() => {});
+    const flag = $('#preconFlag', view), msg = $('#preconMsg', view);
+    // Green tick for an official name, red ! (and why) for one that isn't.
+    const check = loud => {
+      const v = form.precon.value.trim();
+      const names = S.preconNames || [];
+      const good = v && names.some(n => n.toLowerCase() === v.toLowerCase());
+      const badName = v && names.length && !good;
+      flag.className = `precon-flag ${good ? 'good' : badName ? 'bad' : ''}`;
+      flag.textContent = good ? '✓' : badName ? '!' : '';
+      form.precon.classList.toggle('invalid', !!badName && loud);
+      msg.hidden = !(badName && loud);
+      msg.innerHTML = badName ? `<span class="precon-bad">!</span> "${esc(v)}" isn't an official precon name. Check the spelling and pick it from the suggestions.` : '';
+    };
+    const fill = () => { const l = $('#preconList', view); if (l) l.innerHTML = (S.preconNames || []).map(n => `<option value="${esc(n)}"></option>`).join(''); check(false); };
+    if (S.preconNames?.length) fill(); else api('/precons').then(r => { S.preconNames = r.names; fill(); }).catch(() => {});
+    form.precon.oninput = () => check(false);
+    form.precon.onchange = () => check(true);
+    form.precon.onblur = () => check(true);
+    $('#preconInfo', view).onclick = e => { const h = $('#preconHelp', view); h.hidden = !h.hidden; e.currentTarget.setAttribute('aria-expanded', String(!h.hidden)); };
     form.onsubmit = async e => {
       e.preventDefault();
       const precon = form.precon.value.trim();
       if (!precon) return;
+      const official = (S.preconNames || []).find(n => n.toLowerCase() === precon.toLowerCase());
+      if (S.preconNames?.length && !official) { check(true); form.precon.focus(); return; }
       if (!await confirmBox('Lock in this precon?', `<b>${esc(precon)}</b> will be your precon for ${esc(league.name)}. <b>You can't change it for this league after saving.</b> Only the league admin or a site admin can allow a change.`, 'Save and lock')) return;
-      again(api(`${url}/precon`, { method: 'PUT', body: { precon } }).then(r => { toast('Precon locked in.', 'good'); return r; }));
+      again(api(`${url}/precon`, { method: 'PUT', body: { precon: official || precon } }).then(r => { S.pools = null; toast('Precon locked in. Its cards are in your pool.', 'good'); return r; }).catch(err => { msg.hidden = false; msg.innerHTML = `<span class="precon-bad">!</span> ${esc(err.message)}`; flag.className = 'precon-flag bad'; flag.textContent = '!'; throw err; }));
     };
   }
   $('#preconRequest', view)?.addEventListener('click', async () => {
@@ -1654,7 +1679,7 @@ function renderHow(view) {
         'Most sets use their real print sheets and odds. A few with no booster data on record get a pack built in the style of that era.',
       ]))}
       ${section('Sacrifice a Pack', "<p>Don't want the set? If you have at least 2 unopened packs of the spun set, give one up to turn another into <b>any set you like</b>.</p>")}
-      ${section('Your pool', '<p>Every card you open goes into your pool on the <a href="#pools">Pools</a> tab. These are the cards you may add to your precon. You can search them, filter by pod, and copy them to Moxfield or Archidekt, or build your deck from them in the <b>Deck editor</b>.</p>')}
+      ${section('Your pool', '<p>Every card you open goes into your pool on the <a href="#pools">Pools</a> tab. The cards from your precon are in it too, from the moment you save your precon, so it holds everything you can build your deck from. You can search them, filter by pod, and copy them to Moxfield or Archidekt, or build your deck from them in the <b>Deck editor</b>.</p>')}
       ${section('Trading', list([
         'Trade with anyone in your league on the <a href="#trades">Trades</a> tab, any number of cards for any number.',
         'The other player can accept, decline, or counter, and nobody has to be online at the same time.',
@@ -1667,7 +1692,7 @@ function renderHow(view) {
         "When a league ends, it's saved as a read-only archive with a season recap and awards.",
       ]))}
       ${section('Fun Packs', '<p>Open boosters from any set just for fun, from one pack up to a full box. Nothing is saved, and nothing counts toward your pool or the league.</p>')}
-      ${section('Your deck list', `<p>Build your deck for each league in <a href="#pools?view=deck">Pools → Deck editor</a>. If your precon is an official one, its card list loads for you; otherwise import it once on the <a href="#league">League</a> tab from a Moxfield or Archidekt link or a pasted list. Then swap pool cards in and out, laid out as card stacks by type or mana value. The editor flags anything off: not 100 cards, more than one copy, or a card outside your commander's colors. Your deck appears on your player page.</p>`)}
+      ${section('Your deck list', `<p>Build your deck for each league in <a href="#pools?view=deck">Pools → Deck editor</a>. It starts with your precon's cards from your pool. Then swap cards in and out with + and −, or by dragging, laid out as card stacks by type or mana value. The editor flags anything off: not 100 cards, more than one copy, or a card outside your commander's colors. Your deck appears on your player page.</p>`)}
       ${section('Who runs what', list([
         '<b>League admin:</b> whoever started the league. They can change its pack rules, remove players and allow precon changes, but only in their own league.',
         "<b>Site admins:</b> can step into any league without joining it. They can add players, edit the wheel, hand out packs, fix mistakes, and skip a stuck vote or spin if someone doesn't show up.",
@@ -2091,7 +2116,7 @@ async function renderPools(view) {
   const mine = pool.userId === S.me.id;
   const deckMode = mine && S.params.view === 'deck';
   const head = `
-    <div class="hero"><div><h1>${esc(S.league?.name || 'League')} Pools</h1><p>Every card a player may use in this league on top of the precon they started with: everything they've opened in its pods, including packs for pods they missed (discarded pods don't count).${mine ? ' Build your deck from them in the Deck editor.' : ''}</p></div></div>
+    <div class="hero"><div><h1>${esc(S.league?.name || 'League')} Pools</h1><p>Every card a player can use in this league: their precon's cards, plus everything they've opened in its pods, including packs for pods they missed (discarded pods don't count).${mine ? ' Build your deck from them in the Deck editor.' : ''}</p></div></div>
     <div class="player-tabs">${pools.map(p => `<a href="#pools?player=${p.userId}" class="${p.userId === pool.userId ? 'sel' : ''}">${esc(p.username)} <span class="dim">${p.packs.reduce((s, k) => s + k.cards.length, 0)}</span></a>`).join('')}</div>
     ${mine ? `<div class="mode-tabs"><a href="#pools?player=${pool.userId}" class="${deckMode ? '' : 'sel'}">Cards</a><a href="#pools?player=${pool.userId}&view=deck" class="${deckMode ? 'sel' : ''}">Deck editor</a></div>` : ''}`;
   if (deckMode) {
@@ -2123,7 +2148,7 @@ async function renderPools(view) {
     </div>
     <div class="cards" id="poolCards"></div>
     <details class="panel" style="margin-top:18px"><summary class="muted" style="cursor:pointer">Packs in this pool (${packs.length})</summary>
-      <div class="row" style="margin-top:10px">${packs.map(k => `<span class="chip">${icon(k.set)}${esc(k.set.name)}${k.source === 'sacrifice' ? ` ${I.flame}` : ''} <span class="dim">· ${k.kind === 'trade' ? esc(k.note || 'moved card') : k.kind === 'grant' ? `from the admin${k.note ? `: ${esc(k.note)}` : ''}` : `${esc(k.podName)}${k.kind === 'catchup' ? ' (catch-up)' : k.absent ? ' (missed)' : ''}`} · ${k.cards.length}</span>${isAdmin() ? `<button class="chip-x" data-delpack="${k.podId}:${k.packId}" title="Admin: delete this pack and its pulls">✕</button>` : ''}</span>`).join('')}</div>
+      <div class="row" style="margin-top:10px">${packs.map(k => `<span class="chip">${icon(k.set)}${esc(k.set.name)}${k.source === 'sacrifice' ? ` ${I.flame}` : ''} <span class="dim">· ${k.kind === 'precon' ? `precon: ${esc(k.note)}` : k.kind === 'trade' ? esc(k.note || 'moved card') : k.kind === 'grant' ? `from the admin${k.note ? `: ${esc(k.note)}` : ''}` : `${esc(k.podName)}${k.kind === 'catchup' ? ' (catch-up)' : k.absent ? ' (missed)' : ''}`} · ${k.cards.length}</span>${isAdmin() ? `<button class="chip-x" data-delpack="${k.podId}:${k.packId}" title="Admin: delete this pack and its pulls">✕</button>` : ''}</span>`).join('')}</div>
       ${isAdmin() ? `<p class="small dim" style="margin:10px 0 0">Admin: ✕ deletes a whole pack; open a card and use ${I.trash} Remove to delete a single copy.</p>` : ''}
     </details>` : `<div class="empty"><p>${pool.userId === S.me.id ? 'Your' : `${esc(pool.username)}'s`} pool is empty. Cards show up here as soon as packs are opened.</p></div>`}`;
   $('#copyPool', view)?.addEventListener('click', () => copyText(listFor(cards), `${pool.username}'s pool${podName ? ` from ${podName}` : ''} (${cards.length} cards)`));
@@ -2178,19 +2203,19 @@ function paintDeckEditor(box, pool, r) {
   const deck = r.deck;
   if (!deck) {
     box.innerHTML = `<div class="panel deck-start"><h2>Build your deck here</h2>
-      <p class="muted">Your deck starts as your precon's card list. Then swap cards from your pool in and out. It shows on your player page as you go.</p>
+      <p class="muted">Your precon's cards are in your pool. Start with all of them in your deck, then swap in cards you've pulled. Your deck shows on your player page as you go.</p>
       ${!r.precon ? `<p>Save your precon on the <a href="#league">League tab</a> first.</p>`
         : r.officialPrecon ? `<button class="btn gold" id="deStart">Start from ${esc(r.officialPrecon)}</button>`
-        : `<p class="small muted">"${esc(r.precon)}" isn't an official precon name, so its list can't load by itself. Import it once under <b>Deck list for this league</b> on the <a href="#league">League tab</a> (a Moxfield or Archidekt link, or a pasted list), then come back here.</p>`}
+        : `<p class="small precon-err"><span class="precon-bad">!</span> "${esc(r.precon)}" isn't an official precon name, so its cards aren't in your pool. Ask your league admin or a site admin to allow a change, then pick the right name. Or import your list under <b>Deck list for this league</b> on the <a href="#league">League tab</a>.</p>`}
     </div>`;
     $('#deStart', box)?.addEventListener('click', e => startDeck(box, pool, r, e.target));
     return;
   }
-  const poolList = pool.packs.flatMap(k => k.cards);
+  const poolList = pool.packs.flatMap(k => k.cards.map(c => ({ ...c, precon: k.kind === 'precon' })));
   const poolIds = new Set(poolList.map(c => c.id));
   const used = new Set(deck.cards.filter(c => c.poolId).map(c => c.poolId));
-  const tray = poolList.filter(c => !used.has(c.id)).sort((a, b) => (RARITY_ORDER[b.rarity] ?? 0) - (RARITY_ORDER[a.rarity] ?? 0) || a.name.localeCompare(b.name));
-  const base = deck.base || deck.cards.filter(c => !c.poolId);
+  const trayCards = poolList.filter(c => !used.has(c.id));
+  const base = deck.base || (deck.source === 'pool' ? [] : deck.cards.filter(c => !c.poolId));
   const cuts = [];
   for (const b of base) {
     const have = deck.cards.filter(c => !c.poolId && c.name === b.name).reduce((n, c) => n + c.qty, 0);
@@ -2200,9 +2225,9 @@ function paintDeckEditor(box, pool, r) {
   const cmd = deck.cards.filter(c => c.board === 'commander');
   const ci = new Set(cmd.flatMap(c => c.ci || []));
   const problems = [], bad = new Set();
-  const names = l => l.map(c => esc(c.name)).join(', ');
+  const names = l => [...new Set(l.map(c => c.name))].map(esc).join(', ');
   if (deck.count !== 100) problems.push(`${deck.count} cards: a Commander deck has 100`);
-  if (!cmd.length) problems.push('No commander picked: click your commander and choose Make commander');
+  if (!cmd.length) problems.push('No commander picked: pick your commander and choose Make commander');
   const off = cmd.length ? deck.cards.filter(c => c.board !== 'commander' && (c.ci || []).some(x => !ci.has(x))) : [];
   if (off.length) { problems.push(`Outside your commander's colors: ${names(off)}`); off.forEach(c => bad.add(deckKey(c))); }
   const byName = new Map();
@@ -2212,51 +2237,70 @@ function paintDeckEditor(box, pool, r) {
   const gone = deck.cards.filter(c => c.poolId && !poolIds.has(c.poolId));
   if (gone.length) { problems.push(`No longer in your pool: ${names(gone)}`); gone.forEach(c => bad.add(deckKey(c))); }
 
-  const byCmc = deckEd.group === 'cmc';
-  const groupOf = c => (c.board === 'commander' ? 'Commander' : byCmc ? (typeOf(c) === 'Land' ? 'Lands' : Math.floor(c.cmc) >= 7 ? '7+' : String(Math.floor(c.cmc))) : typeOf(c));
-  const order = byCmc ? ['Commander', '0', '1', '2', '3', '4', '5', '6', '7+', 'Lands'] : ['Commander', ...TYPE_ORDER, 'Other'];
-  const label = g => (byCmc && /^\d/.test(g) ? `Mana value ${g}` : TYPE_LABEL[g] || g);
-  const cols = order.map(g => [g, deck.cards.filter(c => groupOf(c) === g).sort((a, b) => a.cmc - b.cmc || a.name.localeCompare(b.name))]).filter(([, l]) => l.length);
-  const sum = l => l.reduce((n, c) => n + c.qty, 0);
+  // Cards with the same name show once with a count; + and − move one copy.
   const keyIn = (c, w) => (w === 'deck' ? deckKey(c) : w === 'pool' ? `pool:${c.id}` : `base:${c.name}`);
-  const dcard = (c, w) => {
-    const k = keyIn(c, w), id = `${w}|${k}`;
-    return `<div class="dcard ${w === 'deck' && bad.has(k) ? 'bad' : ''} ${deckEd.sel === id ? 'sel' : ''} ${w === 'deck' && c.poolId ? 'from-pool' : ''}" data-sel="${esc(id)}" draggable="true" tabindex="0" role="button" title="${esc(c.name)}${w === 'deck' && c.poolId ? ' (from your pool)' : ''}"><img ${cardSrc(c.image, w === 'deck' ? '(max-width: 600px) 45vw, 160px' : '92px')} alt="${esc(c.name)}" loading="lazy">${c.qty > 1 ? `<span class="dq">×${c.qty}</span>` : ''}</div>`;
+  const itemize = (list, w) => {
+    const m = new Map();
+    for (const c of list) {
+      const it = m.get(c.name) || m.set(c.name, { c, w, keys: [] }).get(c.name);
+      for (let i = 0; i < (c.qty || 1); i++) it.keys.push(keyIn(c, w));
+      if (c.board === 'commander') it.c = c;
+    }
+    return [...m.values()];
   };
+  const deckItems = itemize(deck.cards, 'deck');
+  const trayItems = [...itemize(trayCards, 'pool'), ...itemize(cuts, 'cut')];
+  const byCmc = deckEd.group === 'cmc';
+  const groupOf = (c, tray) => (c.board === 'commander' && !tray ? 'Commander' : byCmc && !tray ? (typeOf(c) === 'Land' ? 'Lands' : Math.floor(c.cmc) >= 7 ? '7+' : String(Math.floor(c.cmc))) : typeOf(c));
+  const label = g => (/^\d/.test(g) ? `Mana value ${g}` : TYPE_LABEL[g] || g);
+  const stacks = (items, tray) => {
+    const order = byCmc && !tray ? ['Commander', '0', '1', '2', '3', '4', '5', '6', '7+', 'Lands'] : ['Commander', ...TYPE_ORDER, 'Other'];
+    return order.map(g => [g, items.filter(it => groupOf(it.c, tray) === g).sort((a, b) => (a.c.cmc || 0) - (b.c.cmc || 0) || a.c.name.localeCompare(b.c.name))])
+      .filter(([, l]) => l.length)
+      .map(([g, l]) => `<div class="stack"><h4>${label(g)} <span class="dim">${l.reduce((n, it) => n + it.keys.length, 0)}</span></h4>${l.map(card).join('')}</div>`).join('');
+  };
+  const idOf = it => `${it.w}|${it.c.name}`;
+  function card(it) {
+    const id = idOf(it), inDeck = it.w === 'deck';
+    const isBad = inDeck && it.keys.some(k => bad.has(k));
+    const pulled = it.w !== 'cut' && it.c.poolId !== undefined ? !it.c.precon : it.w === 'pool' && !it.c.precon;
+    return `<div class="dcard ${isBad ? 'bad' : ''} ${deckEd.sel === id ? 'sel' : ''} ${pulled ? 'from-pool' : ''}" data-sel="${esc(id)}" draggable="true" tabindex="0" role="button" title="${esc(it.c.name)}${pulled ? ' (pulled from a pack)' : ''}">
+      <img ${cardSrc(it.c.image, '(max-width: 600px) 45vw, 160px')} alt="${esc(it.c.name)}" loading="lazy">
+      ${it.keys.length > 1 ? `<span class="dq">×${it.keys.length}</span>` : ''}
+      <button type="button" class="dstep ${inDeck ? 'minus' : 'plus'}" data-step="${esc(id)}" aria-label="${inDeck ? 'Take one out of your deck' : 'Put one in your deck'}: ${esc(it.c.name)}" title="${inDeck ? 'Take one out' : 'Put one in'}">${inDeck ? '−' : '+'}</button></div>`;
+  }
   const find = id => {
     if (!id) return null;
-    const [w, k] = [id.slice(0, id.indexOf('|')), id.slice(id.indexOf('|') + 1)];
-    const list = w === 'deck' ? deck.cards : w === 'pool' ? tray : cuts;
-    const c = list.find(x => keyIn(x, w) === k);
-    return c ? { w, k, c } : null;
+    const w = id.slice(0, id.indexOf('|')), name = id.slice(id.indexOf('|') + 1);
+    return (w === 'deck' ? deckItems : trayItems).find(it => it.w === w && it.c.name === name) || null;
   };
   const picked = find(deckEd.sel);
   if (!picked) deckEd.sel = null;
-  const fromPool = deck.cards.filter(c => c.poolId).length;
+  const pulledIn = deck.cards.filter(c => c.poolId && !c.precon).length;
   const canLead = picked?.w === 'deck' && (picked.c.board === 'commander' || /legendary|can be your commander/i.test(picked.c.type));
+  const where = it => (it.w === 'deck' ? (it.c.board === 'commander' ? 'Your commander' : 'In your deck') : it.w === 'pool' ? (it.c.precon ? 'In your pool, from your precon' : 'In your pool, pulled from a pack') : 'Cut from your precon');
   box.innerHTML = `
     <div class="panel de-head">
       <div class="de-title"><h2>${esc(deck.name)}</h2><div class="deck-colors">${colorPips(deck.colors)}</div><span class="de-count ${deck.count === 100 ? 'ok' : 'bad'}">${deck.count}/100</span></div>
-      <div class="small muted">${fromPool ? `${plural(fromPool, 'card')} from your pool · ` : ''}${cuts.length ? `${plural(sum(cuts), 'precon card')} cut · ` : ''}<a href="#player?id=${S.me.id}${S.viewLeague ? `&league=${S.viewLeague}` : ''}">See it on your page</a></div>
+      <div class="small muted">${pulledIn ? `${plural(pulledIn, 'pulled card')} in · ` : ''}<a href="#player?id=${S.me.id}${S.viewLeague ? `&league=${S.viewLeague}` : ''}">See it on your page</a></div>
       <div class="de-problems">${problems.length ? problems.map(p => `<span class="chip bad">${p}</span>`).join('') : `<span class="chip ok">${I.check} 100 cards, one of each, all in your colors</span>`}</div>
       <div class="row">
-        <select class="input" id="deGroup" title="How to group the stacks"><option value="type">Group by type</option><option value="cmc" ${byCmc ? 'selected' : ''}>Group by mana value</option></select>
+        <select class="input" id="deGroup" title="How to group your deck"><option value="type">Group by type</option><option value="cmc" ${byCmc ? 'selected' : ''}>Group by mana value</option></select>
         <button class="btn sm" id="deCopy">${I.copy} Copy list</button>
         ${r.officialPrecon ? `<button class="btn sm ghost" id="deReset">Start over</button>` : ''}
       </div>
     </div>
-    <div class="stacks" id="deStacks" data-drop="deck">${cols.map(([g, l]) => `<div class="stack"><h4>${label(g)} <span class="dim">${sum(l)}</span></h4>${l.map(c => dcard(c, 'deck')).join('')}</div>`).join('')}</div>
-    <div class="de-bar">${picked ? `<img ${cardSrc(picked.c.image, '40px')} alt=""><b>${esc(picked.c.name)}<span class="small muted">${picked.w === 'deck' ? (picked.c.board === 'commander' ? 'Your commander' : picked.c.poolId ? 'In your deck, from your pool' : 'In your deck, from your precon') : picked.w === 'pool' ? 'In your pool' : 'Cut from your precon'}</span></b>${picked.w === 'deck' ? `<button class="btn sm danger" data-act="remove">${I.x} Remove</button>${canLead ? `<button class="btn sm" data-act="lead">${I.crown} ${picked.c.board === 'commander' ? 'Not the commander' : 'Make commander'}</button>` : ''}` : `<button class="btn sm gold" data-act="add">Add to deck</button>`}<button class="btn sm ghost" data-act="zoom">View card</button><button class="btn sm ghost" data-act="clear" aria-label="Unpick">${I.x}</button>` : `<span class="small muted">Click a card to pick it. Double-click a tray card to add it, or drag cards between your deck and the tray.</span>`}</div>
+    <h3 class="de-label">Your deck</h3>
+    <div class="stacks" id="deStacks" data-drop="deck">${stacks(deckItems, false)}</div>
     <div class="panel de-tray">
-      <div class="spread"><h3>Your pool <span class="dim">${tray.length} not in your deck</span></h3><input type="search" id="deQ" placeholder="Search the tray…" value="${esc(deckEd.q)}"></div>
-      <div class="tray-strip" id="dePool" data-drop="tray"></div>
-      ${cuts.length ? `<h3 style="margin-top:10px">Cut from your precon <span class="dim">${sum(cuts)}</span></h3><div class="tray-strip" id="deCuts" data-drop="tray"></div>` : ''}
-    </div>`;
+      <div class="spread"><h3 class="de-label" style="margin:0">Your pool <span class="dim">${trayItems.reduce((n, it) => n + it.keys.length, 0)} not in your deck</span></h3><input type="search" id="deQ" placeholder="Search your pool…" value="${esc(deckEd.q)}"></div>
+      <div class="stacks" id="deTray" data-drop="tray"></div>
+    </div>
+    <div class="de-bar">${picked ? `<img ${cardSrc(picked.c.image, '40px')} alt=""><b>${esc(picked.c.name)}${picked.keys.length > 1 ? ` ×${picked.keys.length}` : ''}<span class="small muted">${where(picked)}</span></b>${picked.w === 'deck' ? `<button class="btn sm danger" data-act="step">− Take one out</button>${canLead ? `<button class="btn sm" data-act="lead">${I.crown} ${picked.c.board === 'commander' ? 'Not the commander' : 'Make commander'}</button>` : ''}` : `<button class="btn sm gold" data-act="step">+ Put one in</button>`}<button class="btn sm ghost" data-act="zoom">View card</button><button class="btn sm ghost" data-act="clear" aria-label="Unpick">${I.x}</button>` : `<span class="small muted">Use <b>+</b> and <b>−</b> on a card, drag cards between your deck and your pool, or click a card for more.</span>`}</div>`;
   const paintTray = () => {
     const q = deckEd.q.trim().toLowerCase();
-    const hit = c => !q || c.name.toLowerCase().includes(q) || (c.type || '').toLowerCase().includes(q);
-    $('#dePool', box).innerHTML = tray.filter(hit).map(c => dcard(c, 'pool')).join('') || `<p class="small muted">${tray.length ? 'Nothing matches.' : 'Every pool card is in your deck. Drag cards here to take them out.'}</p>`;
-    if ($('#deCuts', box)) $('#deCuts', box).innerHTML = cuts.filter(hit).map(c => dcard(c, 'cut')).join('') || '<p class="small muted">Nothing matches.</p>';
+    const hit = it => !q || it.c.name.toLowerCase().includes(q) || (it.c.type || '').toLowerCase().includes(q);
+    $('#deTray', box).innerHTML = stacks(trayItems.filter(hit), true) || `<p class="small muted">${trayItems.length ? 'Nothing matches.' : 'Every card in your pool is in your deck. Drag cards here or use − to take them out.'}</p>`;
     wireCards();
   };
   const redraw = () => paintDeckEditor(box, pool, r);
@@ -2264,19 +2308,20 @@ function paintDeckEditor(box, pool, r) {
     if (deckEd.busy) return;
     deckEd.busy = true;
     box.classList.add('busy');
-    try { r.deck = (await post('/deck/cards' + lq(), body)).deck; deckEd.sel = null; redraw(); } catch (err) { fail(err); }
+    try { r.deck = (await post('/deck/cards' + lq(), body)).deck; redraw(); } catch (err) { fail(err); }
     finally { deckEd.busy = false; box.classList.remove('busy'); }
   };
-  const addOrRemove = id => { const p = find(id); if (p) act(p.w === 'deck' ? { remove: p.k } : { add: p.k }); };
+  // One copy in or out: a deck card's last copy comes out, a pool card's first goes in.
+  const step = id => { const it = find(id); if (it) act(it.w === 'deck' ? { remove: it.keys.at(-1) } : { add: it.keys[0] }); };
   function wireCards() {
     $$('[data-sel]', box).forEach(el => {
       el.onclick = () => { deckEd.sel = deckEd.sel === el.dataset.sel ? null : el.dataset.sel; redraw(); };
-      el.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); el.click(); } };
-      if (!el.dataset.sel.startsWith('deck|')) el.ondblclick = () => addOrRemove(el.dataset.sel);
+      el.onkeydown = e => { if (e.target === el && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); el.click(); } };
       el.ondragstart = e => { e.dataTransfer.setData('text/plain', el.dataset.sel); e.dataTransfer.effectAllowed = 'move'; };
     });
+    $$('[data-step]', box).forEach(b => b.onclick = e => { e.stopPropagation(); step(b.dataset.step); });
   }
-  // Drop pool or cut cards on the stacks to add them, deck cards on the tray to remove them.
+  // Drop pool cards on your deck to put them in, deck cards on your pool to take them out.
   $$('[data-drop]', box).forEach(zone => {
     const wants = id => (zone.dataset.drop === 'deck') !== id.startsWith('deck|');
     zone.ondragover = e => { e.preventDefault(); zone.classList.add('drop'); };
@@ -2284,7 +2329,7 @@ function paintDeckEditor(box, pool, r) {
     zone.ondrop = e => {
       e.preventDefault(); zone.classList.remove('drop');
       const id = e.dataTransfer.getData('text/plain');
-      if (id && wants(id)) addOrRemove(id);
+      if (id && wants(id)) step(id);
     };
   });
   paintTray();
@@ -2292,18 +2337,18 @@ function paintDeckEditor(box, pool, r) {
   $('#deGroup', box).onchange = e => { deckEd.group = e.target.value; store.set('deckGroup', deckEd.group); redraw(); };
   $('#deCopy', box).onclick = () => copyText(deckText(deck), deck.name);
   $('#deReset', box)?.addEventListener('click', async e => {
-    if (!await confirmBox('Start over?', `Your deck goes back to the <b>${esc(r.officialPrecon)}</b> list. Every swap is undone, and your pool cards go back to the tray.`, 'Start over', true)) return;
+    if (!await confirmBox('Start over?', `Your deck goes back to the <b>${esc(r.officialPrecon)}</b> cards. Every pulled card you put in goes back to your pool.`, 'Start over', true)) return;
     startDeck(box, pool, r, e.target);
   });
   $$('.de-bar [data-act]', box).forEach(b => b.onclick = async () => {
     const a = b.dataset.act;
     if (a === 'clear') { deckEd.sel = null; redraw(); }
     else if (a === 'zoom') cardModal({ ...picked.c, id: null });
-    else if (a === 'add' || a === 'remove') addOrRemove(deckEd.sel);
+    else if (a === 'step') step(deckEd.sel);
     else if (a === 'lead') {
       const now = deck.cards.filter(c => c.board === 'commander').map(c => c.name);
       const next = picked.c.board === 'commander' ? now.filter(n => n !== picked.c.name) : [...now, picked.c.name].slice(-2);
-      try { r.deck = (await api('/deck' + lq(), { method: 'PUT', body: { commanders: next } })).deck; deckEd.sel = null; redraw(); } catch (err) { fail(err); }
+      try { r.deck = (await api('/deck' + lq(), { method: 'PUT', body: { commanders: next } })).deck; redraw(); } catch (err) { fail(err); }
     }
   });
 }
@@ -2438,7 +2483,7 @@ async function renderTradeBuilder(view) {
   if (!partners.some(p => p.userId === tb.with)) { if (tb.with) { tb.get.clear(); } tb.with = partners[0]?.userId || ''; }
   const mine = S.pools.find(p => p.userId === S.me.id);
   const theirs = partners.find(p => p.userId === tb.with);
-  const cardsOf = p => (p ? p.packs.flatMap(k => k.cards) : []);
+  const cardsOf = p => (p ? p.packs.filter(k => k.kind !== 'precon').flatMap(k => k.cards) : []);
   const held = new Set(d.held);
   const byId = new Map([...cardsOf(mine), ...cardsOf(theirs)].map(c => [c.id, c]));
   // Cards that left a pool since the offer was made drop out of the tray.

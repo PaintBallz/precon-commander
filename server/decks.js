@@ -7,7 +7,8 @@
 // fixed public API addresses (the link just supplies the deck id), so a link
 // can't make the server request anything else.
 import { db } from './db.js';
-import { fetchCollection, getPreconDeck } from './scryfall.js';
+import { fetchCollection } from './scryfall.js';
+import { findPrecon } from './precons.js';
 
 db.exec(`CREATE TABLE IF NOT EXISTS decks (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -252,13 +253,20 @@ export async function importDeck(userId, leagueId, { url, text, name }) {
 // plus pool cards swapped in. Each card has a key: pool cards by their pool
 // card id, precon cards by name. Cut precon cards can be put back.
 const keyOf = c => (c.poolId ? `pool:${c.poolId}` : `base:${c.name}`);
-const baseOf = d => d.base || d.cards.filter(c => !c.poolId);
-export async function startFromPrecon(userId, leagueId, precon) {
-  let got;
-  try { got = await getPreconDeck(precon); } catch { throw new DeckError(502, "Couldn't load the precon list right now. Try again in a minute."); }
-  if (!got) throw new DeckError(404, `"${precon}" isn't an official precon name, so there's no list to load. Import your list on the League tab instead.`);
-  const { cards, missing } = await resolve(got.entries);
-  return save(userId, leagueId, { name: got.name, source: 'precon', url: null, cards, missing, base: cards });
+// Decks built from the pool have no separate starting list.
+const baseOf = d => d.base || (d.source === 'pool' ? [] : d.cards.filter(c => !c.poolId));
+// A precon card in the pool, with its mana value and colours from the precon list.
+function preconCard(p, r) {
+  const e = p?.cards.find(c => c.name === r.name && c.set === r.set_code && c.number === r.number) || p?.cards.find(c => c.name === r.name);
+  return { qty: 1, board: e?.board || 'main', foil: !!r.foil, name: r.name, set: r.set_code, number: r.number, rarity: r.rarity, type: e?.type || r.type || '',
+    mana: e?.mana || '', cmc: e?.cmc || 0, colors: e?.colors || [], ci: e?.ci || [], image: r.image, back: r.back || null, art: null, uri: r.uri, poolId: r.id, precon: true };
+}
+// Start (or start over): the deck is every precon card in the player's pool.
+export function startFromPool(userId, leagueId, precon, pool) {
+  const p = findPrecon(precon);
+  const rows = pool.filter(r => r.pack_kind === 'precon');
+  if (!p || !rows.length) throw new DeckError(409, `"${precon}" isn't an official precon name, so its cards aren't in your pool. Ask an admin to allow a change, or import your list on the League tab.`);
+  return save(userId, leagueId, { name: p.name, source: 'pool', url: null, cards: rows.map(r => preconCard(p, r)), missing: [], base: null });
 }
 // pool: this player's pool_cards rows in the league.
 export async function changeDeck(userId, leagueId, { add, remove, pool }) {
@@ -274,10 +282,13 @@ export async function changeDeck(userId, leagueId, { add, remove, pool }) {
     const pc = pool.find(r => r.id === id);
     if (!pc) throw new DeckError(404, "That card isn't in your pool.");
     if (cards.some(c => c.poolId === id)) throw new DeckError(409, 'That card is already in your deck.');
-    const [sf] = await fetchCollection([{ set: pc.set_code, collector_number: pc.number }]).catch(() => [null]);
-    const card = sf && sf.name === pc.name ? deckCard({ qty: 1, board: 'main', foil: !!pc.foil }, sf)
-      : { qty: 1, board: 'main', foil: !!pc.foil, name: pc.name, set: pc.set_code, number: pc.number, rarity: pc.rarity, type: pc.type || '', mana: '', cmc: 0, colors: [], ci: [], image: pc.image, back: pc.back || null, art: null, uri: pc.uri };
-    cards.push({ ...card, poolId: id });
+    if (pc.pack_kind === 'precon') { cards.push(preconCard(findPrecon(pc.pack_note), pc)); }
+    else {
+      const [sf] = await fetchCollection([{ set: pc.set_code, collector_number: pc.number }]).catch(() => [null]);
+      const card = sf && sf.name === pc.name ? deckCard({ qty: 1, board: 'main', foil: !!pc.foil }, sf)
+        : { qty: 1, board: 'main', foil: !!pc.foil, name: pc.name, set: pc.set_code, number: pc.number, rarity: pc.rarity, type: pc.type || '', mana: '', cmc: 0, colors: [], ci: [], image: pc.image, back: pc.back || null, art: null, uri: pc.uri };
+      cards.push({ ...card, poolId: id });
+    }
   } else if (add?.startsWith('base:')) {
     const name = add.slice(5);
     const b = base.find(c => c.name === name);

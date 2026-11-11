@@ -4,6 +4,7 @@
 // a read-only archive (standings, history, pools).
 import crypto from 'node:crypto';
 import { db, transaction } from './db.js';
+import { officialName } from './precons.js';
 
 export const LEAGUE_MIN = 3;
 export const LEAGUE_MAX = 16;
@@ -55,7 +56,7 @@ export function leagueMembers(leagueId, { former = false } = {}) {
     SELECT u.id, u.username, m.precon, m.precon_locked, m.commander, m.precon_request, u.is_test, u.staff, m.joined_at, m.left_at FROM league_members m JOIN users u ON u.id = m.user_id
     WHERE m.league_id = ? ${former ? '' : 'AND m.left_at IS NULL'} AND u.is_admin = 0
     ORDER BY m.left_at IS NOT NULL, u.username COLLATE NOCASE`).all(leagueId)
-    .map(r => ({ id: r.id, username: r.username, precon: r.precon || '', preconLocked: !!r.precon_locked, commander: r.commander ? JSON.parse(r.commander) : null, preconRequest: r.precon_request ? JSON.parse(r.precon_request) : null, joinedAt: r.joined_at, leftAt: r.left_at || null, ...(r.is_test ? { test: true } : {}), ...(r.staff ? { admin: true } : {}) }));
+    .map(r => ({ id: r.id, username: r.username, precon: r.precon || '', preconLocked: !!r.precon_locked, preconOk: !r.precon || !!r.is_test || !!officialName(r.precon), commander: r.commander ? JSON.parse(r.commander) : null, preconRequest: r.precon_request ? JSON.parse(r.precon_request) : null, joinedAt: r.joined_at, leftAt: r.left_at || null, ...(r.is_test ? { test: true } : {}), ...(r.staff ? { admin: true } : {}) }));
 }
 // ---- a player's precon and commander card for one league ----
 export const memberRow = (leagueId, userId) => db.prepare('SELECT * FROM league_members WHERE league_id = ? AND user_id = ?').get(leagueId, userId);

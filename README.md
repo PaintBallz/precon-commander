@@ -40,7 +40,9 @@ and packs live.
   best pulls and recent pods.
 - **Season recap** with the champion, awards (Most Wins, Kingslayer, Mythic Magnet and more),
   top pulls and final standings, ready to paste into Discord.
-- **A precon for each league**, locked once saved, with a commander picture you can change any time. Admins can allow a change, and players can ask for one.
+- **A precon for each league**, picked from every official Commander precon (the lists are downloaded
+  once from MTGJSON and kept). Saving locks it and puts its cards in your pool. A commander picture
+  can change any time. Admins can allow a precon change, and players can ask for one.
 - **Deck editor** in the Pools tab: your deck as stacks of card pictures, starting from your
   precon's official list, with your pool in a tray to swap cards in and out. It flags decks that
   aren't 100 cards, have duplicates or go outside the commander's colours.

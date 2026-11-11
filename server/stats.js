@@ -12,7 +12,7 @@ const byDate = (a, b) => String(a.finishedAt || a.createdAt).localeCompare(Strin
 function pullsOf(pod, userId) {
   const who = [...pod.players, ...pod.absentees].find(p => p.id === userId);
   const out = [];
-  for (const k of who?.packs || []) if (k.status === 'opened') for (const c of k.cards || []) out.push({ ...c, podId: pod.id, podName: pod.name, packSet: k.set?.name || '' });
+  for (const k of who?.packs || []) if (k.status === 'opened' && k.kind !== 'precon') for (const c of k.cards || []) out.push({ ...c, podId: pod.id, podName: pod.name, packSet: k.set?.name || '' });
   return out;
 }
 
@@ -62,7 +62,7 @@ export async function playerStats(userId, leagueId) {
   const pulls = [...played, ...missed, ...given].flatMap(pod => pullsOf(pod, userId));
   for (const pod of [...played, ...missed, ...given]) {
     const who = [...pod.players, ...pod.absentees].find(p => p.id === userId);
-    for (const k of who.packs) if (k.status === 'opened' && k.kind !== 'trade') {
+    for (const k of who.packs) if (k.status === 'opened' && k.kind !== 'trade' && k.kind !== 'precon') {
       t.packs++;
       const name = k.set?.name || k.set?.code || '?';
       const r = sets.get(name) || sets.set(name, { name, icon: k.set?.icon || '', packs: 0 }).get(name);

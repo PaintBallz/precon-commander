@@ -68,8 +68,9 @@ const cardList = cards => {
 function leagueCards(ids, leagueId) {
   if (!ids.length) return new Map();
   const rows = db.prepare(`
-    SELECT c.* FROM pool_cards c JOIN pods p ON p.id = c.pod_id
-    WHERE c.id IN (${ids.map(() => '?').join(',')}) AND p.league_id = ? AND p.status IN ('playing', 'awarded', 'done')`).all(...ids, leagueId);
+    SELECT c.* FROM pool_cards c JOIN pods p ON p.id = c.pod_id JOIN pod_packs k ON k.id = c.pack_id
+    WHERE c.id IN (${ids.map(() => '?').join(',')}) AND p.league_id = ? AND p.status IN ('playing', 'awarded', 'done')
+      AND (k.kind IS NULL OR k.kind != 'precon')`).all(...ids, leagueId); // precon cards stay with their owner
   return new Map(rows.map(r => [r.id, r]));
 }
 const snap = (r, side) => ({ id: r.id, side, owner: r.user_id, name: r.name, set: r.set_code, number: r.number, rarity: r.rarity,
