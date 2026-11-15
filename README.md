@@ -45,7 +45,10 @@ and packs live.
   can change any time. Admins can allow a precon change, and players can ask for one.
 - **Deck editor** in the Pools tab: your deck as stacks of card pictures, starting from your
   precon's official list, with your pool in a tray to swap cards in and out. It flags decks that
-  aren't 100 cards, have duplicates or go outside the commander's colours.
+  aren't 100 cards, have duplicates or go outside the commander's colours. A private maybe board
+  holds cards you're considering, and Test draw deals a random opening hand.
+- **The deck played in each pod** is saved when the pod starts, so History and player pages show
+  the exact list each player used and what changed since their previous pod.
 - **Deck lists** can also come from a Moxfield or Archidekt link or a pasted list, shown with the
   commander, colour identity, mana curve and card types.
 - **Discord.** Finished pods, season recaps and announcements can be posted to a Discord channel.

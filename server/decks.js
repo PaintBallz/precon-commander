@@ -225,10 +225,20 @@ export function deckSummaries(userIds) {
 }
 export const deleteDeck = (userId, leagueId) => db.prepare('DELETE FROM decks WHERE user_id = ? AND league_id = ?').run(userId, leagueId).changes > 0;
 
+// The maybe board: cards (pool or cut precon cards, by key) the player is
+// thinking about. It isn't part of the deck. A card that goes into the deck
+// leaves it. Left out of a save, the saved one carries over.
 function save(userId, leagueId, deck, at = new Date().toISOString()) {
+  let maybe = deck.maybe;
+  if (maybe === undefined) {
+    const old = db.prepare('SELECT data FROM decks WHERE user_id = ? AND league_id = ?').get(userId, leagueId);
+    maybe = old ? JSON.parse(old.data).maybe || [] : [];
+  }
+  const inDeck = new Set(deck.cards.map(keyOf));
+  maybe = [...new Set(maybe)].filter(k => !inDeck.has(k));
   db.prepare(`INSERT INTO decks (user_id, league_id, name, source, url, data, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
               ON CONFLICT(user_id, league_id) DO UPDATE SET name = excluded.name, source = excluded.source, url = excluded.url, data = excluded.data, updated_at = excluded.updated_at`)
-    .run(userId, leagueId, deck.name, deck.source, deck.url || null, JSON.stringify({ cards: deck.cards, missing: deck.missing, base: deck.base || null }), at);
+    .run(userId, leagueId, deck.name, deck.source, deck.url || null, JSON.stringify({ cards: deck.cards, missing: deck.missing, base: deck.base || null, maybe }), at);
   return getDeck(userId, leagueId);
 }
 
@@ -307,11 +317,11 @@ export function startFromPool(userId, leagueId, precon, pool) {
 // add / remove: one key or a list of them. Everything is checked before the
 // deck is saved, so a change goes through whole or not at all.
 const keyList = v => (Array.isArray(v) ? v : v ? [v] : []);
-export async function changeDeck(userId, leagueId, { add, remove, pool }) {
+export async function changeDeck(userId, leagueId, { add, remove, maybe: mb = {}, pool }) {
   const d = getDeck(userId, leagueId);
   if (!d) throw new DeckError(404, 'Start your deck first.');
-  const adds = keyList(add), removes = keyList(remove);
-  if (!adds.length && !removes.length) throw new DeckError(400, 'Pick a card to add or remove.');
+  const adds = keyList(add), removes = keyList(remove), mbAdds = keyList(mb.add), mbRemoves = keyList(mb.remove);
+  if (!adds.length && !removes.length && !mbAdds.length && !mbRemoves.length) throw new DeckError(400, 'Pick a card to add or remove.');
   if (adds.length + removes.length > 150) throw new DeckError(400, "That's too many cards at once.");
   const base = baseOf(d), cards = d.cards;
   for (const key of removes) {
@@ -338,6 +348,20 @@ export async function changeDeck(userId, leagueId, { add, remove, pool }) {
       if (have.length) have[0].qty++; else cards.push({ ...b, qty: 1 });
     } else throw new DeckError(400, 'Pick a card to add or remove.');
   }
+  // The maybe board, after the deck's own changes (so a card can go from the deck to it in one step).
+  const maybe = (d.maybe || []).filter(k => !mbRemoves.includes(k));
+  for (const key of mbAdds) {
+    if (key.startsWith('pool:')) {
+      const id = Number(key.slice(5));
+      const pc = pool.find(r => r.id === id);
+      if (!pc) throw new DeckError(404, "One of those cards isn't in your pool any more. Reload and try again.");
+      if (inDeck.has(id)) throw new DeckError(409, `${pc.name} is in your deck.`);
+    } else if (key.startsWith('base:')) {
+      if (!base.some(c => c.name === key.slice(5))) throw new DeckError(404, "That card isn't from your precon.");
+    } else throw new DeckError(400, 'Pick a card for your maybe board.');
+    if (!maybe.includes(key)) maybe.push(key);
+  }
+  if (maybe.length > 100) throw new DeckError(400, 'Your maybe board holds up to 100 cards.');
   if (pulled.length) {
     const found = await fetchCollection(pulled.map(pc => ({ set: pc.set_code, collector_number: pc.number }))).catch(() => pulled.map(() => null));
     pulled.forEach((pc, i) => {
@@ -347,7 +371,9 @@ export async function changeDeck(userId, leagueId, { add, remove, pool }) {
       cards.push({ ...card, poolId: pc.id });
     });
   }
-  return save(userId, leagueId, { name: d.name, source: d.source, url: d.url, cards, missing: d.missing, base });
+  // Only the maybe board changed: the deck's "updated" time stays the same.
+  const same = !adds.length && !removes.length;
+  return save(userId, leagueId, { name: d.name, source: d.source, url: d.url, cards, missing: d.missing, base, maybe }, same ? d.updatedAt : undefined);
 }
 
 // Pick (or clear) which cards are the commander(s), and rename the deck.
@@ -359,4 +385,48 @@ export function editDeck(userId, leagueId, { commanders, name }) {
     for (const c of d.cards) c.board = want.has(c.name) ? 'commander' : 'main';
   }
   return save(userId, leagueId, { name: name != null ? String(name).trim().slice(0, 80) || d.name : d.name, source: d.source, url: d.url, cards: d.cards, missing: d.missing, base: d.base });
+}
+
+// ---------- the deck played in each pod ----------
+// When a pod starts, each player's deck is saved with it, with what changed
+// since their last pod in the league. History and player pages show it.
+const playedCard = c => ({ qty: c.qty, name: c.name, board: c.board, foil: !!c.foil, set: c.set, number: c.number, rarity: c.rarity, type: c.type, mana: c.mana,
+  cmc: c.cmc, colors: c.colors, ci: c.ci, image: c.image, back: c.back || null, uri: c.uri, ...(c.poolId ? { poolId: c.poolId } : {}), ...(c.precon ? { precon: true } : {}) });
+const copies = cards => { const m = new Map(); for (const c of cards) m.set(c.name, (m.get(c.name) || 0) + c.qty); return m; };
+const lessOf = (a, b) => [...a].filter(([n, q]) => q > (b.get(n) || 0)).map(([n, q]) => ({ name: n, qty: q - (b.get(n) || 0) })).sort((x, y) => x.name.localeCompare(y.name));
+export function savePodDeck(podId, userId, leagueId, deck, at = new Date().toISOString()) {
+  if (!deck?.cards?.length) return;
+  const cards = deck.cards.map(playedCard);
+  const prev = db.prepare(`SELECT pd.data FROM pod_decks pd JOIN pods p ON p.id = pd.pod_id
+    WHERE pd.user_id = ? AND p.league_id = ? AND pd.pod_id <> ? AND p.status <> 'discarded' ORDER BY pd.saved_at DESC LIMIT 1`).get(userId, leagueId, podId);
+  let added = null, removed = null;
+  if (prev) {
+    const was = copies(JSON.parse(prev.data).cards), now = copies(cards);
+    added = lessOf(now, was); removed = lessOf(was, now);
+  }
+  db.prepare('INSERT OR REPLACE INTO pod_decks (pod_id, user_id, name, data, saved_at) VALUES (?, ?, ?, ?, ?)')
+    .run(podId, userId, deck.name, JSON.stringify({ cards, added, removed, source: deck.source || '' }), at);
+}
+export function podDeck(podId, userId) {
+  const r = db.prepare('SELECT pd.*, p.name AS pod_name, p.league_id FROM pod_decks pd JOIN pods p ON p.id = pd.pod_id WHERE pd.pod_id = ? AND pd.user_id = ?').get(podId, userId);
+  if (!r) return null;
+  const d = JSON.parse(r.data);
+  return { name: r.name, source: d.source, url: null, updatedAt: r.saved_at, leagueId: r.league_id, podId: r.pod_id, podName: r.pod_name,
+    cards: d.cards, missing: [], added: d.added, removed: d.removed, ...summary(d.cards) };
+}
+// Which players have a saved deck in these pods: Set of "podId|userId".
+export function podDeckKeys(podIds) {
+  if (!podIds.length) return new Set();
+  return new Set(db.prepare(`SELECT pod_id, user_id FROM pod_decks WHERE pod_id IN (${podIds.map(() => '?').join(',')})`).all(...podIds).map(r => `${r.pod_id}|${r.user_id}`));
+}
+// A player's decks pod by pod in one league (or every league), newest first.
+export function podDeckList(userId, leagueId) {
+  return db.prepare(`SELECT pd.pod_id, pd.name, pd.data, pd.saved_at, p.name AS pod_name, p.status, p.winner_id, p.league_id
+    FROM pod_decks pd JOIN pods p ON p.id = pd.pod_id
+    WHERE pd.user_id = ? AND p.status <> 'discarded' AND (? IS NULL OR p.league_id = ?) ORDER BY pd.saved_at DESC LIMIT 50`).all(userId, leagueId, leagueId)
+    .map(r => {
+      const d = JSON.parse(r.data);
+      return { podId: r.pod_id, podName: r.pod_name, at: r.saved_at, leagueId: r.league_id, status: r.status, won: r.winner_id === userId, name: r.name,
+        count: d.cards.reduce((n, c) => n + c.qty, 0), added: d.added ? d.added.reduce((n, c) => n + c.qty, 0) : null, removed: d.removed ? d.removed.reduce((n, c) => n + c.qty, 0) : null };
+    });
 }

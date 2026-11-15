@@ -141,6 +141,16 @@ db.exec(`
     PRIMARY KEY (pod_id, round, voter_id)
   );
 
+  -- The deck each player had when a pod started (the list they played).
+  CREATE TABLE IF NOT EXISTS pod_decks (
+    pod_id TEXT NOT NULL REFERENCES pods(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    data TEXT NOT NULL,
+    saved_at TEXT NOT NULL,
+    PRIMARY KEY (pod_id, user_id)
+  );
+
   CREATE TABLE IF NOT EXISTS leagues (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,

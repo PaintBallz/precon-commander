@@ -30,7 +30,7 @@ import { getBoosterSets, BOOSTER_SET_TYPES, findCard } from './scryfall.js';
 import { keepPreconsFresh, preconNames, preconCount, officialName, givePreconCards, fillMissingPreconCards } from './precons.js';
 import { openPack, hasRealPack, realPackKind, localPackSets, sheetOdds } from './packs.js';
 import { requireAuth, requireAdmin, authRoutes, seedAdmin, listUsers, getUser, selfUser, deleteAccount } from './auth.js';
-import { importDeck, editDeck, getDeck, deleteDeck, DeckError, startFromPool, changeDeck, linkDeckToPool } from './decks.js';
+import { importDeck, editDeck, getDeck, deleteDeck, DeckError, startFromPool, changeDeck, linkDeckToPool, savePodDeck, podDeck, podDeckKeys, podDeckList } from './decks.js';
 import { playerStats, seasonRecap } from './stats.js';
 import { discordInvite, podFinishedPost, leagueEndedPost } from './discord.js';
 import { cached, cachedSync, clearCache } from './cache.js';
@@ -830,7 +830,10 @@ app.post('/api/pods', wrap(async (req, res) => {
     winnerId: null, spin: null, players, absentees: [],
   };
   logEvent(league.id, 'pod', req.user.id, `${pod.name} started: ${names(players.map(p => p.name))}.`);
-  res.json({ pod: view(req, commit(pod)) });
+  const saved = commit(pod);
+  // Each player's deck as it is now: the list they play in this pod.
+  for (const p of players) savePodDeck(pod.id, p.id, league.id, poolDeck(p.id, league.id));
+  res.json({ pod: view(req, saved) });
 }));
 
 app.post('/api/pods/:id/winner', wrap(async (req, res) => {
@@ -1136,7 +1139,11 @@ app.delete('/api/history', wrap(async (req, res) => {
 
 app.get('/api/history', wrap(async (req, res) => {
   const league = viewLeague(req);
-  res.json({ leagueId: league?.id || null, pods: league ? finishedPods(league.id).map(p => view(req, p)) : [] });
+  const pods = league ? finishedPods(league.id).map(p => view(req, p)) : [];
+  // Which players' decks (as played) can be opened from each pod.
+  const open = !league || req.user.adminAccount || league.rules.showDecks !== false;
+  const decks = [...podDeckKeys(pods.map(p => p.id))].filter(k => open || k.endsWith(`|${req.user.id}`));
+  res.json({ leagueId: league?.id || null, pods, decks });
 }));
 app.get('/api/pods/:id', (req, res) => {
   const pod = loadPod(req.params.id);
@@ -1233,7 +1240,16 @@ app.get('/api/players/:id', wrap(async (req, res) => {
     player: { id: u.id, username: u.username, precon: league ? memberRow(league.id, u.id)?.precon || '' : '', joined: u.created_at, leagues: theirs.map(l => ({ id: l.id, name: l.name, status: l.status })) },
     league: league ? { id: league.id, name: league.name, status: league.status, rank: rank >= 0 ? rank + 1 : null } : null,
     stats, ...deckFor(req, u.id, poolDeck(u.id, league?.id)),
+    podDecks: podDeckList(u.id, league?.id || null).filter(d => !deckFor(req, u.id, { leagueId: d.leagueId }).deckHidden),
   });
+}));
+// The deck a player played in one pod (shown like their deck on their page).
+app.get('/api/pods/:id/decks/:userId', wrap(async (req, res) => {
+  const d = podDeck(req.params.id, req.params.userId);
+  if (!d) throw new HttpError(404, 'No deck was saved for that pod.');
+  const { deck, deckHidden } = deckFor(req, req.params.userId, d);
+  if (deckHidden) throw new HttpError(403, 'This league keeps decks private.');
+  res.json({ deck });
 }));
 app.get('/api/leagues/:id/recap', wrap(async (req, res) => {
   const league = requireLeague(req.params.id);
@@ -1258,7 +1274,9 @@ function poolDeck(userId, leagueId) {
 // "showDecks" rule). The player and the main admin account always see it.
 function deckFor(req, ownerId, deck) {
   const open = !deck || ownerId === req.user.id || req.user.adminAccount || getLeague(deck.leagueId)?.rules.showDecks !== false;
-  return { deck: open ? deck : null, deckHidden: !open };
+  // The maybe board is the player's own.
+  const shown = deck && ownerId !== req.user.id && deck.maybe ? { ...deck, maybe: undefined } : deck;
+  return { deck: open ? shown : null, deckHidden: !open };
 }
 app.get('/api/deck', wrap(async (req, res) => {
   const l = viewLeague(req);
@@ -1301,7 +1319,7 @@ app.post('/api/deck/cards', wrap(async (req, res) => {
   const b = req.body || {};
   const pool = poolCards(l.id).filter(r => r.user_id === req.user.id);
   const keys = v => (Array.isArray(v) ? v : v ? [v] : []).slice(0, 200).map(x => String(x).slice(0, 200));
-  const deck = await changeDeck(req.user.id, l.id, { add: keys(b.add), remove: keys(b.remove), pool }).catch(deckFail);
+  const deck = await changeDeck(req.user.id, l.id, { add: keys(b.add), remove: keys(b.remove), maybe: { add: keys(b.maybe?.add), remove: keys(b.maybe?.remove) }, pool }).catch(deckFail);
   res.json({ deck });
 }));
 app.post('/api/deck', wrap(async (req, res) => {

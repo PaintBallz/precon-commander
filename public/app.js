@@ -2234,7 +2234,9 @@ function paintDeckEditor(box, pool, r) {
   const inDeckNames = new Set(deck.cards.map(c => c.name));
   const unlinked = new Map();
   for (const c of deck.cards) if (!c.poolId) unlinked.set(c.name, (unlinked.get(c.name) || 0) + c.qty);
-  const trayCards = poolList.filter(c => !used.has(c.id)).filter(c => {
+  // The maybe board: pool cards (or cut precon cards) set aside to think about.
+  const maybeKeys = new Set(deck.maybe || []);
+  const trayCards = poolList.filter(c => !used.has(c.id) && !maybeKeys.has(`pool:${c.id}`)).filter(c => {
     if (!isBasic(c)) return !inDeckNames.has(c.name);
     const n = unlinked.get(c.name) || 0;
     if (n > 0) { unlinked.set(c.name, n - 1); return false; }
@@ -2246,7 +2248,13 @@ function paintDeckEditor(box, pool, r) {
   for (const b of base) {
     const have = deck.cards.filter(c => !c.poolId && c.name === b.name).reduce((n, c) => n + c.qty, 0);
     // A cut card that's also in the pool already shows there, so it isn't listed twice.
-    if (b.qty > have && !poolNames.has(b.name)) cuts.push({ ...b, qty: b.qty - have });
+    const spare = b.qty - have - (maybeKeys.has(`base:${b.name}`) ? 1 : 0);
+    if (spare > 0 && !poolNames.has(b.name)) cuts.push({ ...b, qty: spare });
+  }
+  const maybeCards = [];
+  for (const k of maybeKeys) {
+    if (k.startsWith('pool:')) { const c = poolList.find(x => x.id === Number(k.slice(5))); if (c && !used.has(c.id)) maybeCards.push({ ...c, mkey: k }); }
+    else { const b = base.find(x => x.name === k.slice(5)); if (b) maybeCards.push({ ...b, qty: 1, mkey: k }); }
   }
   // Rule checks: shown, never blocked.
   const cmd = deck.cards.filter(c => c.board === 'commander');
@@ -2265,7 +2273,7 @@ function paintDeckEditor(box, pool, r) {
   if (gone.length) { problems.push(`No longer in your pool: ${names(gone)}`); gone.forEach(c => bad.add(deckKey(c))); }
 
   // Cards with the same name show once with a count; + and − move one copy.
-  const keyIn = (c, w) => (w === 'deck' ? deckKey(c) : w === 'pool' ? `pool:${c.id}` : `base:${c.name}`);
+  const keyIn = (c, w) => (w === 'deck' ? deckKey(c) : w === 'maybe' ? c.mkey : w === 'pool' ? `pool:${c.id}` : `base:${c.name}`);
   const itemize = (list, w) => {
     const m = new Map();
     for (const c of list) {
@@ -2277,6 +2285,7 @@ function paintDeckEditor(box, pool, r) {
   };
   const deckItems = itemize(deck.cards, 'deck');
   const trayItems = [...itemize(trayCards, 'pool'), ...itemize(cuts, 'cut')];
+  const maybeItems = itemize(maybeCards, 'maybe');
   const byCmc = deckEd.group === 'cmc';
   const groupOf = (c, tray) => (c.board === 'commander' && !tray ? 'Commander' : byCmc && !tray ? (typeOf(c) === 'Land' ? 'Lands' : Math.floor(c.cmc) >= 7 ? '7+' : String(Math.floor(c.cmc))) : typeOf(c));
   const label = g => (/^\d/.test(g) ? `Mana value ${g}` : TYPE_LABEL[g] || g);
@@ -2290,7 +2299,7 @@ function paintDeckEditor(box, pool, r) {
   function card(it) {
     const id = idOf(it), inDeck = it.w === 'deck';
     const isBad = inDeck && it.keys.some(k => bad.has(k));
-    const pulled = it.w !== 'cut' && it.c.poolId !== undefined ? !it.c.precon : it.w === 'pool' && !it.c.precon;
+    const pulled = it.w !== 'cut' && it.c.poolId !== undefined ? !it.c.precon : (it.w === 'pool' || (it.w === 'maybe' && it.c.id != null)) && !it.c.precon;
     return `<div class="dcard ${isBad ? 'bad' : ''} ${deckEd.sel === id ? 'sel' : ''} ${deckEd.multi.has(id) ? 'multi' : ''} ${pulled ? 'from-pool' : ''}" data-sel="${esc(id)}" draggable="true" tabindex="0" role="button" title="${esc(it.c.name)}${pulled ? ' (pulled from a pack)' : ''}">
       <img ${cardSrc(it.c.image, '(max-width: 600px) 45vw, 200px')} alt="${esc(it.c.name)}" loading="lazy">${deckEd.multi.has(id) ? '<span class="dcheck" aria-hidden="true">✓</span>' : ''}
       ${inDeck && isBasic(it.c) ? landStepper(it, id) : `${it.keys.length > 1 ? `<span class="dq">×${it.keys.length}</span>` : ''}
@@ -2306,7 +2315,7 @@ function paintDeckEditor(box, pool, r) {
   const find = id => {
     if (!id) return null;
     const w = id.slice(0, id.indexOf('|')), name = id.slice(id.indexOf('|') + 1);
-    return (w === 'deck' ? deckItems : trayItems).find(it => it.w === w && it.c.name === name) || null;
+    return (w === 'deck' ? deckItems : w === 'maybe' ? maybeItems : trayItems).find(it => it.w === w && it.c.name === name) || null;
   };
   const picked = find(deckEd.sel);
   if (!picked) deckEd.sel = null;
@@ -2319,7 +2328,7 @@ function paintDeckEditor(box, pool, r) {
     : '<span class="small muted">Click cards in your deck or your pool to pick them, then take them out or put them in together. Dragging a picked card moves them all.</span>');
   const pulledIn = deck.cards.filter(c => c.poolId && !c.precon).length;
   const canLead = picked?.w === 'deck' && (picked.c.board === 'commander' || /legendary|can be your commander/i.test(picked.c.type));
-  const where = it => (it.w === 'deck' ? (it.c.board === 'commander' ? 'Your commander' : 'In your deck') : it.w === 'pool' ? (it.c.precon ? 'In your pool, from your precon' : 'In your pool, pulled from a pack') : 'Cut from your precon');
+  const where = it => (it.w === 'deck' ? (it.c.board === 'commander' ? 'Your commander' : 'In your deck') : it.w === 'maybe' ? 'On your maybe board' : it.w === 'pool' ? (it.c.precon ? 'In your pool, from your precon' : 'In your pool, pulled from a pack') : 'Cut from your precon');
   box.innerHTML = `
     <div class="panel de-head">
       <div class="de-title"><h2>${esc(deck.name)}</h2><div class="deck-colors">${colorPips(deck.colors)}</div><span class="de-count ${deck.count === 100 ? 'ok' : 'bad'}">${deck.count}/100</span></div>
@@ -2329,16 +2338,21 @@ function paintDeckEditor(box, pool, r) {
         <select class="input" id="deGroup" title="How to group your deck"><option value="type">Group by type</option><option value="cmc" ${byCmc ? 'selected' : ''}>Group by mana value</option></select>
         <button class="btn sm ${deckEd.multiMode ? 'gold' : ''}" id="deMulti" aria-pressed="${deckEd.multiMode}">${deckEd.multiMode ? `${I.check} Done selecting` : 'Select several'}</button>
         <button class="btn sm" id="deCopy">${I.copy} Copy list</button>
+        <button class="btn sm" id="deDraw" title="Shuffle and draw an opening hand">Test draw</button>
         ${r.officialPrecon ? `<button class="btn sm ghost" id="deReset">Start over</button>` : ''}
       </div>
     </div>
     <h3 class="de-label">Your deck</h3>
     <div class="stacks" id="deStacks" data-drop="deck">${stacks(deckItems, false)}</div>
+    <div class="panel de-maybe">
+      <div class="spread"><h3 class="de-label" style="margin:0">Maybe board <span class="dim">${maybeItems.reduce((n, it) => n + it.keys.length, 0)}</span></h3><span class="small muted">Cards you're thinking about. They don't count toward your 100, and only you see them.</span></div>
+      <div class="stacks" id="deMaybe" data-drop="maybe">${maybeItems.length ? stacks(maybeItems, true) : '<p class="small muted">Drag cards here, or pick a card and choose <b>Maybe</b>.</p>'}</div>
+    </div>
     <div class="panel de-tray">
       <div class="spread"><h3 class="de-label" style="margin:0">Your pool <span class="dim">${trayItems.reduce((n, it) => n + it.keys.length, 0)} not in your deck</span></h3><span class="row" style="gap:6px"><input type="search" id="deQ" placeholder="Search your pool…" value="${esc(deckEd.q)}">${deckEd.multiMode || deckEd.multi.size ? '<button class="btn sm ghost" id="dePickAll" title="Pick every pool card the search shows">Pick all shown</button>' : ''}</span></div>
       <div class="stacks" id="deTray" data-drop="tray"></div>
     </div>
-    <div class="de-bar">${multiItems.length || deckEd.multiMode ? multiBar() : picked ? `<img ${cardSrc(picked.c.image, '40px')} alt=""><b>${esc(picked.c.name)}${picked.keys.length > 1 ? ` ×${picked.keys.length}` : ''}<span class="small muted">${where(picked)}</span></b>${picked.w === 'deck' ? `<button class="btn sm danger" data-act="step">− Take one out</button>${canLead ? `<button class="btn sm" data-act="lead">${I.crown} ${picked.c.board === 'commander' ? 'Not the commander' : 'Make commander'}</button>` : ''}` : `<button class="btn sm gold" data-act="step">+ Put one in</button>`}<button class="btn sm ghost" data-act="zoom">View card</button><button class="btn sm ghost" data-act="clear" aria-label="Unpick">${I.x}</button>` : `<span class="small muted">Hover over a card (or tap it) for <b>+</b> and <b>−</b> in its corner, drag cards between your deck and your pool, or click a card for more. Ctrl- or Shift-click to pick several.</span>`}${deckEd.undo.length ? `<button class="btn sm ghost de-undo" data-act="undo" title="Undo: ${esc(deckEd.undo.at(-1).label)}">↶ Undo last change</button>` : ''}</div>`;
+    <div class="de-bar">${multiItems.length || deckEd.multiMode ? multiBar() : picked ? `<img ${cardSrc(picked.c.image, '40px')} alt=""><b>${esc(picked.c.name)}${picked.keys.length > 1 ? ` ×${picked.keys.length}` : ''}<span class="small muted">${where(picked)}</span></b>${picked.w === 'deck' ? `<button class="btn sm danger" data-act="step">− Take one out</button>${picked.c.board !== 'commander' ? '<button class="btn sm" data-act="maybe">To maybe board</button>' : ''}${canLead ? `<button class="btn sm" data-act="lead">${I.crown} ${picked.c.board === 'commander' ? 'Not the commander' : 'Make commander'}</button>` : ''}` : `<button class="btn sm gold" data-act="step">+ Put one in</button>${picked.w === 'maybe' ? '<button class="btn sm" data-act="unmaybe">Off the maybe board</button>' : '<button class="btn sm" data-act="maybe">Maybe</button>'}`}<button class="btn sm ghost" data-act="zoom">View card</button><button class="btn sm ghost" data-act="clear" aria-label="Unpick">${I.x}</button>` : `<span class="small muted">Hover over a card (or tap it) for <b>+</b> and <b>−</b> in its corner, drag cards between your deck and your pool, or click a card for more. Ctrl- or Shift-click to pick several.</span>`}${deckEd.undo.length ? `<button class="btn sm ghost de-undo" data-act="undo" title="Undo: ${esc(deckEd.undo.at(-1).label)}">↶ Undo last change</button>` : ''}</div>`;
   const paintTray = () => {
     const q = deckEd.q.trim().toLowerCase();
     const hit = it => !q || it.c.name.toLowerCase().includes(q) || (it.c.type || '').toLowerCase().includes(q);
@@ -2361,7 +2375,20 @@ function paintDeckEditor(box, pool, r) {
     if (!it) return;
     const k = it.w === 'deck' ? it.keys.at(-1) : it.keys[0];
     if (it.w === 'deck') act({ remove: k }, { add: k }, `took out ${it.c.name}`);
+    else if (it.w === 'maybe') act({ add: k }, { remove: k, maybe: { add: [k] } }, `put in ${it.c.name}`);
     else act({ add: k }, { remove: k }, `put in ${it.c.name}`);
+  };
+  // Onto the maybe board (one copy, from the deck or the pool), or back off it.
+  const toMaybe = it => {
+    if (!it || it.w === 'maybe' || it.c.board === 'commander') return;
+    deckEd.sel = null;
+    if (it.w === 'deck') { const k = it.keys.at(-1); act({ remove: k, maybe: { add: [k] } }, { add: k, maybe: { remove: [k] } }, `moved ${it.c.name} to the maybe board`); }
+    else { const k = it.keys[0]; act({ maybe: { add: [k] } }, { maybe: { remove: [k] } }, `put ${it.c.name} on the maybe board`); }
+  };
+  const offMaybe = it => {
+    if (it?.w !== 'maybe') return;
+    deckEd.sel = null;
+    act({ maybe: { remove: it.keys } }, { maybe: { add: it.keys } }, `took ${it.c.name} off the maybe board`);
   };
   // Take out / put in every picked card (one copy each), as one change and one undo.
   const many = (items, dir) => {
@@ -2390,22 +2417,29 @@ function paintDeckEditor(box, pool, r) {
     $$('[data-step]', box).forEach(b => b.onclick = e => { e.stopPropagation(); step(b.dataset.step); });
     $$('.dland', box).forEach(s => s.addEventListener('click', e => e.stopPropagation()));
   }
-  // Drop pool cards on your deck to put them in, deck cards on your pool to take them out.
+  // Drop pool cards on your deck to put them in, deck cards on your pool to take them out,
+  // and anything on the maybe board to set it aside.
   $$('[data-drop]', box).forEach(zone => {
-    const wants = id => (zone.dataset.drop === 'deck') !== id.startsWith('deck|');
+    const z = zone.dataset.drop;
     zone.ondragover = e => { e.preventDefault(); zone.classList.add('drop'); };
     zone.ondragleave = () => zone.classList.remove('drop');
     zone.ondrop = e => {
       e.preventDefault(); zone.classList.remove('drop');
       const id = e.dataTransfer.getData('text/plain');
-      if (id === 'multi') many(zone.dataset.drop === 'deck' ? ins : outs, zone.dataset.drop === 'deck' ? 'in' : 'out');
-      else if (id && wants(id)) step(id);
+      if (id === 'multi') { if (z !== 'maybe') many(z === 'deck' ? ins : outs, z === 'deck' ? 'in' : 'out'); return; }
+      if (!id) return;
+      const w = id.slice(0, id.indexOf('|'));
+      if (z === 'maybe') toMaybe(find(id));
+      else if (z === 'deck') { if (w !== 'deck') step(id); }
+      else if (w === 'deck') step(id);
+      else if (w === 'maybe') offMaybe(find(id));
     };
   });
   paintTray();
   $('#deQ', box).oninput = e => { deckEd.q = e.target.value; paintTray(); };
   $('#deGroup', box).onchange = e => { deckEd.group = e.target.value; store.set('deckGroup', deckEd.group); redraw(); };
   $('#deCopy', box).onclick = () => copyText(deckText(deck), deck.name);
+  $('#deDraw', box).onclick = () => testDraw(deck);
   $('#deMulti', box).onclick = () => { deckEd.multiMode = !deckEd.multiMode; if (!deckEd.multiMode) deckEd.multi.clear(); else if (deckEd.sel) { deckEd.multi.add(deckEd.sel); deckEd.sel = null; } redraw(); };
   $('#dePickAll', box)?.addEventListener('click', () => {
     const q = deckEd.q.trim().toLowerCase();
@@ -2421,6 +2455,8 @@ function paintDeckEditor(box, pool, r) {
     if (a === 'clear') { deckEd.sel = null; redraw(); }
     else if (a === 'zoom') cardModal({ ...picked.c, id: null });
     else if (a === 'step') step(deckEd.sel);
+    else if (a === 'maybe') toMaybe(picked);
+    else if (a === 'unmaybe') offMaybe(picked);
     else if (a === 'multiOut') many(outs, 'out');
     else if (a === 'multiIn') many(ins, 'in');
     else if (a === 'multiClear') { deckEd.multi.clear(); redraw(); }
@@ -2756,7 +2792,7 @@ function queueSave(after) {
 async function renderHistory(view) {
   if (!S.history) {
     view.innerHTML = '<div class="spinner"></div>';
-    try { S.history = (await api('/history' + lq())).pods; } catch (err) { fail(err); return; }
+    try { const h = await api('/history' + lq()); S.history = h.pods; S.historyDecks = new Set(h.decks || []); } catch (err) { fail(err); return; }
     if (S.route !== 'history') return;
   }
   const pods = S.history;
@@ -2792,7 +2828,7 @@ async function renderHistory(view) {
         const hits = sortForReveal(pulls).reverse().filter(c => c.rarity === 'mythic' || c.rarity === 'rare');
         return `<div class="hplayer">
           <div class="spread"><div><b>${g.winnerId === p.id ? `${I.crown} ` : ''}${esc(p.name)}</b> ${p.precon ? `<span class="muted small">· ${esc(p.precon)}</span>` : ''}</div>
-          ${pulls.length ? `<button class="btn sm" data-copy="${g.id}:${p.id}">${I.copy} Copy ${pulls.length} pulls</button>` : ''}</div>
+          <span class="row" style="gap:6px">${S.historyDecks?.has(`${g.id}|${p.id}`) ? `<button class="btn sm" data-pdeck="${g.id}:${p.id}">Deck played</button>` : ''}${pulls.length ? `<button class="btn sm" data-copy="${g.id}:${p.id}">${I.copy} Copy ${pulls.length} pulls</button>` : ''}</span></div>
           <div class="row small muted" style="margin-top:6px">${p.packs.map(k => `<span class="chip">${k.status === 'choosing' ? '' : icon(k.set)}${k.status === 'choosing' ? 'unchosen' : esc(k.set.name)}${k.source === 'sacrifice' ? ` ${I.flame}` : ''}${k.status !== 'opened' ? ' (unopened)' : ` · ${k.cards.length}`}${isAdmin() ? `<button class="chip-x" data-delpack="${g.id}:${p.id}:${k.id}" title="Admin: delete this pack and its pulls">✕</button>` : ''}</span>`).join('') || 'No packs'}${p.sacrificed ? `<span class="chip">${I.flame} ${p.sacrificed} sacrificed</span>` : ''}</div>
           ${hits.length ? `<div class="mini-cards">${hits.map(c => `<img ${cardSrc(c.image, '72px')} alt="${esc(c.name)}" title="${esc(c.name)}" loading="lazy" data-card="${g.id}:${p.id}:${esc(c.set)}/${esc(c.number)}">`).join('')}</div>` : ''}
         </div>`;
@@ -2800,6 +2836,7 @@ async function renderHistory(view) {
     }).join('')}</div>`;
   const lookup = key => { const [gid, pid] = key.split(':'); const g = pods.find(x => x.id === gid); return g?.players.find(p => p.id === pid); };
   $$('[data-hdel]', view).forEach(b => b.onclick = () => deletePodFlow(pods.find(x => x.id === b.dataset.hdel)));
+  wirePodDecks(view);
   $$('[data-hfix]', view).forEach(b => b.onclick = () => fixPodFlow(pods.find(x => x.id === b.dataset.hfix)));
   $$('[data-delpack]', view).forEach(b => b.onclick = e => {
     e.preventDefault(); e.stopPropagation();
@@ -2873,10 +2910,10 @@ function deckHtml(deck, { mine = false } = {}) {
       <div class="deck-meta">
         <h3>${esc(deck.name)}</h3>
         <div class="deck-colors">${colorPips(deck.colors)}</div>
-        <div class="small muted">${deck.count} cards${packCount ? ` · <span class="tag-pack">${packCount} from packs</span>` : ''} · avg. mana value ${avg.toFixed(2)} · from ${src} · updated ${fmtDate(deck.updatedAt)}</div>
+        <div class="small muted">${deck.count} cards${packCount ? ` · <span class="tag-pack">${packCount} from packs</span>` : ''} · avg. mana value ${avg.toFixed(2)} · ${deck.podId ? `played in ${esc(deck.podName)}` : `from ${src} · updated ${fmtDate(deck.updatedAt)}`}</div>
         ${cmd.length ? '' : `<div class="small muted">${mine ? 'No commander marked: pick one in your Account page.' : 'No commander marked.'}</div>`}
         ${deck.missing?.length ? `<div class="small" style="color:var(--accent)">Not found on Scryfall: ${deck.missing.map(esc).join(', ')}</div>` : ''}
-        <div class="row" style="margin-top:8px"><button class="btn sm" id="deckCopy">${I.copy} Copy list</button></div>
+        <div class="row" style="margin-top:8px"><button class="btn sm" id="deckCopy">${I.copy} Copy list</button><button class="btn sm" id="deckDraw" title="Shuffle and draw an opening hand">Test draw</button></div>
       </div>
       <div class="deck-curve" aria-label="Mana curve">
         ${curve.map((n, i) => `<div class="dc-col" title="${n} card${n === 1 ? '' : 's'} at ${i === 7 ? '7+' : i}"><span>${n || ''}</span><i style="height:${Math.round(n / peak * 92)}px"></i><b>${i === 7 ? '7+' : i}</b></div>`).join('')}
@@ -2893,6 +2930,67 @@ function wireDeck(view, deck) {
     if (c) cardModal({ ...c, id: null });
   });
   $('#deckCopy', view)?.addEventListener('click', () => copyText(deckText(deck), deck.name));
+  $('#deckDraw', view)?.addEventListener('click', () => testDraw(deck));
+}
+
+// Test draw: shuffle everything but the commander, deal 7, then draw or
+// mulligan. Nothing is saved.
+function testDraw(deck) {
+  const library = deck.cards.filter(c => c.board !== 'commander').flatMap(c => Array.from({ length: c.qty }, () => c));
+  let order = [], shown = 7, mulls = 0;
+  const shuffle = () => {
+    order = library.slice();
+    for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+    shown = Math.min(7, order.length);
+  };
+  const m = $('#modal');
+  const paint = () => {
+    const hand = order.slice(0, shown);
+    const lands = hand.filter(c => typeOf(c) === 'Land').length;
+    m.innerHTML = `<div class="dlg-wide"><div class="dialog draw-box">
+      <div class="spread"><h2 style="margin:0">Test draw</h2><span class="small muted">${shown > 7 ? `Opening hand + ${plural(shown - 7, 'draw')}` : 'Opening hand'} · ${plural(lands, 'land')} · ${order.length - shown} left${mulls ? ` · ${plural(mulls, 'mulligan')}` : ''}</span></div>
+      <div class="draw-hand">${hand.map((c, i) => `<img ${cardSrc(c.image, '(max-width: 600px) 30vw, 150px')} alt="${esc(c.name)}" title="${esc(c.name)}" class="${i >= 7 ? 'drawn' : ''}">`).join('')}</div>
+      <div class="row"><button class="btn sm gold" id="drDraw" ${shown >= order.length ? 'disabled' : ''}>Draw a card</button><button class="btn sm" id="drMull">Mulligan</button><button class="btn sm ghost" id="drNew">Reset</button><span class="small muted" style="margin-left:auto">${library.length} cards shuffled (your commander stays out). Nothing is saved.</span><button class="btn sm ghost" id="drClose">Close</button></div>
+    </div></div>`;
+    $('#drDraw', m).onclick = () => { shown = Math.min(order.length, shown + 1); paint(); };
+    $('#drMull', m).onclick = () => { mulls++; shuffle(); paint(); };
+    $('#drNew', m).onclick = () => { mulls = 0; shuffle(); paint(); };
+    $('#drClose', m).onclick = () => { m.hidden = true; m.innerHTML = ''; };
+  };
+  shuffle();
+  paint();
+  m.hidden = false;
+  m.onclick = e => { if (e.target === m) { m.hidden = true; m.innerHTML = ''; } };
+}
+
+// ---------- the deck played in a pod ----------
+const cardNames = l => l.map(c => `${c.qty > 1 ? `${c.qty} ` : ''}${esc(c.name)}`).join(' · ');
+function deckChanges(d) {
+  if (d.added == null) return '<p class="small muted" style="margin:0">Their first pod with a saved deck in this league.</p>';
+  if (!d.added.length && !d.removed.length) return '<p class="small muted" style="margin:0">No changes since their last pod.</p>';
+  return `<div class="deck-changes"><span class="small muted">Since their last pod:</span>${d.added.length ? `<div><span class="chg in">In</span> ${cardNames(d.added)}</div>` : ''}${d.removed.length ? `<div><span class="chg out">Out</span> ${cardNames(d.removed)}</div>` : ''}</div>`;
+}
+async function podDeckModal(podId, userId, who = '') {
+  let deck;
+  try { deck = (await api(`/pods/${encodeURIComponent(podId)}/decks/${encodeURIComponent(userId)}`)).deck; } catch (err) { fail(err); return; }
+  const m = $('#modal');
+  m.innerHTML = `<div class="dlg-wide"><div class="dialog">
+    <div class="spread"><h2 style="margin:0">${who ? `${esc(who)}'s deck` : 'Deck'} in ${esc(deck.podName)}</h2><button class="btn sm ghost" id="pdClose">Close</button></div>
+    <p class="small muted" style="margin:4px 0 8px">The list as it was when the pod started, ${fmtDate(deck.updatedAt)}.</p>
+    ${deckChanges(deck)}
+    ${deckHtml(deck)}
+  </div></div>`;
+  m.hidden = false;
+  wireDeck(m, deck);
+  $('#pdClose', m).onclick = () => { m.hidden = true; m.innerHTML = ''; };
+  m.onclick = e => { if (e.target === m) { m.hidden = true; m.innerHTML = ''; } };
+}
+function wirePodDecks(view) {
+  $$('[data-pdeck]', view).forEach(b => b.onclick = e => {
+    e.preventDefault(); e.stopPropagation();
+    const [podId, userId] = b.dataset.pdeck.split(':');
+    podDeckModal(podId, userId, b.dataset.who || S.history?.find(g => g.id === podId)?.players.find(p => p.id === userId)?.name || '');
+  });
 }
 
 // The deck panel on the Account page: import, pick the commander, remove.
@@ -2951,7 +3049,7 @@ async function renderPlayer(view) {
   const q = S.params.league ? `?league=${encodeURIComponent(S.params.league)}` : '';
   try { d = await api(`/players/${encodeURIComponent(id)}${q}`); } catch (err) { view.innerHTML = `<div class="empty"><h2>Player not found</h2><p>${esc(err.message)}</p><p><a href="#league">Back to the league</a></p></div>`; return; }
   if (S.route !== 'player' || S.params.id !== id) return;
-  const { player, league, stats, deck, deckHidden } = d;
+  const { player, league, stats, deck, deckHidden, podDecks = [] } = d;
   const t = stats.totals;
   const mine = player.id === S.me.id;
   const scope = league ? league.id : 'all';
@@ -2997,9 +3095,14 @@ async function renderPlayer(view) {
     ` : `<div class="panel muted">${league ? `No finished pods in ${esc(league.name)} yet.` : 'No finished pods yet.'}</div>`}
     <section class="panel" style="margin-top:16px"><h2>Deck</h2>
       ${deck ? deckHtml(deck, { mine }) : `<p class="muted">${mine ? 'You haven\'t added your deck list yet. <a href="#account">Import it from Moxfield, Archidekt or a pasted list</a>.' : deckHidden ? 'This league keeps decks private.' : 'No deck list yet.'}</p>`}
-    </section>`;
+    </section>
+    ${podDecks.length ? `<section class="panel" style="margin-top:16px;overflow-x:auto"><h2>Deck by pod</h2>
+      <p class="small muted" style="margin-top:-4px">The list ${mine ? 'you' : esc(player.username)} played in each pod, saved when the pod started.</p>
+      <table class="standings"><thead><tr><th>Pod</th><th>Result</th><th>Deck</th><th class="num">Cards</th><th>Changes</th><th></th></tr></thead>
+      <tbody>${podDecks.map(p => `<tr><td><b>${esc(p.podName)}</b><div class="small muted">${fmtDate(p.at)}</div></td><td>${p.status === 'done' ? (p.won ? '<span class="res w">W</span>' : '<span class="res l">L</span>') : '<span class="small muted">playing</span>'}</td><td class="small">${esc(p.name)}</td><td class="num">${p.count}</td><td class="small">${p.added == null ? '<span class="dim">first</span>' : p.added || p.removed ? `<span class="chg in">+${p.added}</span> <span class="chg out">−${p.removed}</span>` : '<span class="dim">none</span>'}</td><td><button class="btn sm" data-pdeck="${p.podId}:${player.id}" data-who="${esc(player.username)}">View</button></td></tr>`).join('')}</tbody></table></section>` : ''}`;
   wirePulls(view, stats.bestPulls);
   if (deck) wireDeck(view, deck);
+  wirePodDecks(view);
 }
 
 // ---------- season recap ----------

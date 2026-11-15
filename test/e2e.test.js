@@ -363,7 +363,12 @@ test('pods hold 3 to 4 league members', async () => {
   assert.equal((await eve.post('/api/pods', { players: ids(['Nick', 'Mike', 'Joe']) })).status, 403, 'players add themselves');
   const adminId = (await ok(admin.get('/api/auth/me'))).user.id;
   assert.equal((await admin.post('/api/pods', { league: S.league, players: [{ userId: adminId }, ...ids(['Eve', 'Fay'])] })).status, 400, 'the admin account does not play in pods');
+  // Joe has a deck (his precon's cards); the others don't.
+  assert.equal((await ok(joe.post('/api/deck/start'))).deck.count, 7);
   const { pod } = await ok(nick.post('/api/pods', { players: [...ids(['Nick']), { userId: S.u.Mike.id, precon: 'Ignored: comes from the league' }, ...ids(['Joe', 'Dan'])] }));
+  const played = (await ok(nick.get(`/api/pods/${pod.id}/decks/${S.u.Joe.id}`))).deck;
+  assert.deepEqual([played.count, played.podName, played.added], [7, 'Pod 1', null], "Joe's deck is saved with the pod: his first");
+  assert.equal((await nick.get(`/api/pods/${pod.id}/decks/${S.u.Nick.id}`)).status, 404, 'no deck, nothing saved');
   assert.equal(pod.status, 'playing');
   assert.equal(pod.name, 'Pod 1');
   assert.equal(pod.leagueId, S.league);
@@ -872,6 +877,49 @@ test('deck lists: pasted or linked, looked up on Scryfall, shown on the player p
   assert.deepEqual(line('Forest').map(c => [c.qty, !!c.poolId, !!c.precon]), [[1, true, true], [1, true, true]], 'basics link one copy each, to the precon first');
   assert.deepEqual(line('Sol Ring').map(c => !!c.poolId), [false], 'a card that is not in the pool stays unlinked');
   assert.equal(imported.count, 4);
+});
+
+test('maybe board (private), and the deck played in each pod with what changed since the last one', async () => {
+  const started = (await ok(joe.post('/api/deck/start'))).deck;
+  const forest = started.cards.find(c => c.name === 'Forest');
+  const k = `pool:${forest.poolId}`;
+  const moved = (await ok(joe.post('/api/deck/cards', { remove: k, maybe: { add: [k] } }))).deck;
+  assert.equal(moved.count, 6, 'out of the deck...');
+  assert.deepEqual(moved.maybe, [k], '...and onto the maybe board in one step');
+  const off = (await ok(joe.post('/api/deck/cards', { maybe: { remove: [k] } }))).deck;
+  assert.deepEqual(off.maybe, []);
+  assert.equal(off.updatedAt, moved.updatedAt, "a maybe-board change doesn't count as a deck update");
+  await ok(joe.post('/api/deck/cards', { maybe: { add: [k] } }));
+  assert.equal((await joe.post('/api/deck/cards', { maybe: { add: ['pool:999999'] } })).status, 404, 'only your own pool cards');
+  const inDeck = `pool:${started.cards.find(c => c.name !== 'Forest').poolId}`;
+  assert.equal((await joe.post('/api/deck/cards', { maybe: { add: [inDeck] } })).status, 409, 'a card in the deck is not a maybe');
+  assert.deepEqual((await ok(joe.get('/api/deck'))).deck.maybe, [k]);
+  assert.equal((await ok(nick.get(`/api/deck?player=${S.u.Joe.id}`))).deck.maybe, undefined, 'only Joe sees his maybe board');
+
+  // A new pod saves the deck as it is now, with what changed since Pod 1.
+  const { pod } = await ok(eve.post('/api/pods', { players: ['Eve', 'Joe', 'Dan'].map(n => ({ userId: S.u[n].id })) }));
+  const played = (await ok(eve.get(`/api/pods/${pod.id}/decks/${S.u.Joe.id}`))).deck;
+  assert.equal(played.count, 6);
+  assert.deepEqual([played.added, played.removed], [[], [{ name: 'Forest', qty: 1 }]], 'one Forest fewer than in Pod 1');
+  assert.equal(played.maybe, undefined, 'the maybe board is not part of it');
+  await ok(joe.post('/api/deck/cards', { add: k }));
+  assert.equal((await ok(joe.get('/api/deck'))).deck.maybe.length, 0, 'a card put in the deck leaves the maybe board');
+  assert.equal((await ok(eve.get(`/api/pods/${pod.id}/decks/${S.u.Joe.id}`))).deck.count, 6, 'later edits leave the pod list alone');
+  const page = await ok(eve.get(`/api/players/${S.u.Joe.id}`));
+  const row = id => page.podDecks.find(p => p.podId === id);
+  assert.deepEqual([row(pod.id).count, row(pod.id).added, row(pod.id).removed, row(pod.id).status], [6, 0, 1, 'playing']);
+  assert.deepEqual([row(S.pod.id).count, row(S.pod.id).added, row(S.pod.id).status], [7, null, 'done']);
+  assert.ok((await ok(eve.get('/api/history'))).decks.includes(`${S.pod.id}|${S.u.Joe.id}`), 'History can open it');
+  // Private decks: the pod lists are private too.
+  await ok(nick.put(`/api/leagues/${S.league}`, { rules: { showDecks: false } }));
+  assert.equal((await eve.get(`/api/pods/${pod.id}/decks/${S.u.Joe.id}`)).status, 403);
+  assert.deepEqual((await ok(eve.get(`/api/players/${S.u.Joe.id}`))).podDecks, []);
+  assert.ok(!(await ok(eve.get('/api/history'))).decks.some(x => x.endsWith(`|${S.u.Joe.id}`)));
+  assert.equal((await ok(joe.get(`/api/pods/${pod.id}/decks/${S.u.Joe.id}`))).deck.count, 6, 'Joe still sees his own');
+  await ok(nick.put(`/api/leagues/${S.league}`, { rules: { showDecks: true } }));
+  // A discarded pod drops out of the list.
+  await ok(eve.post(`/api/pods/${pod.id}/discard`));
+  assert.ok(!(await ok(eve.get(`/api/players/${S.u.Joe.id}`))).podDecks.some(p => p.podId === pod.id));
 });
 
 test('admin log: a deleted card is kept for undo and comes back exactly', async () => {

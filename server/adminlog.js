@@ -21,6 +21,7 @@ export function podRows(podIds) {
     pod_packs: all(`SELECT * FROM pod_packs WHERE pod_id IN (${m})`, ...podIds),
     pool_cards: all(`SELECT * FROM pool_cards WHERE pod_id IN (${m})`, ...podIds),
     pod_votes: all(`SELECT * FROM pod_votes WHERE pod_id IN (${m})`, ...podIds),
+    pod_decks: all(`SELECT * FROM pod_decks WHERE pod_id IN (${m})`, ...podIds),
   };
 }
 export const packRows = packIds => (packIds.length ? {
@@ -38,7 +39,7 @@ export function leagueRows(leagueId) {
   };
 }
 // Parents before children, so foreign keys are satisfied on the way back in.
-const ORDER = ['leagues', 'league_members', 'league_events', 'pods', 'pod_players', 'pod_packs', 'pool_cards', 'pod_votes'];
+const ORDER = ['leagues', 'league_members', 'league_events', 'pods', 'pod_players', 'pod_packs', 'pool_cards', 'pod_votes', 'pod_decks'];
 function insertRows(rows) {
   for (const table of ORDER) {
     for (const row of rows[table] || []) {
