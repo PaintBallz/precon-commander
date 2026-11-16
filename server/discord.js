@@ -21,6 +21,7 @@
 // (A loopback http URL is accepted too, so the tests can catch the posts.)
 import { db, loadPod } from './db.js';
 import { decryptDiscordId } from './emailcrypt.js';
+import { bestFirst } from './stats.js';
 
 const WEBHOOK_RE = /^(?:https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com|http:\/\/127\.0\.0\.1:\d+)\/api\/webhooks\/\d+\/[\w-]+$/;
 const INVITE_RE = /^https:\/\/(?:discord\.gg|discord\.com\/invite)\/[\w-]+$/;
@@ -50,6 +51,20 @@ db.exec(`CREATE TABLE IF NOT EXISTS discord_pings (
   at TEXT NOT NULL,
   PRIMARY KEY (scope, user_id)
 )`);
+// The "top 3 pulls" post each player gets once a pod's packs are all opened.
+// When the table is first made, pods already fully opened count as sent, so
+// old pods aren't posted all at once.
+const pullsNew = !db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'discord_pulls'").get();
+db.exec(`CREATE TABLE IF NOT EXISTS discord_pulls (
+  pod_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  msg_id TEXT,
+  at TEXT NOT NULL,
+  PRIMARY KEY (pod_id, user_id)
+)`);
+if (pullsNew) db.prepare(`INSERT OR IGNORE INTO discord_pulls (pod_id, user_id, msg_id, at)
+  SELECT pp.pod_id, pp.user_id, NULL, ? FROM pod_players pp JOIN pods p ON p.id = pp.pod_id
+  WHERE p.spin_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pod_packs k WHERE k.pod_id = p.id AND k.status != 'opened' AND k.user_id IN (SELECT user_id FROM pod_players WHERE pod_id = p.id))`).run(new Date().toISOString());
 
 // ---------- talking to the webhook ----------
 // Everything goes out one call at a time so a burst can't trip Discord's per-webhook limit.
@@ -131,6 +146,7 @@ async function syncPod(podId, create) {
     let msg = msgOf(podId);
     if (pod.status === 'discarded') {
       if (msg) { await request('DELETE', `/messages/${msg}`); setMsg(podId, null); }
+      await dropPulls(podId);
     } else {
       const embed = podEmbed(pod);
       if (msg && !(await request('PATCH', `/messages/${msg}`, { embeds: [embed], allowed_mentions: NO_PINGS })).ok) msg = null;
@@ -140,9 +156,57 @@ async function syncPod(podId, create) {
         const r = await newMessage({ embeds: [embed] });
         setMsg(podId, r.data?.id || null);
       }
+      await postPulls(pod);
     }
   }
   await syncPings(`pod:${podId}`, waitingOn(pod));
+}
+
+// ---------- top 3 pulls per player ----------
+// Once every player who sat at the table has opened all their packs from the
+// pod, each of them gets their own post with their 3 best pulls (rarity, then
+// foil, the same order as the site; never prices). It @mentions them if they
+// linked their Discord ID. Sent once per player per pod, and kept.
+const pullsFrom = p => p.packs.filter(k => k.kind !== 'precon' && k.kind !== 'trade').flatMap(k => (k.cards || []).map(c => ({ ...c, packSet: k.set?.name || '' })));
+const RARITY_LABEL = { mythic: 'Mythic', rare: 'Rare', special: 'Special', uncommon: 'Uncommon', common: 'Common' };
+async function postPulls(pod) {
+  if (pod.kind !== 'pod' || !pod.spin) return;
+  const packed = pod.players.filter(p => p.packs.some(k => k.kind !== 'precon' && k.kind !== 'trade'));
+  if (!packed.length || !pod.players.every(p => p.packs.every(k => k.status === 'opened'))) return;
+  const sent = new Set(db.prepare('SELECT user_id FROM discord_pulls WHERE pod_id = ?').all(pod.id).map(r => r.user_id));
+  const league = db.prepare('SELECT name FROM leagues WHERE id = ?').get(pod.leagueId)?.name || 'League';
+  for (const p of packed) {
+    if (sent.has(p.id)) continue;
+    const top = pullsFrom(p).sort(bestFirst).slice(0, 3);
+    if (!top.length) continue;
+    const u = db.prepare('SELECT discord_id, is_test FROM users WHERE id = ?').get(p.id);
+    // Decrypted only here, for the one message that mentions them.
+    const discordId = u && !u.is_test ? decryptDiscordId(u.discord_id) : '';
+    const ping = DISCORD_ID_RE.test(discordId);
+    const medals = ['🥇', '🥈', '🥉'];
+    const lines = top.map((c, i) => {
+      const name = c.uri ? `[${md(c.name)}](${c.uri})` : `**${md(c.name)}**`;
+      return `${medals[i]} ${name}${c.foil ? ' ✨ foil' : ''} — ${RARITY_LABEL[c.rarity] || md(c.rarity || '')}${c.packSet ? ` · ${md(c.packSet)}` : ''}`;
+    });
+    const r = await request('POST', '?wait=true', {
+      username: NAME,
+      ...(ping ? { content: `<@${discordId}> your best pulls from **${md(pod.name)}**` } : {}),
+      allowed_mentions: ping ? { parse: [], users: [discordId] } : NO_PINGS,
+      embeds: [{
+        color: GOLD,
+        title: cut(`${p.name}'s top ${top.length === 1 ? 'pull' : `${top.length} pulls`} from ${pod.name}`, 250),
+        url: `${SITE}/#history`,
+        description: cut(lines.join('\n'), 3500),
+        ...(top[0].image ? { image: { url: top[0].image } } : {}),
+        footer: { text: league }, timestamp: new Date().toISOString(),
+      }],
+    });
+    if (r.ok) db.prepare('INSERT OR REPLACE INTO discord_pulls (pod_id, user_id, msg_id, at) VALUES (?, ?, ?, ?)').run(pod.id, p.id, r.data?.id || null, new Date().toISOString());
+  }
+}
+async function dropPulls(podId) {
+  for (const r of db.prepare('SELECT msg_id FROM discord_pulls WHERE pod_id = ?').all(podId)) if (r.msg_id) await request('DELETE', `/messages/${r.msg_id}`);
+  db.prepare('DELETE FROM discord_pulls WHERE pod_id = ?').run(podId);
 }
 const settling = new Map();
 // Something in a pod changed: update its post and pings once things settle.
@@ -162,6 +226,7 @@ export function podDeleted(podId, msg) {
   if (t) { clearTimeout(t.timer); settling.delete(podId); }
   enqueue(async () => {
     if (msg) await request('DELETE', `/messages/${msg}`);
+    await dropPulls(podId);
     await syncPings(`pod:${podId}`, new Map());
   });
 }

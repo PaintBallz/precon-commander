@@ -971,6 +971,54 @@ test('Discord: one live post per pod, edited as it goes; opt-in pings, deleted o
   await ok(eve.post(`/api/pods/${pod.id}/discard`));
   await waitFor(() => after().some(p => p.method === 'DELETE' && p.path.endsWith(`/messages/${live.id}`)), 'the discarded pod post to be deleted');
 
+  // Played through: once all three have opened their packs, each gets their own top-3 post.
+  {
+    const REAL = ['dom', 'war', 'eld', 'neo'];
+    await ok(admin.put('/api/settings', { league: S.league, excluded: S.sets.map(s => s.code).filter(c => !REAL.includes(c)) }));
+    const c = { Eve: eve, Joe: joe, Dan: dan };
+    const { pod: p2 } = await ok(eve.post('/api/pods', { players: ['Eve', 'Joe', 'Dan'].map(n => ({ userId: S.u[n].id })) }));
+    await ok(eve.post(`/api/pods/${p2.id}/winner`, { playerId: S.u.Eve.id }));
+    await ok(eve.post(`/api/pods/${p2.id}/vote`, { candidateId: S.u.Dan.id }));
+    await ok(joe.post(`/api/pods/${p2.id}/vote`, { candidateId: S.u.Dan.id }));
+    await ok(dan.post(`/api/pods/${p2.id}/vote`, { candidateId: S.u.Eve.id }));
+    await watchAll(p2.id);
+    const { pod: spun } = await ok(eve.post(`/api/pods/${p2.id}/spin`));
+    await ok(admin.put('/api/settings', { league: S.league, reset: true }));
+    const pullPosts = () => after().filter(p => / pulls? from /.test(p.body.embeds?.[0]?.title || '') && p.body.embeds[0].title.endsWith(` from ${p2.name}`));
+    const open = async who => { for (const k of spun.players.find(p => p.name === who).packs.filter(k => k.status !== 'opened')) await ok(c[who].post(`/api/pods/${p2.id}/packs/${k.id}/open`)); };
+    await open('Eve'); await open('Joe');
+    await new Promise(r => setTimeout(r, 300));
+    assert.equal(pullPosts().length, 0, 'nothing until every player has opened their packs');
+    await open('Dan');
+    await waitFor(() => pullPosts().length === 3, 'a top-pulls post for each of the 3 players');
+    await new Promise(r => setTimeout(r, 200));
+    assert.equal(pullPosts().length, 3, 'one each, sent once');
+    const { pod: full } = await ok(eve.get(`/api/pods/${p2.id}`));
+    const R = { mythic: 4, rare: 3, special: 3, uncommon: 2, common: 1 };
+    for (const who of ['Eve', 'Joe', 'Dan']) {
+      const post = pullPosts().find(p => p.body.embeds[0].title === `${who}'s top 3 pulls from ${p2.name}`);
+      assert.ok(post, `${who} has their own post`);
+      const lines = post.body.embeds[0].description.split('\n');
+      assert.equal(lines.length, 3);
+      const cards = full.players.find(p => p.name === who).packs.filter(k => k.kind !== 'precon').flatMap(k => k.cards);
+      const best = Math.max(...cards.map(x => R[x.rarity] || 0));
+      assert.ok(cards.filter(x => (R[x.rarity] || 0) === best).some(x => lines[0].includes(x.name.replace(/([\\*_~`|>#\[\]()-])/g, '\\$1'))), `${who}'s first line is one of their highest-rarity cards`);
+      assert.doesNotMatch(JSON.stringify(post.body), /price|\$\d/i, 'no prices');
+      if (who === 'Joe') {
+        assert.ok(post.body.content.startsWith(`<@${JOE}> your best pulls from`), 'Joe linked his ID: he is pinged');
+        assert.deepEqual(post.body.allowed_mentions, { parse: [], users: [JOE] });
+      } else {
+        assert.equal(post.body.content, undefined, `${who} linked no ID: no ping`);
+        assert.deepEqual(post.body.allowed_mentions, { parse: [] });
+      }
+    }
+    await ok(eve.post(`/api/pods/${p2.id}/finish`));
+    // The admin deletes the pod: its pull posts go too (and later tests see the history as before).
+    const ids = pullPosts().map(p => p.id);
+    await ok(admin.del(`/api/pods/${p2.id}`));
+    await waitFor(() => ids.every(id => after().some(p => p.method === 'DELETE' && p.path.endsWith(`/messages/${id}`))), 'the pull posts to be deleted with the pod');
+  }
+
   // A trade offer pings whoever has to answer it; answering clears it.
   const pools = (await ok(nick.get('/api/pools'))).pools;
   const gift = pools.find(p => p.username === 'Nick').packs.filter(k => k.kind !== 'precon').flatMap(k => k.cards)[0];

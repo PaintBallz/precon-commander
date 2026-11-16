@@ -17,7 +17,7 @@ function pullsOf(pod, userId) {
 }
 
 // Best pulls: mythics before rares, foils first; newest first among equals.
-const bestFirst = (a, b) => (RARITY[b.rarity] || 0) - (RARITY[a.rarity] || 0) || Number(b.foil) - Number(a.foil) || (b.id || 0) - (a.id || 0);
+export const bestFirst = (a, b) => (RARITY[b.rarity] || 0) - (RARITY[a.rarity] || 0) || Number(b.foil) - Number(a.foil) || (b.id || 0) - (a.id || 0);
 const pullView = c => ({ id: c.id, name: c.name, set: c.set, number: c.number, rarity: c.rarity, foil: c.foil, image: c.image, back: c.back, uri: c.uri, podName: c.podName });
 
 function streaks(results) {
