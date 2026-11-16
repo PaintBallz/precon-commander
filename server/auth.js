@@ -1,7 +1,7 @@
 // League accounts: username + password login, email for recovery, one admin.
 // Passwords are scrypt-hashed; sessions are random tokens in an HttpOnly cookie.
 import crypto from 'node:crypto';
-import { encryptEmail, decryptEmail, hashEmail, maskEmail } from './emailcrypt.js';
+import { encryptEmail, decryptEmail, hashEmail, maskEmail, encryptDiscordId, decryptDiscordId, maskDiscordId } from './emailcrypt.js';
 import { db, transaction } from './db.js';
 import { sendMail, mailEnabled } from './mail.js';
 import { clientIp } from './ratelimit.js';
@@ -71,7 +71,7 @@ export function publicUser(r) {
 }
 // Players can change their own username once; admins whenever they like.
 const canRename = r => !!(r.is_admin || r.staff || !r.username_changed_at);
-export const selfUser = r => r && { ...publicUser(r), email: maskEmail(decryptEmail(r.email)), canRename: canRename(r), discordId: r.discord_id || '' };
+export const selfUser = r => r && { ...publicUser(r), email: maskEmail(decryptEmail(r.email)), canRename: canRename(r), discordId: maskDiscordId(decryptDiscordId(r.discord_id)) };
 export const getUser = id => db.prepare(`SELECT ${userCols} FROM users WHERE id = ?`).get(id);
 export const listUsers = () => db.prepare(`SELECT ${userCols} FROM users ORDER BY username COLLATE NOCASE`).all();
 const byLogin = login => db.prepare('SELECT * FROM users WHERE username = ? OR email_hash = ?').get(login, hashEmail(login));
@@ -263,8 +263,8 @@ export function authRoutes(app, wrap, onChange = () => {}) {
     if (b.discordId != null) {
       const discordId = String(b.discordId).trim();
       if (discordId && !DISCORD_ID_RE.test(discordId)) throw new AuthError(400, 'A Discord user ID is 17 to 20 digits. In Discord, turn on Developer Mode, then right-click your name and choose Copy User ID.');
-      if ((getUser(req.user.id).discord_id || '') !== discordId) {
-        db.prepare('UPDATE users SET discord_id = ? WHERE id = ?').run(discordId || null, req.user.id);
+      if (decryptDiscordId(getUser(req.user.id).discord_id) !== discordId) {
+        db.prepare('UPDATE users SET discord_id = ? WHERE id = ?').run(discordId ? encryptDiscordId(discordId) : null, req.user.id);
         pingsChanged(req.user.id);
       }
     }

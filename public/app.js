@@ -510,9 +510,10 @@ async function renderAccount(view) {
     ${S.discordPings && !me.adminAccount && !me.viewAs ? `<form class="panel grid" id="pingForm" style="margin-top:18px">
       <h2>Discord pings</h2>
       <p class="small muted" style="margin:0">Get an @mention in the league's Discord channel when it's your turn: voting, spinning, packs to open or a trade offer. The ping is deleted once you've done it. Leave this empty for no pings.</p>
-      <label>Your Discord user ID<input name="discordId" inputmode="numeric" pattern="\\d{17,20}" maxlength="20" autocomplete="off" placeholder="e.g. 123456789012345678" value="${esc(me.discordId || '')}"></label>
+      ${me.discordId ? `<p class="small" style="margin:0">${I.check} Linked: <b>${esc(me.discordId)}</b> <span class="muted">(stored encrypted; only the last 4 digits are ever shown)</span></p>` : ''}
+      <label>${me.discordId ? 'Replace with another Discord user ID' : 'Your Discord user ID'}<input name="discordId" inputmode="numeric" pattern="\\d{17,20}" maxlength="20" autocomplete="off" placeholder="e.g. 123456789012345678" ${me.discordId ? '' : 'required'}></label>
       <details class="small"><summary>How do I find it?</summary><p class="muted" style="margin:6px 0 0">In Discord, open <b>User Settings → Advanced</b> and turn on <b>Developer Mode</b>. Then right-click your name (on a phone, tap your profile and the <b>⋯</b> menu) and choose <b>Copy User ID</b>. It's a long number, not your username.</p></details>
-      <div class="row"><button class="btn gold">Save</button>${me.discordId ? '<button type="button" class="btn sm" id="pingTest">Send me a test ping</button>' : ''}</div>
+      <div class="row"><button class="btn gold">Save</button>${me.discordId ? '<button type="button" class="btn sm" id="pingTest">Send me a test ping</button><button type="button" class="btn sm danger" id="pingOff">Remove (no pings)</button>' : ''}</div>
     </form>` : ''}
     <div id="fbBox"></div>
     <div id="adminBox"></div>
@@ -530,15 +531,19 @@ async function renderAccount(view) {
     try { await post('/auth/delete', f); S.me = null; toast('Your account was deleted.', 'good'); location.hash = ''; location.reload(); } catch (err) { fail(err); }
   });
   renderFeedback($('#fbBox', view));
-  $('#pingForm', view)?.addEventListener('submit', async e => {
-    e.preventDefault();
-    const discordId = new FormData(e.target).get('discordId').trim();
+  const savePing = async discordId => {
     try {
       S.me = (await api('/auth/profile', { method: 'PUT', body: { discordId } })).user;
-      toast(discordId ? "Saved. You'll be pinged when it's your turn." : 'Pings turned off.', 'good');
+      toast(discordId ? "Saved. You'll be pinged when it's your turn." : 'Removed. No more pings.', 'good');
       renderAccount(view);
     } catch (err) { fail(err); }
+  };
+  $('#pingForm', view)?.addEventListener('submit', e => {
+    e.preventDefault();
+    const discordId = new FormData(e.target).get('discordId').trim();
+    if (discordId) savePing(discordId);
   });
+  $('#pingOff', view)?.addEventListener('click', () => savePing(''));
   $('#pingTest', view)?.addEventListener('click', async e => {
     e.target.disabled = true;
     try { const r = await post('/discord/test-ping'); toast(r.ok ? 'Test ping sent. Check the Discord channel.' : "Discord didn't take it. Try again later.", r.ok ? 'good' : ''); } catch (err) { fail(err); }

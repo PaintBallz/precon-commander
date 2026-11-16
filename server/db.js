@@ -18,7 +18,7 @@
 // (The old single-game `games` table and the pre-table `pods_legacy_json` are
 // left in place, unused.)
 import { DatabaseSync } from 'node:sqlite';
-import { encryptEmail, hashEmail } from './emailcrypt.js';
+import { encryptEmail, hashEmail, encryptDiscordId } from './emailcrypt.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -259,6 +259,18 @@ if (!db.prepare("SELECT 1 FROM pragma_table_info('league_members') WHERE name = 
     ALTER TABLE league_members ADD COLUMN precon_request TEXT;
     UPDATE league_members SET precon = COALESCE((SELECT trim(u.precon) FROM users u WHERE u.id = user_id), '');
     UPDATE league_members SET precon_locked = 1 WHERE precon <> '';`);
+}
+// Discord user IDs are stored encrypted too. Any saved in plain text are
+// converted once, and the file is rebuilt so no plain copy is left behind.
+{
+  const plain = db.prepare("SELECT id, discord_id FROM users WHERE discord_id IS NOT NULL AND discord_id NOT LIKE 'dc1:%'").all();
+  if (plain.length) {
+    const set = db.prepare('UPDATE users SET discord_id = ? WHERE id = ?');
+    db.exec('BEGIN IMMEDIATE');
+    try { for (const u of plain) set.run(/^\d{17,20}$/.test(u.discord_id) ? encryptDiscordId(u.discord_id) : null, u.id); db.exec('COMMIT'); }
+    catch (err) { db.exec('ROLLBACK'); throw err; }
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE); VACUUM; PRAGMA wal_checkpoint(TRUNCATE);');
+  }
 }
 // Emails are stored encrypted, with a keyed hash for lookups (see emailcrypt.js).
 // Any still in plain text are converted once, then the file is rebuilt so the

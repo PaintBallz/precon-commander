@@ -936,7 +936,17 @@ test('Discord: one live post per pod, edited as it goes; opt-in pings, deleted o
   const JOE = '123456789012345678';
   assert.equal((await joe.put('/api/auth/profile', { discordId: 'joe#1234' })).status, 400, 'only a numeric Discord user ID');
   assert.equal((await joe.post('/api/discord/test-ping')).status, 400, 'no ID, no test ping');
-  assert.equal((await ok(joe.put('/api/auth/profile', { discordId: JOE }))).user.discordId, JOE);
+  assert.equal((await ok(joe.put('/api/auth/profile', { discordId: JOE }))).user.discordId, '•••• 5678', 'only the last 4 digits come back');
+  assert.ok(!JSON.stringify(await ok(joe.get('/api/state'))).includes(JOE), 'not even Joe gets the full ID back');
+  assert.ok(!JSON.stringify(await ok(admin.get('/api/admin/users'))).includes(JOE), 'nor the admin');
+  {
+    const raw = new DatabaseSync(path.join(DATA_DIR, 'app.db'), { readOnly: true });
+    try { assert.match(raw.prepare('SELECT discord_id FROM users WHERE id = ?').get(S.u.Joe.id).discord_id, /^dc1:[\w-]+$/, 'stored encrypted'); } finally { raw.close(); }
+    for (const f of ['app.db', 'app.db-wal']) {
+      const file = path.join(DATA_DIR, f);
+      if (fs.existsSync(file)) assert.ok(!fs.readFileSync(file).includes(JOE), `no plain Discord ID in ${f}`);
+    }
+  }
   assert.ok(!JSON.stringify(await ok(nick.get(`/api/players/${S.u.Joe.id}`))).includes(JOE), "other players never see it");
   assert.equal((await ok(joe.get('/api/state'))).discordPings, true);
   const t0 = discordPosts.length;
@@ -969,6 +979,7 @@ test('Discord: one live post per pod, edited as it goes; opt-in pings, deleted o
   await ok(joe.post(`/api/trades/${offer.id}/decline`));
   await waitFor(() => after().some(p => p.method === 'DELETE' && p.path.endsWith(`/messages/${tping.id}`)), 'the trade ping to be deleted');
   assert.equal((await ok(joe.put('/api/auth/profile', { discordId: '' }))).user.discordId, '', 'pings off');
+  { const raw = new DatabaseSync(path.join(DATA_DIR, 'app.db'), { readOnly: true }); try { assert.equal(raw.prepare('SELECT discord_id FROM users WHERE id = ?').get(S.u.Joe.id).discord_id, null, 'removed for good'); } finally { raw.close(); } }
 });
 
 test('admin log: a deleted card is kept for undo and comes back exactly', async () => {

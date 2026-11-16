@@ -39,6 +39,7 @@ import { rateLimit, streamSlot } from './ratelimit.js';
 import { adminRoutes, currentAnnouncement } from './admin.js';
 import { logAdmin, podRows, packRows, cardRows, leagueRows } from './adminlog.js';
 import { db } from './db.js';
+import { decryptDiscordId } from './emailcrypt.js';
 import { feedbackRoutes, newFeedbackCount } from './feedback.js';
 import { tradeRoutes, tradesWaiting, closeLeagueTrades } from './trades.js';
 
@@ -1251,7 +1252,7 @@ app.get('/api/players/:id', wrap(async (req, res) => {
 const testPings = new Map();
 app.post('/api/discord/test-ping', wrap(async (req, res) => {
   if (!discordEnabled()) throw new HttpError(409, "This site isn't connected to Discord.");
-  const id = db.prepare('SELECT discord_id FROM users WHERE id = ?').get(req.user.id)?.discord_id;
+  const id = decryptDiscordId(db.prepare('SELECT discord_id FROM users WHERE id = ?').get(req.user.id)?.discord_id);
   if (!id) throw new HttpError(400, 'Save your Discord user ID first.');
   if (Date.now() - (testPings.get(req.user.id) || 0) < 60e3) throw new HttpError(429, 'One test ping a minute. Check the channel for the last one.');
   testPings.set(req.user.id, Date.now());

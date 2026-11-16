@@ -20,6 +20,7 @@
 // dashboard.
 // (A loopback http URL is accepted too, so the tests can catch the posts.)
 import { db, loadPod } from './db.js';
+import { decryptDiscordId } from './emailcrypt.js';
 
 const WEBHOOK_RE = /^(?:https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com|http:\/\/127\.0\.0\.1:\d+)\/api\/webhooks\/\d+\/[\w-]+$/;
 const INVITE_RE = /^https:\/\/(?:discord\.gg|discord\.com\/invite)\/[\w-]+$/;
@@ -196,10 +197,12 @@ async function syncPings(scope, wanted) {
   for (const [userId, want] of wanted) {
     if (kept.has(userId)) continue;
     const u = db.prepare('SELECT discord_id, is_test FROM users WHERE id = ?').get(userId);
-    if (!u?.discord_id || u.is_test) continue;
+    // Decrypted only here, for the one message that pings them.
+    const discordId = u && !u.is_test ? decryptDiscordId(u.discord_id) : '';
+    if (!DISCORD_ID_RE.test(discordId)) continue;
     const page = scope.startsWith('trade:') ? 'trades' : want.kind === 'packs' ? 'packs' : 'pods';
     const r = await request('POST', '?wait=true', {
-      username: NAME, content: `<@${u.discord_id}> ${want.text} → <${SITE}/#${page}>`, allowed_mentions: { parse: [], users: [u.discord_id] },
+      username: NAME, content: `<@${discordId}> ${want.text} → <${SITE}/#${page}>`, allowed_mentions: { parse: [], users: [discordId] },
     });
     db.prepare('INSERT OR REPLACE INTO discord_pings (scope, user_id, kind, msg_id, at) VALUES (?, ?, ?, ?, ?)')
       .run(scope, userId, want.kind, r.data?.id || null, new Date().toISOString());

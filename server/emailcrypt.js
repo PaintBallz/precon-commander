@@ -40,3 +40,27 @@ export function decryptEmail(value) {
   decipher.setAuthTag(buf.subarray(12, 28));
   return Buffer.concat([decipher.update(buf.subarray(28)), decipher.final()]).toString('utf8');
 }
+
+// ---------- Discord user IDs ----------
+// Stored encrypted the same way (AES-256-GCM, its own key derived from
+// EMAIL_KEY). Decrypted only at the moment a ping is sent; the site itself
+// only ever shows the last 4 digits back to the player.
+const discordKey = derive('pcc-discord-id-encrypt-v1');
+const DISCORD_PREFIX = 'dc1:';
+export const isEncryptedDiscordId = value => String(value || '').startsWith(DISCORD_PREFIX);
+export function encryptDiscordId(id) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', discordKey, iv);
+  const data = Buffer.concat([cipher.update(String(id), 'utf8'), cipher.final()]);
+  return DISCORD_PREFIX + Buffer.concat([iv, cipher.getAuthTag(), data]).toString('base64url');
+}
+export function decryptDiscordId(value) {
+  if (!value || !isEncryptedDiscordId(value)) return '';
+  try {
+    const buf = Buffer.from(String(value).slice(DISCORD_PREFIX.length), 'base64url');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', discordKey, buf.subarray(0, 12));
+    decipher.setAuthTag(buf.subarray(12, 28));
+    return Buffer.concat([decipher.update(buf.subarray(28)), decipher.final()]).toString('utf8');
+  } catch { return ''; }
+}
+export const maskDiscordId = id => (id ? `•••• ${id.slice(-4)}` : '');
