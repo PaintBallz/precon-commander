@@ -1,15 +1,29 @@
-// Posts to the league's Discord server through a channel webhook.
+// Posts to the league's Discord server through a channel webhook, all in one
+// channel.
 //
 //   DISCORD_WEBHOOK_URL  https://discord.com/api/webhooks/<id>/<token>  (a secret)
 //   DISCORD_INVITE       https://discord.gg/<code>  (shown in the site footer)
 //
-// Posts never @mention anyone (allowed_mentions is empty), so a username like
-// "everyone" can't ping the server. Sending is fire-and-forget: Discord being
-// down never slows or breaks the site; the last result shows on the admin
+// - Each pod gets one live post, edited in place as it goes (started, winner,
+//   vote, spin, packs opened, finished). A discarded or deleted pod's post is
+//   removed.
+// - Pings: a player who adds their Discord user ID on the Account page gets a
+//   short @mention when it's their turn (vote, spin, packs to open, a trade
+//   offer). The ping is deleted once they've done it, so the channel keeps
+//   only what's still waiting.
+// - Season recaps, accepted trades and announcements are separate posts.
+//
+// Nothing else can ping: allowed_mentions is always empty except for the one
+// linked user a ping is for, so a username like "everyone" can't ping the
+// server. Sending is fire-and-forget and one call at a time; Discord being
+// down never slows or breaks the site, and the last result shows on the admin
 // dashboard.
 // (A loopback http URL is accepted too, so the tests can catch the posts.)
+import { db, loadPod } from './db.js';
+
 const WEBHOOK_RE = /^(?:https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com|http:\/\/127\.0\.0\.1:\d+)\/api\/webhooks\/\d+\/[\w-]+$/;
 const INVITE_RE = /^https:\/\/(?:discord\.gg|discord\.com\/invite)\/[\w-]+$/;
+export const DISCORD_ID_RE = /^\d{17,20}$/;
 
 const hook = String(process.env.DISCORD_WEBHOOK_URL || '').trim();
 const invite = String(process.env.DISCORD_INVITE || '').trim();
@@ -18,52 +32,236 @@ export const discordInvite = () => (INVITE_RE.test(invite) ? invite : null);
 export const lastDiscord = { at: null, ok: null, error: null };
 
 const SITE = (process.env.PUBLIC_URL || 'https://precon-commander.paintballz.us').replace(/\/$/, '');
-const GOLD = 0xd4a64a;
+const NAME = 'Pre-Con Commander';
+const GOLD = 0xd4a64a, GREEN = 0x5dcaa5;
+// Edits wait this long so a burst (say, five packs opened) becomes one edit.
+const SETTLE_MS = Number(process.env.DISCORD_SETTLE_MS ?? 2500);
 // Discord markdown would let a name like "**x**" restyle the post.
 const md = s => String(s ?? '').replace(/([\\*_~`|>#\[\]()-])/g, '\\$1').replace(/@/g, '@\u200b');
 const cut = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+const NO_PINGS = { parse: [] };
 
-// Posts go out one at a time so a burst can't trip Discord's per-webhook limit.
+db.exec(`CREATE TABLE IF NOT EXISTS discord_pings (
+  scope TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  msg_id TEXT,
+  at TEXT NOT NULL,
+  PRIMARY KEY (scope, user_id)
+)`);
+
+// ---------- talking to the webhook ----------
+// Everything goes out one call at a time so a burst can't trip Discord's per-webhook limit.
 let chain = Promise.resolve();
-export function postDiscord(embed) {
-  if (!discordEnabled()) return Promise.resolve(false);
-  const body = JSON.stringify({ username: 'Pre-Con Commander', allowed_mentions: { parse: [] }, embeds: [{ color: GOLD, ...embed }] });
-  chain = chain.then(() => send(body)).catch(() => {});
-  return chain;
-}
-async function send(body, retry = true) {
+const enqueue = job => (chain = chain.then(job).catch(() => {}));
+async function request(method, suffix, body, retry = true) {
   try {
-    const res = await fetch(hook, { method: 'POST', headers: { 'content-type': 'application/json' }, body, signal: AbortSignal.timeout(10e3) });
+    const res = await fetch(hook + suffix, {
+      method, signal: AbortSignal.timeout(10e3),
+      ...(body ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}),
+    });
     if (res.status === 429 && retry) {
       const wait = Math.min(10, Number((await res.json().catch(() => ({}))).retry_after) || 2);
       await new Promise(r => setTimeout(r, wait * 1000));
-      return send(body, false);
+      return request(method, suffix, body, false);
     }
+    // A message someone deleted by hand is fine to lose.
+    if (res.status === 404 && method !== 'POST') return { ok: false, status: 404 };
     if (!res.ok) throw new Error(`Discord answered ${res.status}`);
     Object.assign(lastDiscord, { at: new Date().toISOString(), ok: true, error: null });
-    return true;
+    return { ok: true, status: res.status, data: res.status === 204 ? null : await res.json().catch(() => null) };
   } catch (e) {
     Object.assign(lastDiscord, { at: new Date().toISOString(), ok: false, error: String(e.message || e).slice(0, 200) });
-    return false;
+    return { ok: false, status: 0 };
   }
 }
+const newMessage = body => request('POST', '?wait=true', { username: NAME, allowed_mentions: NO_PINGS, ...body });
 
-// ---------- the posts ----------
-export function podFinishedPost(pod, leagueName) {
+export function postDiscord(embed) {
+  if (!discordEnabled()) return Promise.resolve(false);
+  return enqueue(async () => (await newMessage({ embeds: [{ color: GOLD, ...embed }] })).ok);
+}
+
+// ---------- the live pod post ----------
+const when = iso => `<t:${Math.floor(Date.parse(iso) / 1000)}:R>`;
+const RANK = { mythic: 3, rare: 2, uncommon: 1, common: 0 };
+function podEmbed(pod) {
+  const league = db.prepare('SELECT name FROM leagues WHERE id = ?').get(pod.leagueId)?.name || 'League';
+  const nameOf = id => md(pod.players.find(p => p.id === id)?.name || '?');
   const winner = pod.players.find(p => p.id === pod.winnerId);
   const seats = pod.players.map(p => `${p.id === pod.winnerId ? '🏆' : '•'} **${md(p.name)}**${p.precon ? ` — ${md(p.precon)}` : ''}`);
   const fields = [];
-  if (pod.spin?.set?.name) fields.push({ name: 'Wheel landed on', value: md(pod.spin.set.name), inline: true });
-  const voted = pod.vote?.status === 'done' && pod.players.find(p => p.id === pod.vote.winnerId);
-  if (voted) fields.push({ name: 'Bonus-pack vote', value: md(voted.name), inline: true });
-  return postDiscord({
-    title: cut(`${winner ? winner.name : 'Someone'} won ${pod.name}`, 250),
-    url: `${SITE}/#history`,
-    description: cut(seats.join('\n'), 3500),
-    fields, footer: { text: leagueName }, timestamp: pod.finishedAt || new Date().toISOString(),
+  const v = pod.vote;
+  if (v?.status === 'open') {
+    const voted = new Set(v.ballots.filter(b => b.round === v.round).map(b => b.voterId));
+    const left = pod.players.filter(p => !voted.has(p.id)).map(p => nameOf(p.id));
+    fields.push({ name: 'Bonus-pack vote', value: `${v.round > 1 ? `Re-vote (round ${v.round})` : 'Voting'} · waiting on ${left.join(', ')}`, inline: false });
+  } else if (v?.status === 'done') fields.push({ name: 'Bonus-pack vote', value: nameOf(v.winnerId), inline: true });
+  if (pod.spin) fields.push({ name: 'Wheel landed on', value: md(pod.spin.set.name), inline: true });
+  else if (pod.status === 'awarded' && v?.status !== 'open') fields.push({ name: 'Wheel', value: `Waiting on ${nameOf(pod.winnerId)} to spin`, inline: false });
+  if (pod.spin) {
+    const people = [...pod.players, ...(pod.absentees || []).filter(a => !a.grant)].filter(p => p.packs.length);
+    const lines = people.map(p => {
+      const opened = p.packs.filter(k => k.status === 'opened').length;
+      return `${opened === p.packs.length ? '✅' : '📦'} ${md(p.name)} — ${opened}/${p.packs.length} opened${pod.players.includes(p) ? '' : ' (missed the pod)'}`;
+    });
+    if (lines.length) fields.push({ name: 'Packs', value: cut(lines.join('\n'), 1020), inline: false });
+    const hits = people.flatMap(p => p.packs.flatMap(k => (k.cards || []).map(c => ({ ...c, who: p.name }))))
+      .filter(c => c.rarity === 'mythic' || (c.foil && c.rarity === 'rare'))
+      .sort((a, b) => RANK[b.rarity] - RANK[a.rarity] || Number(b.foil) - Number(a.foil)).slice(0, 8);
+    if (hits.length) fields.push({ name: 'Best pulls', value: cut(hits.map(c => `${c.foil ? '✨' : '•'} ${md(c.name)} — ${md(c.who)}`).join('\n'), 1020), inline: false });
+  }
+  const done = pod.status === 'done';
+  return {
+    color: done ? GREEN : GOLD,
+    title: cut(pod.status === 'playing' ? `${pod.name} is being played` : `${winner ? winner.name : 'Someone'} won ${pod.name}`, 250),
+    url: `${SITE}/#${done ? 'history' : 'pods'}`,
+    description: cut([...seats, '', pod.status === 'playing' ? `🎲 Started ${when(pod.createdAt)}` : done ? `Finished ${when(pod.finishedAt || pod.updatedAt)}` : ''].join('\n').trim(), 3500),
+    fields, footer: { text: league }, timestamp: pod.updatedAt || new Date().toISOString(),
+  };
+}
+const msgOf = podId => db.prepare('SELECT discord_msg FROM pods WHERE id = ?').get(podId)?.discord_msg || null;
+const setMsg = (podId, msg) => db.prepare('UPDATE pods SET discord_msg = ? WHERE id = ?').run(msg, podId);
+
+async function syncPod(podId, create) {
+  const pod = loadPod(podId);
+  if (!pod) return;
+  if (pod.kind === 'pod') {
+    let msg = msgOf(podId);
+    if (pod.status === 'discarded') {
+      if (msg) { await request('DELETE', `/messages/${msg}`); setMsg(podId, null); }
+    } else {
+      const embed = podEmbed(pod);
+      if (msg && !(await request('PATCH', `/messages/${msg}`, { embeds: [embed], allowed_mentions: NO_PINGS })).ok) msg = null;
+      // A new post only for a running pod (or one just finished): fixing an old
+      // finished pod doesn't repost it.
+      if (!msg && (create || pod.status === 'playing' || pod.status === 'awarded')) {
+        const r = await newMessage({ embeds: [embed] });
+        setMsg(podId, r.data?.id || null);
+      }
+    }
+  }
+  await syncPings(`pod:${podId}`, waitingOn(pod));
+}
+const settling = new Map();
+// Something in a pod changed: update its post and pings once things settle.
+export function podChanged(podId, { create = false } = {}) {
+  if (!discordEnabled() || !podId) return;
+  const t = settling.get(podId);
+  if (t) clearTimeout(t.timer);
+  const job = { create: create || !!t?.create };
+  job.timer = setTimeout(() => { settling.delete(podId); enqueue(() => syncPod(podId, job.create)); }, SETTLE_MS);
+  job.timer.unref?.();
+  settling.set(podId, job);
+}
+// The admin deleted a pod: its post and pings go too.
+export function podDeleted(podId, msg) {
+  if (!discordEnabled()) return;
+  const t = settling.get(podId);
+  if (t) { clearTimeout(t.timer); settling.delete(podId); }
+  enqueue(async () => {
+    if (msg) await request('DELETE', `/messages/${msg}`);
+    await syncPings(`pod:${podId}`, new Map());
   });
 }
 
+// ---------- pings ----------
+// Who a pod is waiting on: userId -> { kind, text }. A ping is sent once per
+// kind, and deleted when that person is no longer waited on for it.
+function waitingOn(pod) {
+  const w = new Map();
+  if (!pod || pod.status === 'discarded') return w;
+  const name = `**${md(pod.name)}**`;
+  if (pod.kind === 'pod' && pod.status === 'awarded' && !pod.spin) {
+    const v = pod.vote;
+    if (v?.status === 'open') {
+      const voted = new Set(v.ballots.filter(b => b.round === v.round).map(b => b.voterId));
+      for (const p of pod.players) if (!voted.has(p.id)) w.set(p.id, { kind: `vote${v.round}`, text: v.round > 1 ? `the bonus-pack vote in ${name} is tied: vote again` : `vote for who gets the bonus pack in ${name}` });
+    } else if (pod.winnerId) w.set(pod.winnerId, { kind: 'spin', text: `you won ${name}! Spin the wheel once everyone's watching` });
+  }
+  for (const p of [...pod.players, ...(pod.absentees || [])]) {
+    if (w.has(p.id) || !p.packs.some(k => k.status !== 'opened')) continue;
+    w.set(p.id, { kind: 'packs', text: pod.kind === 'grants' ? 'you have packs waiting from the admin' : pod.players.includes(p) ? `you have packs to open from ${name}` : `you missed ${name}, and have packs waiting` });
+  }
+  return w;
+}
+async function syncPings(scope, wanted) {
+  const have = db.prepare('SELECT * FROM discord_pings WHERE scope = ?').all(scope);
+  for (const r of have) {
+    if (wanted.get(r.user_id)?.kind === r.kind) continue;
+    if (r.msg_id) await request('DELETE', `/messages/${r.msg_id}`);
+    db.prepare('DELETE FROM discord_pings WHERE scope = ? AND user_id = ?').run(scope, r.user_id);
+  }
+  const kept = new Set(db.prepare('SELECT user_id FROM discord_pings WHERE scope = ?').all(scope).map(r => r.user_id));
+  for (const [userId, want] of wanted) {
+    if (kept.has(userId)) continue;
+    const u = db.prepare('SELECT discord_id, is_test FROM users WHERE id = ?').get(userId);
+    if (!u?.discord_id || u.is_test) continue;
+    const page = scope.startsWith('trade:') ? 'trades' : want.kind === 'packs' ? 'packs' : 'pods';
+    const r = await request('POST', '?wait=true', {
+      username: NAME, content: `<@${u.discord_id}> ${want.text} → <${SITE}/#${page}>`, allowed_mentions: { parse: [], users: [u.discord_id] },
+    });
+    db.prepare('INSERT OR REPLACE INTO discord_pings (scope, user_id, kind, msg_id, at) VALUES (?, ?, ?, ?, ?)')
+      .run(scope, userId, want.kind, r.data?.id || null, new Date().toISOString());
+  }
+}
+function tradeWanted(tradeId) {
+  const t = db.prepare('SELECT * FROM trades WHERE id = ?').get(tradeId);
+  const w = new Map();
+  if (t?.status === 'open' && t.turn_id) {
+    const from = db.prepare('SELECT username FROM users WHERE id = ?').get(t.turn_id === t.a_id ? t.b_id : t.a_id)?.username || 'Someone';
+    w.set(t.turn_id, { kind: `offer:${t.updated_at}`, text: `**${md(from)}** sent you a trade offer` });
+  }
+  return w;
+}
+// A trade changed: ping whoever has to answer it, and clear the old ping.
+export function tradeChanged(tradeId) {
+  if (!discordEnabled() || !tradeId) return;
+  enqueue(() => syncPings(`trade:${tradeId}`, tradeWanted(tradeId)));
+}
+// A player linked, changed or removed their Discord ID: catch them up.
+export function pingsChanged(userId) {
+  if (!discordEnabled()) return;
+  enqueue(async () => {
+    for (const r of db.prepare('SELECT scope FROM discord_pings WHERE user_id = ?').all(userId)) {
+      const row = db.prepare('SELECT msg_id FROM discord_pings WHERE scope = ? AND user_id = ?').get(r.scope, userId);
+      if (row?.msg_id) await request('DELETE', `/messages/${row.msg_id}`);
+      db.prepare('DELETE FROM discord_pings WHERE scope = ? AND user_id = ?').run(r.scope, userId);
+    }
+    const open = db.prepare(`SELECT DISTINCT k.pod_id FROM pod_packs k JOIN pods p ON p.id = k.pod_id
+      WHERE k.user_id = ? AND k.status != 'opened' AND p.status != 'discarded'`).all(userId).map(r => r.pod_id);
+    const running = db.prepare(`SELECT p.id FROM pods p JOIN pod_players pp ON pp.pod_id = p.id
+      WHERE pp.user_id = ? AND p.status = 'awarded' AND p.spin_id IS NULL`).all(userId).map(r => r.id);
+    for (const podId of new Set([...open, ...running])) await syncPings(`pod:${podId}`, waitingOn(loadPod(podId)));
+    for (const t of db.prepare("SELECT id FROM trades WHERE status = 'open' AND turn_id = ?").all(userId)) await syncPings(`trade:${t.id}`, tradeWanted(t.id));
+  });
+}
+// Every few minutes (and at start), recheck every ping still up, so one whose
+// reason went away some other way (a league ended, an admin fixed a pod) goes.
+export function keepPingsTidy() {
+  if (!discordEnabled()) return;
+  const tidy = () => enqueue(async () => {
+    for (const { scope } of db.prepare('SELECT DISTINCT scope FROM discord_pings').all()) {
+      const [kind, id] = [scope.slice(0, scope.indexOf(':')), scope.slice(scope.indexOf(':') + 1)];
+      await syncPings(scope, kind === 'trade' ? tradeWanted(id) : waitingOn(loadPod(id)));
+    }
+  });
+  tidy();
+  setInterval(tidy, 10 * 60e3).unref();
+}
+// "Send me a test ping": deleted again after a minute.
+export async function testPing(discordId) {
+  if (!discordEnabled()) return false;
+  let ok = false;
+  await enqueue(async () => {
+    const r = await request('POST', '?wait=true', { username: NAME, content: `<@${discordId}> this is a test ping from Pre-Con Commander. You'll get one like it when it's your turn. (This one deletes itself in a minute.)`, allowed_mentions: { parse: [], users: [discordId] } });
+    ok = r.ok;
+    if (r.data?.id) setTimeout(() => enqueue(() => request('DELETE', `/messages/${r.data.id}`)), 60e3).unref();
+  });
+  return ok;
+}
+
+// ---------- other posts ----------
 export function leagueEndedPost(league, recap) {
   const medals = ['🥇', '🥈', '🥉'];
   const top = recap.standings.filter(r => r.pods).slice(0, 3).map((r, i) => `${medals[i]} **${md(r.name)}** — ${r.wins} win${r.wins === 1 ? '' : 's'} in ${r.pods} pod${r.pods === 1 ? '' : 's'}`);
@@ -91,5 +289,5 @@ export function tradePost(text, leagueName) {
 }
 
 export function testPost(by) {
-  return postDiscord({ title: 'Pre-Con Commander is connected', url: SITE, description: `Test post from ${md(by)}. Finished pods, season recaps and announcements will show up in this channel.` });
+  return postDiscord({ title: 'Pre-Con Commander is connected', url: SITE, description: `Test post from ${md(by)}. Each pod gets one live post here that updates as it goes, plus season recaps, trades and announcements. Players who link their Discord ID get a ping when it's their turn.` });
 }

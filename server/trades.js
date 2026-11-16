@@ -21,7 +21,7 @@ import crypto from 'node:crypto';
 import { db, grantsPod, savePod, setInfoFor } from './db.js';
 import { getLeague, isMember, logEvent, activeLeagueOf } from './leagues.js';
 import { getUser } from './auth.js';
-import { tradePost } from './discord.js';
+import { tradePost, tradeChanged } from './discord.js';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS trades (
@@ -183,7 +183,7 @@ function moveCards(leagueId, cards, toId, fromId) {
 }
 
 export function tradeRoutes(app, { wrap, HttpError, broadcast, viewLeague }) {
-  const changed = (t, extra = {}) => broadcast('state', { leagueId: t.league_id, trade: { id: t.id, ...extra } });
+  const changed = (t, extra = {}) => { broadcast('state', { leagueId: t.league_id, trade: { id: t.id, ...extra } }); tradeChanged(t.id); };
   const mustBeIn = (t, me) => {
     if (!t || (t.a_id !== me && t.b_id !== me)) throw new HttpError(404, 'Trade not found');
     if (t.status !== 'open') throw new HttpError(409, 'That trade is already finished.');

@@ -6,6 +6,7 @@ import { db, transaction } from './db.js';
 import { sendMail, mailEnabled } from './mail.js';
 import { clientIp } from './ratelimit.js';
 import { logAdmin, renameEverywhere } from './adminlog.js';
+import { DISCORD_ID_RE, pingsChanged } from './discord.js';
 
 const COOKIE = 'pcc_sid';
 const SESSION_DAYS = 30;
@@ -59,7 +60,7 @@ const DUMMY_HASH = hashPassword(crypto.randomBytes(16).toString('hex'));
 const now = () => new Date().toISOString();
 
 // ---------- users ----------
-const userCols = 'id, username, email, is_admin, staff, is_test, must_change, precon, created_at, suspended_at, suspended_reason, username_changed_at';
+const userCols = 'id, username, email, is_admin, staff, is_test, must_change, precon, created_at, suspended_at, suspended_reason, username_changed_at, discord_id';
 // isAdmin: may use admin powers (the admin account, or a player made an admin).
 // adminAccount: the original admin account, which runs the site and never plays.
 // Never carries an email: admins, View as and the player list get this. Only
@@ -70,7 +71,7 @@ export function publicUser(r) {
 }
 // Players can change their own username once; admins whenever they like.
 const canRename = r => !!(r.is_admin || r.staff || !r.username_changed_at);
-export const selfUser = r => r && { ...publicUser(r), email: maskEmail(decryptEmail(r.email)), canRename: canRename(r) };
+export const selfUser = r => r && { ...publicUser(r), email: maskEmail(decryptEmail(r.email)), canRename: canRename(r), discordId: r.discord_id || '' };
 export const getUser = id => db.prepare(`SELECT ${userCols} FROM users WHERE id = ?`).get(id);
 export const listUsers = () => db.prepare(`SELECT ${userCols} FROM users ORDER BY username COLLATE NOCASE`).all();
 const byLogin = login => db.prepare('SELECT * FROM users WHERE username = ? OR email_hash = ?').get(login, hashEmail(login));
@@ -257,6 +258,15 @@ export function authRoutes(app, wrap, onChange = () => {}) {
         if (!me.is_admin && !me.staff) db.prepare('UPDATE users SET username_changed_at = ? WHERE id = ?').run(now(), me.id);
       });
       onChange();
+    }
+    // Discord pings: a Discord user ID (digits), or empty to stop them.
+    if (b.discordId != null) {
+      const discordId = String(b.discordId).trim();
+      if (discordId && !DISCORD_ID_RE.test(discordId)) throw new AuthError(400, 'A Discord user ID is 17 to 20 digits. In Discord, turn on Developer Mode, then right-click your name and choose Copy User ID.');
+      if ((getUser(req.user.id).discord_id || '') !== discordId) {
+        db.prepare('UPDATE users SET discord_id = ? WHERE id = ?').run(discordId || null, req.user.id);
+        pingsChanged(req.user.id);
+      }
     }
     res.json({ user: selfUser(getUser(req.user.id)) });
   }));

@@ -244,6 +244,9 @@ for (const [table, col, def] of [
   // A test player the admin added to fill a league; it can't sign in.
   ['users', 'is_test', 'INTEGER NOT NULL DEFAULT 0'],
   ['users', 'username_changed_at', 'TEXT'],
+  // The pod's live post in the Discord channel, and a player's Discord user ID (for pings).
+  ['pods', 'discord_msg', 'TEXT'],
+  ['users', 'discord_id', 'TEXT'],
 ]) {
   if (!db.prepare(`SELECT 1 FROM pragma_table_info('${table}') WHERE name = ?`).get(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
 }
@@ -325,7 +328,14 @@ function putSet(set) {
   return set.code;
 }
 
+// Called after every pod save (the Discord live post listens).
+const podListeners = [];
+export const onPodSaved = fn => podListeners.push(fn);
 export function savePod(pod) {
+  writePod(pod);
+  for (const fn of podListeners) { try { fn(pod); } catch { /* never breaks a save */ } }
+}
+function writePod(pod) {
   transaction(() => {
     db.prepare(`INSERT INTO pods (id, name, status, created_at, created_by, winner_id, won_at, finished_at, updated_at, spin_id, spin_set_code, spin_by, spin_at, spin_offset)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

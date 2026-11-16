@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import {
   savePod, loadPod, activePods, finishedPods, grantsPods, grantsPod, grantsPodId, pendingPacks, deletePod, deleteHistory, poolCard, deletePoolCard,
   poolCards, poolPods, setInfoFor, kvGet, kvSet,
+  onPodSaved,
 } from './db.js';
 import {
   LEAGUE_MIN, LEAGUE_MAX, DEFAULT_RULES, RULE_LIMITS, getLeague, leagueByCode, listLeagues, activeLeagueOf,
@@ -32,7 +33,7 @@ import { openPack, hasRealPack, realPackKind, localPackSets, sheetOdds } from '.
 import { requireAuth, requireAdmin, authRoutes, seedAdmin, listUsers, getUser, selfUser, deleteAccount } from './auth.js';
 import { importDeck, editDeck, getDeck, deleteDeck, DeckError, startFromPool, changeDeck, linkDeckToPool, savePodDeck, podDeck, podDeckKeys, podDeckList } from './decks.js';
 import { playerStats, seasonRecap } from './stats.js';
-import { discordInvite, podFinishedPost, leagueEndedPost } from './discord.js';
+import { discordInvite, discordEnabled, leagueEndedPost, podChanged, podDeleted, keepPingsTidy, testPing } from './discord.js';
 import { cached, cachedSync, clearCache } from './cache.js';
 import { rateLimit, streamSlot } from './ratelimit.js';
 import { adminRoutes, currentAnnouncement } from './admin.js';
@@ -791,6 +792,7 @@ app.get('/api/state', wrap(async (req, res) => {
     members: league ? leagueMembers(league.id).map(m => ({ id: m.id, username: m.username, precon: m.precon, commander: m.commander })) : [],
     pending,
     tradesWaiting: tradesWaiting(req.user.id),
+    discordPings: discordEnabled(),
     ...(req.user.isAdmin ? { feedbackNew: newFeedbackCount() } : {}),
   });
 }));
@@ -1066,7 +1068,7 @@ app.post('/api/pods/:id/finish', wrap(async (req, res) => {
   pod.finishedAt = now();
   logEvent(pod.leagueId, 'finish', req.user.id, `${pod.name} finished and was saved to History.`);
   const saved = commit(pod);
-  podFinishedPost(saved, getLeague(saved.leagueId)?.name || 'League');
+  podChanged(saved.id, { create: true });
   res.json({ ok: true, pod: view(req, saved) });
 }));
 
@@ -1087,7 +1089,9 @@ app.delete('/api/pods/:id', wrap(async (req, res) => {
   const pod = loadPod(req.params.id);
   if (!pod) throw new HttpError(404, 'Pod not found');
   const rows = podRows([pod.id]);
+  const msg = db.prepare('SELECT discord_msg FROM pods WHERE id = ?').get(pod.id)?.discord_msg;
   deletePod(pod.id);
+  podDeleted(pod.id, msg);
   logAdmin(req, { action: 'delete-pod', summary: `Deleted ${pod.name}.`, reason: req.body?.reason, leagueId: pod.leagueId, undo: { type: 'restore', rows } });
   broadcast('state', { podId: pod.id, leagueId: pod.leagueId, deleted: true });
   res.json({ ok: true, deleted: { id: pod.id, name: pod.name } });
@@ -1243,6 +1247,16 @@ app.get('/api/players/:id', wrap(async (req, res) => {
     podDecks: podDeckList(u.id, league?.id || null).filter(d => !deckFor(req, u.id, { leagueId: d.leagueId }).deckHidden),
   });
 }));
+// "Send me a test ping" (Account page): once a minute at most.
+const testPings = new Map();
+app.post('/api/discord/test-ping', wrap(async (req, res) => {
+  if (!discordEnabled()) throw new HttpError(409, "This site isn't connected to Discord.");
+  const id = db.prepare('SELECT discord_id FROM users WHERE id = ?').get(req.user.id)?.discord_id;
+  if (!id) throw new HttpError(400, 'Save your Discord user ID first.');
+  if (Date.now() - (testPings.get(req.user.id) || 0) < 60e3) throw new HttpError(429, 'One test ping a minute. Check the channel for the last one.');
+  testPings.set(req.user.id, Date.now());
+  res.json({ ok: await testPing(id) });
+}));
 // The deck a player played in one pod (shown like their deck on their page).
 app.get('/api/pods/:id/decks/:userId', wrap(async (req, res) => {
   const d = podDeck(req.params.id, req.params.userId);
@@ -1343,6 +1357,9 @@ adminRoutes(app, { wrap, HttpError, broadcast, viewLeague, requireLeague, allSet
 tradeRoutes(app, { wrap, HttpError, broadcast, viewLeague });
 
 seedAdmin();
+// Discord: every pod save updates that pod's live post and pings.
+onPodSaved(pod => podChanged(pod.id));
+keepPingsTidy();
 // Official precon lists: downloaded once (new releases weekly). Then anyone who
 // locked in an official precon before its list was here gets its cards.
 keepPreconsFresh(() => { for (const leagueId of fillMissingPreconCards()) broadcast('state', { leagueId }); });

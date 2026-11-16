@@ -30,6 +30,8 @@ let server, serverLog = '';
 // A stand-in for Discord: catches the site's webhook posts.
 const HOOK_PORT = PORT - 1;
 const discordPosts = [];
+let discordIds = 1000;
+const waitFor = async (check, what, ms = 3000) => { const end = Date.now() + ms; for (;;) { const v = check(); if (v) return v; if (Date.now() > end) throw new Error(`timed out waiting for ${what}`); await new Promise(r => setTimeout(r, 25)); } };
 // It also stands in for MTGJSON: every precon name the tests use is an
 // "official" precon with a commander, a signet and five Forests (7 cards).
 const MOCK_PRECONS = ['Animated Army', 'Death Toll', 'Joe Precon', 'Dan Precon', 'Eve Precon', 'Fay Precon', 'Ivy Precon', 'Gus Precon', 'Lex Precon',
@@ -57,7 +59,15 @@ const hookServer = http.createServer((req, res) => {
     return res.end(i < 0 ? '{}' : JSON.stringify(mockDeck(i)));
   }
   let b = ''; req.on('data', d => { b += d; });
-  req.on('end', () => { discordPosts.push({ path: req.url, body: JSON.parse(b || '{}') }); res.writeHead(204); res.end(); });
+  // A stand-in Discord webhook: ?wait=true posts get a message id back; edits and deletes are recorded too.
+  req.on('end', () => {
+    const msg = { method: req.method, path: req.url, body: JSON.parse(b || '{}') };
+    if (req.method === 'POST' && req.url.endsWith('?wait=true')) msg.id = String(++discordIds);
+    discordPosts.push(msg);
+    if (req.method === 'DELETE') { res.writeHead(204); return res.end(); }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ id: msg.id || req.url.split('/').pop() }));
+  });
 });
 
 // One cookie jar per "phone".
@@ -111,7 +121,7 @@ before(async () => {
       // The whole suite runs from one IP; the last test checks the heavy limit.
       RATE_ALL_PER_MIN: '100000', RATE_API_PER_MIN: '100000', RATE_HEAVY_PER_MIN: '200', SIGNUPS_PER_HOUR: '20', EMAIL_KEY: Buffer.alloc(32, 7).toString('base64'), ADMIN_INITIAL_PASSWORD: 'changeme',
       DISCORD_WEBHOOK_URL: `http://127.0.0.1:${HOOK_PORT}/api/webhooks/123/test-token`, DISCORD_INVITE: 'https://discord.gg/pcctest',
-      MTGJSON_BASE: `http://127.0.0.1:${HOOK_PORT}/mtgjson`, MTGJSON_DELAY_MS: '0' },
+      MTGJSON_BASE: `http://127.0.0.1:${HOOK_PORT}/mtgjson`, MTGJSON_DELAY_MS: '0', DISCORD_SETTLE_MS: '20' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   server.stdout.on('data', d => { serverLog += d; });
@@ -922,6 +932,45 @@ test('maybe board (private), and the deck played in each pod with what changed s
   assert.ok(!(await ok(eve.get(`/api/players/${S.u.Joe.id}`))).podDecks.some(p => p.podId === pod.id));
 });
 
+test('Discord: one live post per pod, edited as it goes; opt-in pings, deleted once done', async () => {
+  const JOE = '123456789012345678';
+  assert.equal((await joe.put('/api/auth/profile', { discordId: 'joe#1234' })).status, 400, 'only a numeric Discord user ID');
+  assert.equal((await joe.post('/api/discord/test-ping')).status, 400, 'no ID, no test ping');
+  assert.equal((await ok(joe.put('/api/auth/profile', { discordId: JOE }))).user.discordId, JOE);
+  assert.ok(!JSON.stringify(await ok(nick.get(`/api/players/${S.u.Joe.id}`))).includes(JOE), "other players never see it");
+  assert.equal((await ok(joe.get('/api/state'))).discordPings, true);
+  const t0 = discordPosts.length;
+  const after = () => discordPosts.slice(t0);
+  assert.equal((await ok(joe.post('/api/discord/test-ping'))).ok, true);
+  assert.equal((await joe.post('/api/discord/test-ping')).status, 429, 'one test ping a minute');
+  assert.ok(after().some(p => p.body.content?.startsWith(`<@${JOE}> this is a test ping`)));
+
+  const { pod } = await ok(eve.post('/api/pods', { players: ['Eve', 'Joe', 'Dan'].map(n => ({ userId: S.u[n].id })) }));
+  const live = await waitFor(() => after().find(p => p.method === 'POST' && p.body.embeds?.[0]?.title === `${pod.name} is being played`), 'the live post');
+  assert.match(live.body.embeds[0].description, /Joe/);
+  await ok(eve.post(`/api/pods/${pod.id}/winner`, { playerId: S.u.Eve.id }));
+  const edit = await waitFor(() => after().find(p => p.method === 'PATCH' && p.path.endsWith(`/messages/${live.id}`) && p.body.embeds[0].title === `Eve won ${pod.name}`), 'the edit');
+  assert.match(edit.body.embeds[0].fields.find(f => f.name === 'Bonus-pack vote').value, /waiting on Eve, Joe, Dan/);
+  const ping = await waitFor(() => after().find(p => p.body.content?.startsWith(`<@${JOE}> vote for who gets the bonus pack`)), 'the vote ping');
+  assert.deepEqual(ping.body.allowed_mentions, { parse: [], users: [JOE] }, 'it pings Joe and nobody else');
+  assert.ok(after().filter(p => /^<@/.test(p.body.content || '')).every(p => p.body.content.startsWith(`<@${JOE}>`)), 'Dan and Eve linked no ID: no pings for them');
+  await ok(joe.post(`/api/pods/${pod.id}/vote`, { candidateId: S.u.Dan.id }));
+  await waitFor(() => after().some(p => p.method === 'DELETE' && p.path.endsWith(`/messages/${ping.id}`)), 'the ping to be deleted once Joe voted');
+  assert.equal(after().filter(p => p.method === 'POST' && p.body.embeds?.[0]?.title?.includes(pod.name)).length, 1, 'still one post for the pod');
+  // Discarded: the post goes.
+  await ok(eve.post(`/api/pods/${pod.id}/discard`));
+  await waitFor(() => after().some(p => p.method === 'DELETE' && p.path.endsWith(`/messages/${live.id}`)), 'the discarded pod post to be deleted');
+
+  // A trade offer pings whoever has to answer it; answering clears it.
+  const pools = (await ok(nick.get('/api/pools'))).pools;
+  const gift = pools.find(p => p.username === 'Nick').packs.filter(k => k.kind !== 'precon').flatMap(k => k.cards)[0];
+  const offer = (await ok(nick.post('/api/trades', { to: S.u.Joe.id, give: [gift.id], get: [] }))).trade;
+  const tping = await waitFor(() => after().find(p => p.body.content?.startsWith(`<@${JOE}> **Nick** sent you a trade offer`)), 'the trade ping');
+  await ok(joe.post(`/api/trades/${offer.id}/decline`));
+  await waitFor(() => after().some(p => p.method === 'DELETE' && p.path.endsWith(`/messages/${tping.id}`)), 'the trade ping to be deleted');
+  assert.equal((await ok(joe.put('/api/auth/profile', { discordId: '' }))).user.discordId, '', 'pings off');
+});
+
 test('admin log: a deleted card is kept for undo and comes back exactly', async () => {
   assert.equal((await nick.get('/api/admin/log')).status, 403, 'players can\'t read the admin log');
   const pool = (await ok(nick.get('/api/pools'))).pools.find(p => p.username === 'Nick');
@@ -1725,20 +1774,24 @@ test('Discord: invite button, and finished pods, announcements and season recaps
   assert.equal((await nick.post('/api/admin/discord/test')).status, 403);
   assert.equal((await ok(admin.post('/api/admin/discord/test'))).ok, true);
   await new Promise(r => setTimeout(r, 300));
-  assert.ok(discordPosts.every(p => p.path === '/api/webhooks/123/test-token'));
-  assert.ok(discordPosts.every(p => Array.isArray(p.body.allowed_mentions?.parse) && !p.body.allowed_mentions.parse.length), 'never pings anyone');
-  const titles = discordPosts.map(p => p.body.embeds[0].title);
+  assert.ok(discordPosts.every(p => p.path.startsWith('/api/webhooks/123/test-token')));
+  const sent = discordPosts.filter(p => p.method !== 'DELETE');
+  assert.ok(sent.every(p => Array.isArray(p.body.allowed_mentions?.parse) && !p.body.allowed_mentions.parse.length), 'no @everyone, @here or role pings, ever');
+  assert.ok(sent.every(p => !p.body.allowed_mentions.users || (p.body.allowed_mentions.users.length === 1 && p.body.content.startsWith(`<@${p.body.allowed_mentions.users[0]}>`))), 'a ping only ever mentions the one person it is for');
+  const embeds = sent.filter(p => p.body.embeds?.length);
+  const titles = embeds.map(p => p.body.embeds[0].title);
   assert.ok(titles.some(t => / won /.test(t)), 'a finished pod');
-  const won = discordPosts.find(p => / won /.test(p.body.embeds[0].title)).body.embeds[0];
+  const won = embeds.find(p => / won /.test(p.body.embeds[0].title)).body.embeds[0];
   assert.match(won.description, /🏆/);
   assert.ok(titles.includes('📣 Announcement'), 'the announcement');
   assert.ok(titles.some(t => / is over!$/.test(t)), 'the season recap');
   assert.ok(titles.includes('Pre-Con Commander is connected'), 'the test post');
-  const ann = discordPosts.filter(p => p.body.embeds[0].title === '📣 Announcement').length;
+  const anns = () => discordPosts.filter(p => p.body.embeds?.[0]?.title === '📣 Announcement').length;
+  const ann = anns();
   await ok(admin.put('/api/admin/announcement', { text: 'Banner only', discord: false }));
   await ok(admin.put('/api/admin/announcement', { text: '' }));
   await new Promise(r => setTimeout(r, 300));
-  assert.equal(discordPosts.filter(p => p.body.embeds[0].title === '📣 Announcement').length, ann, 'unticked: not posted; cleared: not posted');
+  assert.equal(anns(), ann, 'unticked: not posted; cleared: not posted');
 });
 
 test('per-IP rate limits: heavy endpoints, then everything, answer 429 with Retry-After', async () => {
