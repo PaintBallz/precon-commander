@@ -945,3 +945,25 @@ form .fb-filter label.chip { display: inline-flex; gap: 6px; cursor: pointer; co
 .chg { display: inline-block; font-family: var(--mono); font-size: .75rem; font-weight: 700; padding: 0 6px; border-radius: 3px; }
 .chg.in { background: rgba(93, 202, 165, .18); color: #5dcaa5; }
 .chg.out { background: rgba(240, 149, 149, .18); color: #f09595; }
+
+/* ---------- house rules, who has it, wishlist ---------- */
+.ban-chips { gap: 6px; }
+.ban-chips .chip { font-size: .78rem; }
+.rules-list li .ban-chips { margin-top: 4px; }
+.rules-list li:has(.ban-chips) { flex-wrap: wrap; }
+.ban-list { max-height: 55vh; overflow-y: auto; border: 1px solid var(--line); padding: 6px; display: grid; gap: 2px; }
+.ban-row { display: flex; align-items: center; gap: 8px; padding: 5px 8px; cursor: pointer; }
+.ban-row:hover { background: var(--panel2); }
+.ban-row.on span:first-of-type { color: var(--danger); font-weight: 700; }
+.de-house { gap: 6px; margin-top: 6px; align-items: center; }
+.pool-modes { flex-wrap: wrap; }
+.who-row { display: flex; gap: 14px; align-items: flex-start; margin-bottom: 10px; }
+.who-img { flex: 0 0 auto; width: 96px; padding: 0; border: 0; background: none; cursor: zoom-in; }
+.who-img img { width: 96px; border-radius: 5px; display: block; }
+.who-body { flex: 1; min-width: 0; display: grid; gap: 6px; }
+.holder { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.holder .btn { margin-left: auto; }
+@media (max-width: 600px) {
+  .who-img, .who-img img { width: 72px; }
+  .holder .btn { margin-left: 0; }
+}

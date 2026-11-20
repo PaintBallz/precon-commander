@@ -9,6 +9,7 @@
 import { db } from './db.js';
 import { fetchCollection } from './scryfall.js';
 import { findPrecon } from './precons.js';
+import { cardKey } from './leagues.js';
 
 db.exec(`CREATE TABLE IF NOT EXISTS decks (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -317,9 +318,10 @@ export function startFromPool(userId, leagueId, precon, pool) {
 // add / remove: one key or a list of them. Everything is checked before the
 // deck is saved, so a change goes through whole or not at all.
 const keyList = v => (Array.isArray(v) ? v : v ? [v] : []);
-export async function changeDeck(userId, leagueId, { add, remove, maybe: mb = {}, pool }) {
+export async function changeDeck(userId, leagueId, { add, remove, maybe: mb = {}, pool, house, precon }) {
   const d = getDeck(userId, leagueId);
   if (!d) throw new DeckError(404, 'Start your deck first.');
+  const before = house ? houseStatus(userId, leagueId, house, d.cards, precon, d) : null;
   const adds = keyList(add), removes = keyList(remove), mbAdds = keyList(mb.add), mbRemoves = keyList(mb.remove);
   if (!adds.length && !removes.length && !mbAdds.length && !mbRemoves.length) throw new DeckError(400, 'Pick a card to add or remove.');
   if (adds.length + removes.length > 150) throw new DeckError(400, "That's too many cards at once.");
@@ -371,6 +373,20 @@ export async function changeDeck(userId, leagueId, { add, remove, maybe: mb = {}
       cards.push({ ...card, poolId: pc.id });
     });
   }
+  // House rules: a change can't break them, though a deck already over a
+  // limit (the rule came later) can still have cards taken out.
+  if (house && adds.length) {
+    const after = houseStatus(userId, leagueId, house, cards, precon, d);
+    const newlyBanned = after.bannedCards.filter(n => !before.bannedCards.includes(n));
+    if (newlyBanned.length) throw new DeckError(409, `${newlyBanned.join(', ')} ${newlyBanned.length === 1 ? 'is' : 'are'} banned in this league.`);
+    const since = after.since ? `since ${after.since}` : 'from your precon';
+    if (house.swapCap != null && after.swaps > house.swapCap && after.swaps > before.swaps)
+      throw new DeckError(409, `House rule: up to ${house.swapCap} card${house.swapCap === 1 ? '' : 's'} can come into your deck between pods, and that would make ${after.swaps} ${since}. Take one of them out first.`);
+    for (const [r, cap, word] of [['mythics', house.maxMythics, 'mythic'], ['rares', house.maxRares, 'rare']]) {
+      if (cap != null && after[r] > cap && after[r] > before[r])
+        throw new DeckError(409, `House rule: up to ${cap} ${word}${cap === 1 ? '' : 's'} from packs in a deck, and that would make ${after[r]}.`);
+    }
+  }
   // Only the maybe board changed: the deck's "updated" time stays the same.
   const same = !adds.length && !removes.length;
   return save(userId, leagueId, { name: d.name, source: d.source, url: d.url, cards, missing: d.missing, base, maybe }, same ? d.updatedAt : undefined);
@@ -407,6 +423,25 @@ export function savePodDeck(podId, userId, leagueId, deck, at = new Date().toISO
   db.prepare('INSERT OR REPLACE INTO pod_decks (pod_id, user_id, name, data, saved_at) VALUES (?, ?, ?, ?, ?)')
     .run(podId, userId, deck.name, JSON.stringify({ cards, added, removed, source: deck.source || '' }), at);
 }
+// ---------- house rules ----------
+// Where a deck stands against its league's house rules:
+//   bannedCards  banned card names in the deck
+//   swaps        cards in the deck that weren't in it at the player's last pod
+//                (before their first pod: that aren't in their precon's list)
+//   mythics / rares  copies pulled from packs (not the precon's own)
+export function houseStatus(userId, leagueId, house, cards, precon, deck) {
+  const banned = new Set((house?.bannedCards || []).map(cardKey));
+  const bannedCards = [...new Set(cards.filter(c => banned.has(cardKey(c.name))).map(c => c.name))];
+  const pulled = cards.filter(c => c.poolId && !c.precon);
+  const count = r => pulled.filter(c => c.rarity === r).reduce((n, c) => n + (c.qty || 1), 0);
+  const prev = db.prepare(`SELECT pd.data, p.name FROM pod_decks pd JOIN pods p ON p.id = pd.pod_id
+    WHERE pd.user_id = ? AND p.league_id = ? AND p.status <> 'discarded' ORDER BY pd.saved_at DESC LIMIT 1`).get(userId, leagueId);
+  const ref = prev ? JSON.parse(prev.data).cards : findPrecon(precon)?.cards || deck?.base || null;
+  const swaps = ref ? lessOf(copies(cards), copies(ref)).reduce((n, c) => n + c.qty, 0) : 0;
+  return { bannedCards, swaps, since: prev ? prev.name : null, mythics: count('mythic'), rares: count('rare'),
+    swapCap: house?.swapCap ?? null, maxMythics: house?.maxMythics ?? null, maxRares: house?.maxRares ?? null };
+}
+
 export function podDeck(podId, userId) {
   const r = db.prepare('SELECT pd.*, p.name AS pod_name, p.league_id FROM pod_decks pd JOIN pods p ON p.id = pd.pod_id WHERE pd.pod_id = ? AND pd.user_id = ?').get(podId, userId);
   if (!r) return null;

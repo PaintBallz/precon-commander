@@ -26,12 +26,14 @@ import {
   leagueMembers, isMember, addMember, removeMember, wasKicked, createLeague, updateLeague, newLeagueCode, endLeague, deleteLeague,
   logEvent, leagueEvents, migrateToLeagues, leaguesOf,
   memberRow, hasPrecon, lockPrecon, allowPreconChange, setPreconRequest, setCommander, preconTakenBy,
+  HOUSE_LIMITS, isBannedPrecon, BANNED_PRECON, cardKey,
 } from './leagues.js';
+import { wishlistRoutes, wishPulled } from './wishlist.js';
 import { getBoosterSets, BOOSTER_SET_TYPES, findCard } from './scryfall.js';
 import { keepPreconsFresh, preconNames, preconCount, officialName, givePreconCards, fillMissingPreconCards } from './precons.js';
 import { openPack, hasRealPack, realPackKind, localPackSets, sheetOdds } from './packs.js';
 import { requireAuth, requireAdmin, authRoutes, seedAdmin, listUsers, getUser, selfUser, deleteAccount } from './auth.js';
-import { importDeck, editDeck, getDeck, deleteDeck, DeckError, startFromPool, changeDeck, linkDeckToPool, savePodDeck, podDeck, podDeckKeys, podDeckList } from './decks.js';
+import { importDeck, editDeck, getDeck, deleteDeck, DeckError, startFromPool, changeDeck, linkDeckToPool, savePodDeck, podDeck, podDeckKeys, podDeckList, houseStatus } from './decks.js';
 import { playerStats, seasonRecap } from './stats.js';
 import { discordInvite, discordEnabled, leagueEndedPost, podChanged, podDeleted, keepPingsTidy, testPing } from './discord.js';
 import { cached, cachedSync, clearCache } from './cache.js';
@@ -248,12 +250,12 @@ function leagueView(req, l) {
   const adminId = leagueAdminId(l);
   const manage = req.user.isAdmin || isLeagueAdmin(req, l);
   // A change request's reason is only for the player and whoever can answer it.
-  const members = leagueMembers(l.id).map(m => ({ ...m, leagueAdmin: m.id === adminId, preconRequest: manage || m.id === req.user.id ? m.preconRequest : null }));
+  const members = leagueMembers(l.id).map(m => ({ ...m, leagueAdmin: m.id === adminId, preconRequest: manage || m.id === req.user.id ? m.preconRequest : null, ...(isBannedPrecon(l, m.precon) ? { preconBanned: true } : {}) }));
   return {
     id: l.id, name: l.name, status: l.status, createdAt: l.createdAt, endedAt: l.endedAt, createdBy: creatorName(l),
     leagueAdmin: adminId ? { id: adminId, username: getUser(adminId)?.username } : null,
     canManage: req.user.isAdmin || isLeagueAdmin(req, l),
-    code: member || req.user.isAdmin ? l.code : null, rules: l.rules, members, isMember: member,
+    code: member || req.user.isAdmin ? l.code : null, rules: l.rules, house: l.house, members, isMember: member,
     limits: { min: LEAGUE_MIN, max: LEAGUE_MAX, podMin: POD_MIN, podMax: POD_MAX },
   };
 }
@@ -486,6 +488,7 @@ app.put('/api/leagues/:id/precon', wrap(async (req, res) => {
     if (!preconCount()) throw new HttpError(503, 'The list of precons is still downloading. Try again in a minute.');
     throw new HttpError(400, `"${typed}" isn't an official precon name. Type the name printed on the box (not your commander's name), exactly as spelled, and pick it from the suggestions.`);
   }
+  if (isBannedPrecon(league, precon)) throw new HttpError(409, BANNED_PRECON);
   const taken = preconTakenBy(league.id, precon, req.user.id);
   if (taken) throw new HttpError(409, `${taken} already has ${precon} in this league. Each player needs their own precon.`);
   lockPrecon(league.id, req.user.id, precon);
@@ -544,6 +547,7 @@ app.put('/api/leagues/:id/members/:userId/precon', wrap(async (req, res) => {
       if (!preconCount()) throw new HttpError(503, 'The list of precons is still downloading. Try again in a minute.');
       throw new HttpError(400, `"${typed}" isn't an official precon name. Pick it from the suggestions.`);
     }
+    if (isBannedPrecon(league, precon)) throw new HttpError(409, BANNED_PRECON);
     const taken = preconTakenBy(league.id, precon, u.id);
     if (taken) throw new HttpError(409, `${taken} already has ${precon} in ${league.name}. Each player needs their own precon.`);
   }
@@ -620,6 +624,42 @@ app.put('/api/leagues/:id', wrap(async (req, res) => {
     if (b.rules.showDecks != null) rules.showDecks = !!b.rules.showDecks;
     changes.rules = rules;
   }
+  // House rules: banned precons and cards, swaps between pods, the rarity budget.
+  if (b.house && typeof b.house === 'object') {
+    const h = { ...league.house };
+    if (b.house.bannedPrecons != null) {
+      if (!Array.isArray(b.house.bannedPrecons)) throw new HttpError(400, 'Banned precons must be a list.');
+      const names = [];
+      for (const n of b.house.bannedPrecons.slice(0, HOUSE_LIMITS.bannedPrecons)) {
+        const official = officialName(String(n).slice(0, 80));
+        if (!official) throw new HttpError(400, `"${String(n).slice(0, 80)}" isn't an official precon name.`);
+        if (!names.includes(official)) names.push(official);
+      }
+      h.bannedPrecons = names.sort((a, c) => a.localeCompare(c));
+    }
+    if (b.house.bannedCards != null) {
+      if (!Array.isArray(b.house.bannedCards)) throw new HttpError(400, 'Banned cards must be a list.');
+      const seen = new Set(), names = [];
+      for (const n of b.house.bannedCards) {
+        const name = String(n).trim().replace(/\s+/g, ' ').slice(0, 150);
+        if (!name || seen.has(cardKey(name))) continue;
+        seen.add(cardKey(name)); names.push(name);
+      }
+      if (names.length > HOUSE_LIMITS.bannedCards) throw new HttpError(400, `Up to ${HOUSE_LIMITS.bannedCards} banned cards.`);
+      h.bannedCards = names;
+    }
+    const [lo, hi] = HOUSE_LIMITS.number;
+    for (const [k, label] of [['swapCap', 'Swaps between pods'], ['maxMythics', 'Mythics from packs'], ['maxRares', 'Rares from packs']]) {
+      if (!(k in b.house)) continue;
+      const v = b.house[k];
+      if (v === null || v === '') { h[k] = null; continue; }
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < lo || n > hi) throw new HttpError(400, `${label} must be ${lo}–${hi}, or empty for no limit.`);
+      h[k] = n;
+    }
+    changes.house = h;
+  }
+  const houseBefore = league.house;
   const decksBefore = league.rules.showDecks !== false;
   const updated = updateLeague(league.id, changes);
   if (changes.rules) {
@@ -627,6 +667,23 @@ app.put('/api/leagues/:id', wrap(async (req, res) => {
     const by = req.user.isAdmin ? 'The site admin' : `${req.user.username} (league admin)`;
     logEvent(league.id, 'rules', req.user.id, `${by} changed the rules: winner ${r.winnerPacks}, others ${r.loserPacks}, absent ${r.absentPacks}, vote bonus ${r.voteBonus} pack(s). Running pods keep the rules they started with.`);
     if ((r.showDecks !== false) !== decksBefore) logEvent(league.id, 'rules', req.user.id, r.showDecks !== false ? `${by} let players see each other's decks.` : `${by} made decks private: players only see their own.`);
+  }
+  if (changes.house) {
+    const by = req.user.isAdmin ? 'The site admin' : `${req.user.username} (league admin)`;
+    const h = changes.house, was = houseBefore;
+    const diff = (a, b) => a.filter(x => !b.some(y => y.toLowerCase() === x.toLowerCase()));
+    const said = [];
+    const banned = diff(h.bannedPrecons, was.bannedPrecons), unbanned = diff(was.bannedPrecons, h.bannedPrecons);
+    if (banned.length) said.push(`banned the precon${banned.length === 1 ? '' : 's'} ${banned.slice(0, 5).join(', ')}${banned.length > 5 ? ` and ${banned.length - 5} more` : ''}`);
+    if (unbanned.length) said.push(`unbanned ${unbanned.slice(0, 5).join(', ')}${unbanned.length > 5 ? ` and ${unbanned.length - 5} more` : ''}`);
+    const cb = diff(h.bannedCards, was.bannedCards), cu = diff(was.bannedCards, h.bannedCards);
+    if (cb.length) said.push(`banned ${cb.slice(0, 5).join(', ')}${cb.length > 5 ? ` and ${cb.length - 5} more cards` : ''}`);
+    if (cu.length) said.push(`unbanned ${cu.slice(0, 5).join(', ')}${cu.length > 5 ? ` and ${cu.length - 5} more cards` : ''}`);
+    const lim = (v, what) => (v == null ? `no limit on ${what}` : `${what}: ${v}`);
+    if (h.swapCap !== was.swapCap) said.push(h.swapCap == null ? 'removed the limit on swaps between pods' : `set swaps between pods to ${h.swapCap}`);
+    if (h.maxMythics !== was.maxMythics) said.push(lim(h.maxMythics, 'mythics from packs in a deck'));
+    if (h.maxRares !== was.maxRares) said.push(lim(h.maxRares, 'rares from packs in a deck'));
+    if (said.length) logEvent(league.id, 'rules', req.user.id, `${by} changed the house rules: ${said.join('; ')}.`);
   }
   broadcast('state', { leagueId: league.id });
   res.json({ league: leagueView(req, updated) });
@@ -1054,7 +1111,13 @@ app.post('/api/pods/:id/packs/:packId/open', wrap(async (req, res) => {
     for (const c of result.cards.filter(c => c.rarity === 'mythic')) {
       logEvent(pod.leagueId, 'pull', player.id, `${player.name} pulled ${c.name}${c.foil ? ' (foil)' : ''}, a mythic from ${set.name}.`);
     }
-    const saved = commit(pod);
+    pod.updatedAt = now();
+    savePod(pod);
+    const saved = loadPod(pod.id);
+    // What was pulled goes with the update, so wishlists can light up (each browser checks its own).
+    const pulled = findPack(saved, packId).pack.cards.map(c => ({ id: c.id, name: c.name }));
+    broadcast('state', { podId: pod.id, leagueId: pod.leagueId, pulled: { from: player.id, cards: pulled } });
+    wishPulled(pod.leagueId, player.id, pulled);
     res.json({ pod: view(req, saved), pack: findPack(saved, packId).pack });
   } finally {
     opening.delete(packId);
@@ -1310,6 +1373,7 @@ app.get('/api/deck', wrap(async (req, res) => {
     const precon = memberRow(l.id, req.user.id)?.precon || '';
     out.precon = precon;
     out.officialPrecon = precon ? officialName(precon) : null;
+    if (out.deck) out.house = houseStatus(req.user.id, l.id, l.house, out.deck.cards, precon, out.deck);
   }
   res.json(out);
 }));
@@ -1334,8 +1398,9 @@ app.post('/api/deck/cards', wrap(async (req, res) => {
   const b = req.body || {};
   const pool = poolCards(l.id).filter(r => r.user_id === req.user.id);
   const keys = v => (Array.isArray(v) ? v : v ? [v] : []).slice(0, 200).map(x => String(x).slice(0, 200));
-  const deck = await changeDeck(req.user.id, l.id, { add: keys(b.add), remove: keys(b.remove), maybe: { add: keys(b.maybe?.add), remove: keys(b.maybe?.remove) }, pool }).catch(deckFail);
-  res.json({ deck });
+  const precon = memberRow(l.id, req.user.id)?.precon || '';
+  const deck = await changeDeck(req.user.id, l.id, { add: keys(b.add), remove: keys(b.remove), maybe: { add: keys(b.maybe?.add), remove: keys(b.maybe?.remove) }, pool, house: l.house, precon }).catch(deckFail);
+  res.json({ deck, house: houseStatus(req.user.id, l.id, l.house, deck.cards, precon, deck) });
 }));
 app.post('/api/deck', wrap(async (req, res) => {
   // Each import asks Scryfall (and maybe a deck site) for up to ~4 lookups.
@@ -1356,6 +1421,7 @@ app.delete('/api/deck', wrap(async (req, res) => { deleteDeck(req.user.id, deckL
 
 adminRoutes(app, { wrap, HttpError, broadcast, viewLeague, requireLeague, allSets, wheelFor, settingsFor, setInfo });
 tradeRoutes(app, { wrap, HttpError, broadcast, viewLeague });
+wishlistRoutes(app, { wrap, HttpError, viewLeague });
 
 seedAdmin();
 // Discord: every pod save updates that pod's live post and pings.

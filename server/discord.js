@@ -265,7 +265,7 @@ async function syncPings(scope, wanted) {
     // Decrypted only here, for the one message that pings them.
     const discordId = u && !u.is_test ? decryptDiscordId(u.discord_id) : '';
     if (!DISCORD_ID_RE.test(discordId)) continue;
-    const page = scope.startsWith('trade:') ? 'trades' : want.kind === 'packs' ? 'packs' : 'pods';
+    const page = want.page || (scope.startsWith('trade:') ? 'trades' : want.kind === 'packs' ? 'packs' : 'pods');
     const r = await request('POST', '?wait=true', {
       username: NAME, content: `<@${discordId}> ${want.text} → <${SITE}/#${page}>`, allowed_mentions: { parse: [], users: [discordId] },
     });
@@ -283,9 +283,51 @@ function tradeWanted(tradeId) {
   return w;
 }
 // A trade changed: ping whoever has to answer it, and clear the old ping.
+// A wishlist ping for a card in it goes once the card is in an offer.
 export function tradeChanged(tradeId) {
   if (!discordEnabled() || !tradeId) return;
-  enqueue(() => syncPings(`trade:${tradeId}`, tradeWanted(tradeId)));
+  enqueue(async () => {
+    await syncPings(`trade:${tradeId}`, tradeWanted(tradeId));
+    const ids = new Set(db.prepare('SELECT cards FROM trade_offers WHERE trade_id = ?').all(tradeId).flatMap(o => JSON.parse(o.cards).map(c => c.id)));
+    for (const { scope } of db.prepare("SELECT DISTINCT scope FROM discord_pings WHERE scope LIKE 'wish:%'").all()) {
+      if (ids.has(Number(scope.slice(5)))) await syncPings(scope, wishWanted(Number(scope.slice(5))));
+    }
+  });
+}
+
+// ---------- wishlist pings ----------
+// Someone pulled a card on your wishlist: one ping per card, with a link that
+// opens a trade offer asking for it. It goes once you've made an offer that
+// includes it, the card was traded on, or you took it off your wishlist.
+const wishKey = s => String(s || '').split(' // ')[0].trim().toLowerCase();
+function wishWanted(cardId) {
+  const w = new Map();
+  const c = db.prepare(`SELECT c.id, c.name, c.user_id, p.league_id, p.status, k.kind, l.status AS league_status FROM pool_cards c
+    JOIN pods p ON p.id = c.pod_id JOIN pod_packs k ON k.id = c.pack_id JOIN leagues l ON l.id = p.league_id WHERE c.id = ?`).get(cardId);
+  if (!c || c.league_status !== 'active' || !['playing', 'awarded', 'done'].includes(c.status) || c.kind === 'precon' || c.kind === 'trade') return w;
+  const owner = db.prepare('SELECT username FROM users WHERE id = ?').get(c.user_id)?.username || 'Someone';
+  const wishers = db.prepare(`SELECT w.user_id FROM wishlist w JOIN league_members m ON m.league_id = w.league_id AND m.user_id = w.user_id AND m.left_at IS NULL
+    WHERE w.league_id = ? AND w.name_key = ? AND w.user_id != ?`).all(c.league_id, wishKey(c.name), c.user_id);
+  for (const { user_id: me } of wishers) {
+    // Already in an open trade between them: nothing to nudge.
+    const asked = db.prepare(`SELECT t.id FROM trades t WHERE t.status = 'open' AND ((t.a_id = ? AND t.b_id = ?) OR (t.a_id = ? AND t.b_id = ?))`).all(me, c.user_id, c.user_id, me)
+      .some(t => JSON.parse(db.prepare('SELECT cards FROM trade_offers WHERE trade_id = ? ORDER BY round DESC LIMIT 1').get(t.id)?.cards || '[]').some(x => x.id === c.id));
+    if (asked) continue;
+    w.set(me, { kind: 'wish', text: `**${md(owner)}** pulled **${md(c.name)}**, which is on your wishlist. Make an offer`, page: `trades?new=1&with=${c.user_id}&card=${c.id}` });
+  }
+  return w;
+}
+// Cards were just pulled (or a wishlist changed): ping the players who want them.
+export function wishCardsChanged(cardIds) {
+  if (!discordEnabled() || !cardIds?.length) return;
+  enqueue(async () => { for (const id of cardIds.slice(0, 30)) await syncPings(`wish:${id}`, wishWanted(id)); });
+}
+// A player took cards off their wishlist: their pings for those go.
+export function wishlistChanged(userId) {
+  if (!discordEnabled()) return;
+  enqueue(async () => {
+    for (const { scope } of db.prepare("SELECT scope FROM discord_pings WHERE user_id = ? AND scope LIKE 'wish:%'").all(userId)) await syncPings(scope, wishWanted(Number(scope.slice(5))));
+  });
 }
 // A player linked, changed or removed their Discord ID: catch them up.
 export function pingsChanged(userId) {
@@ -311,7 +353,7 @@ export function keepPingsTidy() {
   const tidy = () => enqueue(async () => {
     for (const { scope } of db.prepare('SELECT DISTINCT scope FROM discord_pings').all()) {
       const [kind, id] = [scope.slice(0, scope.indexOf(':')), scope.slice(scope.indexOf(':') + 1)];
-      await syncPings(scope, kind === 'trade' ? tradeWanted(id) : waitingOn(loadPod(id)));
+      await syncPings(scope, kind === 'trade' ? tradeWanted(id) : kind === 'wish' ? wishWanted(Number(id)) : waitingOn(loadPod(id)));
     }
   });
   tidy();

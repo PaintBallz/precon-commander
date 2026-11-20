@@ -119,7 +119,7 @@ before(async () => {
     cwd: ROOT,
     env: { ...process.env, PORT: String(PORT), DATA_DIR, SMTP_HOST: '', MAIL_FROM: '', CF_EMAIL_TOKEN: '',
       // The whole suite runs from one IP; the last test checks the heavy limit.
-      RATE_ALL_PER_MIN: '100000', RATE_API_PER_MIN: '100000', RATE_HEAVY_PER_MIN: '200', SIGNUPS_PER_HOUR: '20', EMAIL_KEY: Buffer.alloc(32, 7).toString('base64'), ADMIN_INITIAL_PASSWORD: 'changeme',
+      RATE_ALL_PER_MIN: '100000', RATE_API_PER_MIN: '100000', RATE_HEAVY_PER_MIN: '200', SIGNUPS_PER_HOUR: '40', EMAIL_KEY: Buffer.alloc(32, 7).toString('base64'), ADMIN_INITIAL_PASSWORD: 'changeme',
       DISCORD_WEBHOOK_URL: `http://127.0.0.1:${HOOK_PORT}/api/webhooks/123/test-token`, DISCORD_INVITE: 'https://discord.gg/pcctest',
       MTGJSON_BASE: `http://127.0.0.1:${HOOK_PORT}/mtgjson`, MTGJSON_DELAY_MS: '0', DISCORD_SETTLE_MS: '20' },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -1739,6 +1739,102 @@ test('precons are per league: required, locked once saved, and reopened only by 
   }
   // A league's profile no longer carries a precon.
   assert.ok(!('precon' in (await ok(zoe.get('/api/auth/me'))).user));
+});
+
+test('house rules: banned precons and cards, swaps between pods, a rarity budget; wishlists ping on a pull', async () => {
+  const [hal, ike, jo] = [client(), client(), client()];
+  const u = {};
+  for (const [name, c] of [['Hal', hal], ['Ike', ike], ['Jon', jo]]) u[name] = (await ok(c.post('/api/auth/signup', { agree: true, username: name, email: `${name.toLowerCase()}@example.com`, password: PW }))).user;
+  const { league } = await ok(hal.post('/api/leagues', { name: 'House League', addEveryone: false }));
+  for (const c of [ike, jo]) await ok(c.post('/api/leagues/join', { code: league.code }));
+  const L = `/api/leagues/${league.id}`;
+
+  // Banned precons: picked from the official list, by the league admin.
+  assert.equal((await ike.put(L, { house: { bannedPrecons: ['Gamma Deck'] } })).status, 403, 'only the league admin');
+  assert.equal((await hal.put(L, { house: { bannedPrecons: ['Not A Precon'] } })).status, 400, 'official names only');
+  const h1 = (await ok(hal.put(L, { house: { bannedPrecons: ['gamma deck', 'Delta Deck', 'Gamma Deck'] } }))).league.house;
+  assert.deepEqual(h1.bannedPrecons, ['Delta Deck', 'Gamma Deck'], 'official spelling, once each');
+  const no = await ike.put(`${L}/precon`, { precon: 'Gamma Deck' });
+  assert.equal(no.status, 409);
+  assert.equal(no.json.error, 'This Pre-Con Deck is Banned.');
+  assert.equal((await admin.put(`${L}/members/${u.Ike.id}/precon`, { precon: 'delta deck' })).json.error, 'This Pre-Con Deck is Banned.', 'the admin too');
+  await ok(ike.put(`${L}/precon`, { precon: 'Beta Deck' }));
+  await ok(hal.put(`${L}/precon`, { precon: 'Alpha Deck' }));
+  await ok(jo.put(`${L}/precon`, { precon: 'Epsilon Deck' }));
+  // Banned after it was locked in: it's kept, and flagged.
+  const lg = (await ok(hal.put(L, { house: { bannedPrecons: ['Gamma Deck', 'Beta Deck'] } }))).league;
+  assert.equal(lg.members.find(m => m.username === 'Ike').preconBanned, true);
+  assert.equal(lg.members.find(m => m.username === 'Hal').preconBanned, undefined);
+  assert.ok((await ok(hal.get(L))).events.some(e => /banned the precons? Beta Deck/.test(e.text)), 'in the activity feed');
+  await ok(hal.put(L, { house: { bannedPrecons: ['Gamma Deck'] } }));
+  assert.equal((await hal.put(L, { house: { swapCap: 101 } })).status, 400);
+  assert.equal((await hal.put(L, { house: { maxRares: 1.5 } })).status, 400);
+
+  // Packs to build with.
+  const openAll = async (c, who, n) => {
+    await ok(admin.post('/api/admin/grants', { league: league.id, userIds: [u[who].id], count: n, mode: 'set', setCode: 'lea' }));
+    for (const k of (await ok(c.get('/api/state'))).pending) await ok(c.post(`/api/pods/${k.podId}/packs/${k.packId}/open`));
+  };
+  await openAll(ike, 'Ike', 3);
+  const pulls = (await ok(ike.get('/api/pools'))).pools.find(p => p.username === 'Ike').packs.filter(k => k.kind !== 'precon').flatMap(k => k.cards);
+  const precon = new Set(['Commander of Beta Deck', 'Mock Signet', 'Forest']);
+  const plain = pulls.filter(c => c.rarity === 'common' && !/Basic Land/.test(c.type) && !precon.has(c.name));
+  const names = [...new Set(plain.map(c => c.name))];
+  assert.ok(names.length >= 3, 'three packs have at least three different commons');
+  const [bannedName, n1, n2] = names;
+  const pick = n => plain.find(c => c.name === n);
+  const rare = pulls.find(c => c.rarity === 'rare');
+  await ok(ike.post('/api/deck/start'));
+  await ok(hal.put(L, { house: { bannedCards: [bannedName.toUpperCase(), '  ', bannedName], swapCap: 1, maxRares: 0 } }));
+  assert.deepEqual((await ok(ike.get('/api/state'))).league.house.bannedCards, [bannedName.toUpperCase()], 'blank lines and repeats dropped');
+  const add = key => ike.post('/api/deck/cards', { add: key });
+  let r = await add(`pool:${pick(bannedName).id}`);
+  assert.equal(r.status, 409);
+  assert.match(r.json.error, /banned in this league/);
+  r = await add(`pool:${rare.id}`);
+  assert.equal(r.status, 409);
+  assert.match(r.json.error, /up to 0 rares from packs/);
+  r = await ok(add(`pool:${pick(n1).id}`));
+  assert.deepEqual([r.house.swaps, r.house.swapCap, r.house.since], [1, 1, null], 'one swap from the precon');
+  r = await add(`pool:${pick(n2).id}`);
+  assert.equal(r.status, 409);
+  assert.match(r.json.error, /between pods/);
+  r = await ok(ike.post('/api/deck/cards', { remove: `pool:${pick(n1).id}` }));
+  assert.equal(r.house.swaps, 0, 'taking a card out is always allowed');
+  await ok(add(`pool:${pick(n2).id}`));
+  const ed = await ok(ike.get('/api/deck?editor=1'));
+  assert.deepEqual([ed.house.swaps, ed.house.rares, ed.house.maxRares, ed.house.bannedCards], [1, 0, 0, []]);
+  // Lifting the limits lets the rare in.
+  await ok(hal.put(L, { house: { swapCap: null, maxRares: null } }));
+  await ok(add(`pool:${rare.id}`));
+
+  // Wishlists: private, per league; a pull of a wanted card pings with a link to make an offer.
+  const HAL = '223456789012345678';
+  await ok(hal.put('/api/auth/profile', { discordId: HAL }));
+  assert.equal((await hal.post('/api/wishlist', {})).status, 400, 'needs a card');
+  assert.equal((await hal.post('/api/wishlist', { cardId: 99999999 })).status, 404, 'a card in this league');
+  const wishNames = [...new Set(pulls.map(c => c.name))].slice(0, 100);
+  for (const n of wishNames) await ok(hal.post('/api/wishlist', { cardId: pulls.find(c => c.name === n).id }));
+  assert.equal((await hal.post('/api/wishlist', { cardId: pulls[0].id })).status, 409, 'once each');
+  assert.equal((await ok(hal.get('/api/wishlist'))).cards.length, wishNames.length);
+  assert.deepEqual((await ok(ike.get('/api/wishlist'))).cards, [], 'only you see yours');
+  const t0 = discordPosts.length;
+  await openAll(jo, 'Jon', 3);
+  const ping = await waitFor(() => discordPosts.slice(t0).find(p => p.body.content?.startsWith(`<@${HAL}> **Jon** pulled **`)), 'a wishlist ping');
+  assert.deepEqual(ping.body.allowed_mentions, { parse: [], users: [HAL] }, 'only Hal');
+  const link = ping.body.content.match(/#trades\?new=1&with=([^&]+)&card=(\d+)>$/);
+  assert.ok(link, 'the ping links to a trade offer for the card');
+  assert.equal(link[1], u.Jon.id);
+  assert.ok(!discordPosts.slice(t0).some(p => /^<@\d+> \*\*Ike\*\*/.test(p.body.content || '')), "Ike's own cards aren't new pulls");
+  const { trade } = await ok(hal.post('/api/trades', { to: u.Jon.id, give: [], get: [Number(link[2])] }));
+  await waitFor(() => discordPosts.some(p => p.method === 'DELETE' && p.path.endsWith(`/messages/${ping.id}`)), 'the ping to go once an offer asks for the card');
+  const rest = discordPosts.slice(t0).filter(p => p.body.content?.startsWith(`<@${HAL}> **Jon** pulled`) && p.id !== ping.id);
+  for (const n of wishNames) await ok(hal.del(`/api/wishlist?name=${encodeURIComponent(n)}`));
+  await waitFor(() => rest.every(o => discordPosts.some(p => p.method === 'DELETE' && p.path.endsWith(`/messages/${o.id}`))), 'the other wishlist pings to go once the cards leave the wishlist');
+  assert.deepEqual((await ok(hal.get('/api/wishlist'))).cards, []);
+  if (LIVE_SCRYFALL) assert.equal((await ok(hal.post('/api/wishlist', { name: 'sol ring' }))).added, 'Sol Ring', 'by name, looked up on Scryfall');
+  await ok(hal.post(`/api/trades/${trade.id}/cancel`));
+  await ok(hal.put('/api/auth/profile', { discordId: '' }));
 });
 
 test('players change their username once, admins whenever; emails any time', async () => {

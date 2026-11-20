@@ -57,6 +57,9 @@ async function loadState() {
   S.announcement = st.announcement || null; S.viewAs = st.viewAs || null;
   S.tradesWaiting = st.tradesWaiting || 0;
   S.discordPings = !!st.discordPings;
+  // The wishlist on hand is for the league on screen.
+  if (S.wishFor !== (S.league?.id || null)) S.wish = null;
+  if (S.wish == null && S.league?.isMember) loadWish();
   paintMe();
   paintBanners();
   paintLeaguePicker();
@@ -707,7 +710,7 @@ async function renderLeague(view) {
       </section>
       <section class="panel">
         <div class="spread"><h2 style="margin:0">Players</h2><span class="small muted">${league.members.length}/${lim.max}</span></div>
-        <div class="member-list">${league.members.map(m => `<div class="member">${commanderMini(m.commander)}<div class="member-info"><b>${plink(m.id, m.username)}</b>${m.leagueAdmin ? ' <span class="chip gold" title="Started the league: can change its rules and kick players">League admin</span>' : ''}${m.admin ? ' <span class="chip gold" title="A player with admin powers">admin</span>' : ''}${m.test ? ' <span class="chip" title="Cannot sign in; an admin plays for it">test player</span>' : ''}${m.id === S.me.id ? ' <span class="dim small">(you)</span>' : ''}<div class="small muted">${esc(m.precon) || 'No precon set'}${m.preconOk === false ? ' <span class="precon-bad" title="Not an official precon name, so its cards aren\'t in the pool. An admin can allow a change.">!</span>' : ''}${m.preconLocked ? ' <span class="dim">· locked</span>' : ''}</div>${m.preconRequest && league.canManage ? `<div class="small precon-req">Wants to change: ${esc(m.preconRequest.reason)}</div>` : ''}</div>
+        <div class="member-list">${league.members.map(m => `<div class="member">${commanderMini(m.commander)}<div class="member-info"><b>${plink(m.id, m.username)}</b>${m.leagueAdmin ? ' <span class="chip gold" title="Started the league: can change its rules and kick players">League admin</span>' : ''}${m.admin ? ' <span class="chip gold" title="A player with admin powers">admin</span>' : ''}${m.test ? ' <span class="chip" title="Cannot sign in; an admin plays for it">test player</span>' : ''}${m.id === S.me.id ? ' <span class="dim small">(you)</span>' : ''}<div class="small muted">${esc(m.precon) || 'No precon set'}${m.preconOk === false ? ' <span class="precon-bad" title="Not an official precon name, so its cards aren\'t in the pool. An admin can allow a change.">!</span>' : ''}${m.preconBanned ? ' <span class="chip bad" title="Banned by the house rules after it was locked in. The league admin can allow a change.">Banned</span>' : ''}${m.preconLocked ? ' <span class="dim">· locked</span>' : ''}</div>${m.preconRequest && league.canManage ? `<div class="small precon-req">Wants to change: ${esc(m.preconRequest.reason)}</div>` : ''}</div>
           <div class="member-acts">${league.canManage && active && m.preconRequest ? `<button class="btn gold sm" data-pallow="${m.id}">Allow</button><button class="btn ghost sm" data-pdecline="${m.id}">Decline</button>` : league.canManage && active && m.preconLocked ? `<button class="btn ghost sm" data-pallow="${m.id}" title="Let them save a different precon once">Allow change</button>` : ''}
           ${isAdminAccount() && !m.test ? `<button class="btn ghost sm" data-pedit="${m.id}" title="Main admin: set or clear this player's precon">Edit precon</button>` : ''}
           ${league.canManage && active && m.id !== S.me.id ? `<button class="btn ghost sm" data-rmm="${m.id}" data-name="${esc(m.username)}" title="Kick from the league">✕</button>` : ''}</div></div>`).join('') || '<p class="muted">Nobody yet.</p>'}</div>
@@ -739,6 +742,7 @@ async function renderLeague(view) {
           <li>${I.user} Decks: ${r.showDecks !== false ? 'players can see each other\'s decks in Pools' : 'private, each player only sees their own'}</li>
         </ul>`}
       </section>
+      ${housePanel(league, active)}
       <section class="panel">
         <h2>Activity</h2>
         <div class="feed">${events.map(e => `<div class="feed-item"><span>${fmtWhen(e.at)}</span>${I[FEED_ICONS[e.kind] || 'dot']}<span>${esc(e.text.replace(LEADING_EMOJI, ''))}</span></div>`).join('') || '<p class="muted">Nothing yet.</p>'}</div>
@@ -760,6 +764,7 @@ async function renderLeague(view) {
     try { await post(`/leagues/${league.id}/leave`); S.viewLeague = null; await refreshLeague(); } catch (err) { fail(err); }
   });
   wirePrecon(view, league);
+  wireHouse(view, league);
   $$('[data-rmm]', view).forEach(b => b.onclick = async () => {
     if (!await confirmBox(`Kick ${esc(b.dataset.name)}?`, `${esc(b.dataset.name)} is removed from ${esc(league.name)}. Their past pods and pool stay in its history. The invite code won't let them back in; only the site admin can re-add them.`, 'Kick', true)) return;
     try { await del(`/leagues/${league.id}/members/${b.dataset.rmm}`); await refreshLeague(); } catch (err) { fail(err); }
@@ -800,6 +805,90 @@ async function renderLeague(view) {
     if (!await typedConfirm(`Delete ${esc(league.name)}?`, 'This deletes the league with every pod, pack, vote and pool card in it. You can undo it for 30 days from <b>Admin → Admin log</b>.', 'DELETE', `${I.trash} Delete league`)) return;
     try { await del(`/leagues/${league.id}`); S.viewLeague = null; await refreshLeague(); toast('League deleted.', 'good'); } catch (err) { fail(err); }
   });
+}
+
+// ---------------- house rules ----------------
+// Banned precons (picked from every official precon), banned cards, how many
+// cards can come into a deck between pods, and how many pulled mythics/rares a
+// deck may hold. The league admin (or a site admin) sets them.
+const houseOf = league => ({ bannedPrecons: [], bannedCards: [], swapCap: null, maxMythics: null, maxRares: null, ...(league?.house || {}) });
+const isBannedPreconName = (league, name) => !!name && houseOf(league).bannedPrecons.some(n => n.toLowerCase() === String(name).trim().toLowerCase());
+const limitText = (v, word) => (v == null ? 'no limit' : `<b>${plural(v, word)}</b>`);
+function housePanel(league, active) {
+  const h = houseOf(league);
+  const chips = (list, empty) => (list.length ? `<div class="row ban-chips">${list.map(n => `<span class="chip bad">${esc(n)}</span>`).join('')}</div>` : `<p class="small muted" style="margin:0">${empty}</p>`);
+  if (league.canManage && active) return `<section class="panel">
+    <h2>House rules</h2>
+    <form id="houseForm" class="grid" style="gap:12px">
+      <div><div class="spread"><b>Banned precons <span class="dim small">${h.bannedPrecons.length}</span></b><button type="button" class="btn sm" id="banPrecons">Choose banned precons</button></div>
+        <div style="margin-top:6px">${chips(h.bannedPrecons, 'None. Players can lock in any official precon.')}</div></div>
+      <label>Banned cards <span class="dim small">(one card name per line; they can't go into a deck)</span><textarea name="bannedCards" rows="4" maxlength="20000" placeholder="e.g. Sol Ring">${esc(h.bannedCards.join('\n'))}</textarea></label>
+      <div class="rules-grid">
+        <label title="How many cards can come into your deck between one pod and the next">Swaps between pods<input type="number" name="swapCap" min="0" max="100" placeholder="No limit" value="${h.swapCap ?? ''}"></label>
+        <label title="Mythics pulled from packs (not your precon's own)">Mythics from packs<input type="number" name="maxMythics" min="0" max="100" placeholder="No limit" value="${h.maxMythics ?? ''}"></label>
+        <label title="Rares pulled from packs (not your precon's own)">Rares from packs<input type="number" name="maxRares" min="0" max="100" placeholder="No limit" value="${h.maxRares ?? ''}"></label>
+      </div>
+      <p class="small muted" style="margin:0">Leave a number empty for no limit. Swaps count the cards in a deck that weren't in it at the player's last pod (before their first pod: that aren't in their precon). Mythics and rares count only cards pulled from packs. Decks already over a new limit can still take cards out.</p>
+      <button class="btn gold">Save house rules</button>
+    </form>
+  </section>`;
+  return `<section class="panel">
+    <h2>House rules</h2>
+    <ul class="rules-list">
+      <li>${I.x} Banned precons: ${h.bannedPrecons.length ? chips(h.bannedPrecons) : 'none'}</li>
+      <li>${I.x} Banned cards: ${h.bannedCards.length ? chips(h.bannedCards) : 'none'}</li>
+      <li>${I.trade} Swaps between pods: ${limitText(h.swapCap, 'card')}</li>
+      <li>★ Mythics from packs in a deck: ${limitText(h.maxMythics, 'mythic')}</li>
+      <li>◆ Rares from packs in a deck: ${limitText(h.maxRares, 'rare')}</li>
+    </ul>
+  </section>`;
+}
+function wireHouse(view, league) {
+  const form = $('#houseForm', view);
+  if (!form) return;
+  const save = async body => {
+    try { await api(`/leagues/${league.id}`, { method: 'PUT', body: { house: body } }); toast('House rules saved.', 'good'); await refreshLeague(); return true; } catch (err) { fail(err); return false; }
+  };
+  form.onsubmit = e => {
+    e.preventDefault();
+    const f = new FormData(form);
+    const num = k => (String(f.get(k) ?? '').trim() === '' ? null : Number(f.get(k)));
+    save({ bannedCards: String(f.get('bannedCards') || '').split('\n').map(s => s.trim()).filter(Boolean), swapCap: num('swapCap'), maxMythics: num('maxMythics'), maxRares: num('maxRares') });
+  };
+  $('#banPrecons', view).onclick = () => preconBanModal(league, save);
+}
+// Every official precon with a tick box: ticked = banned in this league.
+async function preconBanModal(league, save) {
+  if (!S.preconNames?.length) { try { S.preconNames = (await api('/precons')).names; } catch (err) { fail(err); return; } }
+  const banned = new Set(houseOf(league).bannedPrecons);
+  const taken = new Map(league.members.filter(m => m.precon).map(m => [m.precon.toLowerCase(), m.username]));
+  let q = '', onlyBanned = false;
+  const m = $('#modal');
+  m.innerHTML = `<div class="dlg-wide"><div class="dialog">
+    <div class="spread"><h2 style="margin:0">Banned precons</h2><button class="btn sm ghost" id="pbClose">Cancel</button></div>
+    <p class="small muted" style="margin:4px 0 10px">Tick every precon that can't be played in ${esc(league.name)}. A player who tries to lock one in is told it's banned. Players who already locked one in keep it until you allow them a change.</p>
+    <div class="set-tools"><input type="search" id="pbQ" placeholder="Search ${S.preconNames.length} precons…"><label class="check small"><input type="checkbox" id="pbOnly"> Banned only</label><span class="small muted" id="pbN"></span></div>
+    <div class="ban-list" id="pbList"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn ghost sm" id="pbNone">Unban all</button><button class="btn gold" id="pbSave">Save banned precons</button></div>
+  </div></div>`;
+  m.hidden = false;
+  const close = () => { m.hidden = true; m.innerHTML = ''; };
+  const paint = () => {
+    const s = q.trim().toLowerCase();
+    const list = S.preconNames.filter(n => (!s || n.toLowerCase().includes(s)) && (!onlyBanned || banned.has(n)));
+    $('#pbN', m).textContent = `${banned.size} banned`;
+    $('#pbList', m).innerHTML = list.slice(0, 400).map(n => `<label class="ban-row ${banned.has(n) ? 'on' : ''}"><input type="checkbox" data-pb="${esc(n)}" ${banned.has(n) ? 'checked' : ''}> <span>${esc(n)}</span>${taken.has(n.toLowerCase()) ? ` <span class="dim small">· ${esc(taken.get(n.toLowerCase()))} has it</span>` : ''}</label>`).join('')
+      + (list.length > 400 ? `<p class="small muted">${list.length - 400} more: search to narrow it down.</p>` : '') || '<p class="small muted">No precons match.</p>';
+    $$('[data-pb]', m).forEach(b => b.onchange = () => { if (b.checked) banned.add(b.dataset.pb); else banned.delete(b.dataset.pb); b.closest('.ban-row').classList.toggle('on', b.checked); $('#pbN', m).textContent = `${banned.size} banned`; });
+  };
+  paint();
+  $('#pbQ', m).oninput = e => { q = e.target.value; paint(); };
+  $('#pbOnly', m).onchange = e => { onlyBanned = e.target.checked; paint(); };
+  $('#pbNone', m).onclick = () => { banned.clear(); paint(); };
+  $('#pbClose', m).onclick = close;
+  m.onclick = e => { if (e.target === m) close(); };
+  $('#pbSave', m).onclick = async () => { if (await save({ bannedPrecons: [...banned] })) close(); };
+  setTimeout(() => $('#pbQ', m)?.focus(), 30);
 }
 
 // =============== PODS TAB ===============
@@ -899,15 +988,20 @@ function wirePrecon(view, league) {
     const check = loud => {
       const v = form.precon.value.trim();
       const names = S.preconNames || [];
-      const good = v && names.some(n => n.toLowerCase() === v.toLowerCase());
-      const badName = v && names.length && !good;
-      flag.className = `precon-flag ${good ? 'good' : badName ? 'bad' : ''}`;
-      flag.textContent = good ? '✓' : badName ? '!' : '';
-      form.precon.classList.toggle('invalid', !!badName && loud);
-      msg.hidden = !(badName && loud);
-      msg.innerHTML = badName ? `<span class="precon-bad">!</span> "${esc(v)}" isn't an official precon name. Check the spelling and pick it from the suggestions.` : '';
+      const official = v && names.some(n => n.toLowerCase() === v.toLowerCase());
+      const banned = official && isBannedPreconName(league, v);
+      const good = official && !banned;
+      const badName = v && names.length && !official;
+      flag.className = `precon-flag ${good ? 'good' : badName || banned ? 'bad' : ''}`;
+      flag.textContent = good ? '✓' : badName || banned ? '!' : '';
+      form.precon.classList.toggle('invalid', (!!badName && loud) || !!banned);
+      msg.hidden = !((badName && loud) || banned);
+      msg.innerHTML = banned ? '<span class="precon-bad">!</span> This Pre-Con Deck is Banned.'
+        : badName ? `<span class="precon-bad">!</span> "${esc(v)}" isn't an official precon name. Check the spelling and pick it from the suggestions.` : '';
+      return !banned;
     };
-    const fill = () => { const l = $('#preconList', view); if (l) l.innerHTML = (S.preconNames || []).map(n => `<option value="${esc(n)}"></option>`).join(''); check(false); };
+    // Banned precons aren't suggested.
+    const fill = () => { const l = $('#preconList', view); if (l) l.innerHTML = (S.preconNames || []).filter(n => !isBannedPreconName(league, n)).map(n => `<option value="${esc(n)}"></option>`).join(''); check(false); };
     if (S.preconNames?.length) fill(); else api('/precons').then(r => { S.preconNames = r.names; fill(); }).catch(() => {});
     form.precon.oninput = () => check(false);
     form.precon.onchange = () => check(true);
@@ -919,6 +1013,7 @@ function wirePrecon(view, league) {
       if (!precon) return;
       const official = (S.preconNames || []).find(n => n.toLowerCase() === precon.toLowerCase());
       if (S.preconNames?.length && !official) { check(true); form.precon.focus(); return; }
+      if (!check(true)) { form.precon.focus(); return; }
       if (!await confirmBox('Lock in this precon?', `<b>${esc(precon)}</b> will be your precon for ${esc(league.name)}. <b>You can't change it for this league after saving.</b> Only the league admin or a site admin can allow a change.`, 'Save and lock')) return;
       again(api(`${url}/precon`, { method: 'PUT', body: { precon: official || precon } }).then(r => { S.pools = null; toast('Precon locked in. Its cards are in your pool.', 'good'); return r; }).catch(err => { msg.hidden = false; msg.innerHTML = `<span class="precon-bad">!</span> ${esc(err.message)}`; flag.className = 'precon-flag bad'; flag.textContent = '!'; throw err; }));
     };
@@ -2101,14 +2196,18 @@ function renderFunStats(box, { packs }, odds) {
   $('#fsAll', box)?.addEventListener('click', e => { $('.fs-freq tbody', box).innerHTML = freq.map(freqRow).join(''); e.target.remove(); });
 }
 
-function cardModal(c) {
+function cardModal(c, opts = {}) {
   const m = $('#modal');
   let showBack = false;
+  // From someone else's pool: put it on your wishlist.
+  const canWish = opts.wish && c.id && S.league?.isMember && S.league.status === 'active' && !isAdminAccount();
   const paint = () => {
+    const wished = (S.wish || []).some(w => ckey(w.name) === ckey(c.name));
     m.innerHTML = `<div class="box">
       <img src="${esc(showBack ? c.back : c.image)}" alt="${esc(c.name)}">
       <div class="row">
         ${c.back ? `<button class="btn sm" id="flipBtn">↻ Flip</button>` : ''}
+        ${canWish ? (wished ? '<span class="chip gold">☆ On your wishlist</span>' : '<button class="btn sm" id="wishOne">☆ Add to wishlist</button>') : ''}
         <a class="btn sm" href="${esc(c.uri)}" target="_blank" rel="noopener">Scryfall ↗</a>
         <button class="btn sm" id="copyOne" title="Formatted for ${siteName()}">${I.copy} Copy (${siteName()})</button>
         ${isAdmin() && c.id ? `<button class="btn sm" id="moveOne">Move to…</button><button class="btn sm danger" id="delOne">${I.trash} Remove</button>` : ''}
@@ -2119,6 +2218,7 @@ function cardModal(c) {
     $('#closeM', m).onclick = () => { m.hidden = true; };
     $('#delOne', m)?.addEventListener('click', e => { e.stopPropagation(); deleteCardFlow(c); });
     $('#moveOne', m)?.addEventListener('click', e => { e.stopPropagation(); moveCardFlow(c); });
+    $('#wishOne', m)?.addEventListener('click', async e => { e.stopPropagation(); e.target.disabled = true; await loadWish(); if (await addToWish({ cardId: c.id })) paint(); else e.target.disabled = false; });
   };
   paint();
   m.hidden = false;
@@ -2137,6 +2237,8 @@ async function renderPools(view) {
   }
   const pools = S.pools;
   if (!pools.length) { view.innerHTML = `<div class="empty"><h2>No players yet</h2></div>`; return; }
+  if (S.params.view === 'find') return renderWhoHas(view);
+  if (S.params.view === 'wish') return renderWishlist(view);
   const pool = pools.find(p => p.userId === S.params.player) || pools.find(p => p.userId === S.me.id) || pools[0];
   if (poolFilter.pod && !pool.pods.some(x => x.id === poolFilter.pod)) poolFilter.pod = '';
   const packs = pool.packs.filter(k => !poolFilter.pod || k.podId === poolFilter.pod);
@@ -2156,6 +2258,7 @@ async function renderPools(view) {
   const deckMode = canSeeDeck && S.params.view === 'deck';
   const head = `
     <div class="hero"><div><h1>${esc(S.league?.name || 'League')} Pools</h1><p>Every card a player can use in this league: their precon's cards, plus everything they've opened in its pods, including packs for pods they missed (discarded pods don't count).${mine ? ' Build your deck from them in the Deck editor.' : ''}</p></div></div>
+    ${poolModes('pools')}
     <div class="player-tabs">${pools.map(p => `<a href="#pools?player=${p.userId}" class="${p.userId === pool.userId ? 'sel' : ''}">${esc(p.username)} <span class="dim">${p.packs.reduce((s, k) => s + k.cards.length, 0)}</span></a>`).join('')}</div>
     ${canSeeDeck ? `<div class="mode-tabs"><a href="#pools?player=${pool.userId}" class="${deckMode ? '' : 'sel'}">Cards</a><a href="#pools?player=${pool.userId}&view=deck" class="${deckMode ? 'sel' : ''}">${mine ? 'Deck editor' : 'Deck'}</a></div>` : ''}`;
   if (deckMode) {
@@ -2208,12 +2311,122 @@ async function renderPools(view) {
     };
     list.sort(sorters[poolFilter.sort]);
     $('#poolCards', view).innerHTML = list.map((g, i) => cardHtml(g.card, i, false, g.qty)).join('') || '<p class="muted">No cards match.</p>';
-    $$('#poolCards .mcard', view).forEach(m => m.onclick = () => cardModal(list[Number(m.dataset.i)].card));
+    $$('#poolCards .mcard', view).forEach(m => m.onclick = () => cardModal(list[Number(m.dataset.i)].card, { wish: !mine }));
   };
   paint();
   $('#pq', view).oninput = e => { poolFilter.q = e.target.value; paint(); };
   $('#pr', view).onchange = e => { poolFilter.rarity = e.target.value; paint(); };
   $('#ps', view).onchange = e => { poolFilter.sort = e.target.value; paint(); };
+}
+
+// ---------- who has it, and the wishlist (Pools tab) ----------
+const ckey = s => String(s || '').split(' // ')[0].trim().toLowerCase();
+const canTradeHere = () => S.league?.status === 'active' && S.league?.isMember && !isAdminAccount() && !S.viewAs;
+const offerLink = (userId, cardId) => `#trades?new=1&with=${encodeURIComponent(userId)}&card=${cardId}`;
+function poolModes(sel) {
+  const wishN = S.wish?.length || 0;
+  return `<div class="mode-tabs pool-modes">
+    <a href="#pools" class="${sel === 'pools' ? 'sel' : ''}">Pools</a>
+    <a href="#pools?view=find" class="${sel === 'find' ? 'sel' : ''}">Who has it?</a>
+    ${S.league?.isMember ? `<a href="#pools?view=wish" class="${sel === 'wish' ? 'sel' : ''}">☆ Wishlist${wishN ? ` <span class="dim">${wishN}</span>` : ''}</a>` : ''}
+  </div>`;
+}
+// Every copy of a card name across the league's pools: [{ name, card, holders: [{ userId, name, copies: [card…], precon }] }]
+function copiesByName(match) {
+  const out = new Map();
+  for (const p of S.pools || []) {
+    for (const k of p.packs) for (const c of k.cards) {
+      const key = ckey(c.name);
+      if (!match(key, c)) continue;
+      const g = out.get(key) || out.set(key, { name: c.name, card: c, holders: new Map() }).get(key);
+      if (c.rarity === 'mythic' || (c.image && !g.card.image)) g.card = g.card.rarity === 'mythic' ? g.card : c;
+      const h = g.holders.get(p.userId) || g.holders.set(p.userId, { userId: p.userId, name: p.username, copies: [], precon: [] }).get(p.userId);
+      (k.kind === 'precon' ? h.precon : h.copies).push(c);
+    }
+  }
+  return [...out.values()].map(g => ({ ...g, holders: [...g.holders.values()].sort((a, b) => Number(b.userId === S.me.id) - Number(a.userId === S.me.id) || a.name.localeCompare(b.name)) }));
+}
+function holderLine(h, { wish = false } = {}) {
+  const me = h.userId === S.me.id;
+  const foils = h.copies.filter(c => c.foil).length;
+  const bits = [];
+  if (h.copies.length) bits.push(`×${h.copies.length}${foils ? ` · ${foils} foil` : ''}`);
+  if (h.precon.length) bits.push(`<span class="dim" title="Precon cards stay with their owner">${h.precon.length} in ${h.userId === S.me.id ? 'your' : 'their'} precon</span>`);
+  const ask = !me && h.copies.length && canTradeHere();
+  return `<div class="holder"><b>${me ? 'You' : plink(h.userId, h.name)}</b> <span class="small">${bits.join(' · ')}</span>
+    ${ask ? `<a class="btn sm ${wish ? 'gold' : ''}" href="${offerLink(h.userId, h.copies[0].id)}">${I.trade} ${wish ? 'Make an offer' : 'Ask for it'}</a>` : ''}</div>`;
+}
+async function loadWish(force = false) {
+  const lid = S.league?.id || null;
+  if (!S.league?.isMember) { S.wish = []; S.wishFor = lid; return S.wish; }
+  if (S.wish && S.wishFor === lid && !force) return S.wish;
+  try { S.wish = (await api('/wishlist' + lq())).cards; S.wishFor = lid; } catch { S.wish = S.wish || []; }
+  return S.wish;
+}
+async function addToWish(body) {
+  try { const r = await post('/wishlist' + lq(), body); S.wish = r.cards; S.wishFor = S.league?.id || null; toast(`☆ ${esc(r.added)} is on your wishlist. You'll hear when someone pulls one.`, 'good'); return true; } catch (err) { fail(err); return false; }
+}
+async function renderWhoHas(view) {
+  await loadWish();
+  if (S.route !== 'pools') return;
+  const wished = new Set((S.wish || []).map(w => ckey(w.name)));
+  view.innerHTML = `
+    <div class="hero"><div><h1>Who has it?</h1><p>Search every pool in ${esc(S.league?.name || 'the league')} at once. Cards pulled from packs can be traded; a precon's own cards stay with their owner.</p></div></div>
+    ${poolModes('find')}
+    <div class="set-tools"><input type="search" id="whQ" placeholder="Card name, e.g. Sol Ring" value="${esc(S.whoQ || '')}" autocomplete="off"></div>
+    <div id="whOut"></div>`;
+  const paint = () => {
+    const q = (S.whoQ || '').trim().toLowerCase();
+    const out = $('#whOut', view);
+    if (q.length < 2) { out.innerHTML = '<p class="muted">Type at least 2 letters of a card name.</p>'; return; }
+    const groups = copiesByName(key => key.includes(q)).sort((a, b) => Number(ckey(b.name) === q) - Number(ckey(a.name) === q) || a.name.localeCompare(b.name));
+    out.innerHTML = groups.slice(0, 60).map(g => `<div class="panel who-row">
+      <button type="button" class="who-img" data-zoom="${esc(ckey(g.name))}" title="View ${esc(g.name)}"><img ${cardSrc(g.card.image, '110px')} alt="${esc(g.name)}" loading="lazy"></button>
+      <div class="who-body"><div class="spread"><h3 style="margin:0">${esc(g.name)}</h3>
+        ${S.league?.isMember && S.league.status === 'active' ? (wished.has(ckey(g.name)) ? '<span class="chip gold">☆ On your wishlist</span>' : `<button class="btn sm" data-wish="${g.card.id}">☆ Add to wishlist</button>`) : ''}</div>
+        ${g.holders.map(h => holderLine(h)).join('')}</div></div>`).join('')
+      + (groups.length > 60 ? `<p class="small muted">${groups.length - 60} more cards match. Type more of the name.</p>` : '')
+      || `<p class="muted">Nobody in the league has a card called “${esc(S.whoQ.trim())}”.${S.league?.isMember && S.league.status === 'active' ? ' Put it on your <a href="#pools?view=wish">wishlist</a> to hear when someone pulls one.' : ''}</p>`;
+    $$('[data-zoom]', out).forEach(b => b.onclick = () => { const g = groups.find(x => ckey(x.name) === b.dataset.zoom); if (g) cardModal(g.card); });
+    $$('[data-wish]', out).forEach(b => b.onclick = async () => { b.disabled = true; if (await addToWish({ cardId: Number(b.dataset.wish) })) { wished.add(ckey(groups.find(x => String(x.card.id) === b.dataset.wish)?.name)); paint(); $('.pool-modes', view).outerHTML = poolModes('find'); } else b.disabled = false; });
+  };
+  paint();
+  const input = $('#whQ', view);
+  input.oninput = e => { S.whoQ = e.target.value; paint(); };
+  input.focus();
+}
+async function renderWishlist(view) {
+  if (!S.league?.isMember) { go('#pools'); return; }
+  await loadWish(true);
+  if (S.route !== 'pools') return;
+  const active = S.league.status === 'active';
+  const wish = S.wish || [];
+  const keys = new Set(wish.map(w => ckey(w.name)));
+  const found = new Map(copiesByName(key => keys.has(key)).map(g => [ckey(g.name), g]));
+  view.innerHTML = `
+    <div class="hero"><div><h1>Your wishlist</h1><p>Cards you want for ${esc(S.league.name)}. Only you see it. When anyone in the league pulls one, you get a ping${S.discordPings ? ' (on Discord too, if you linked your ID on the Account page)' : ''} with a link that opens a trade offer for it.</p></div></div>
+    ${poolModes('wish')}
+    ${active ? `<form class="panel precon-form" id="wishForm"><label style="flex:1">Add a card<input name="name" maxlength="150" placeholder="Card name, e.g. The One Ring" autocomplete="off" required></label><button class="btn gold">☆ Add</button></form>` : ''}
+    <div class="wish-list">${wish.map(w => {
+      const g = found.get(ckey(w.name));
+      const others = g ? g.holders.filter(h => h.userId !== S.me.id && h.copies.length) : [];
+      const mineToo = g?.holders.find(h => h.userId === S.me.id);
+      return `<div class="panel who-row">
+        <a class="who-img" href="${esc(w.uri || '#')}" target="_blank" rel="noopener" title="${esc(w.name)} on Scryfall"><img ${cardSrc(w.image || g?.card.image, '110px')} alt="${esc(w.name)}" loading="lazy"></a>
+        <div class="who-body"><div class="spread"><h3 style="margin:0">${esc(w.name)}</h3>${active ? `<button class="btn sm ghost" data-unwish="${esc(w.name)}" title="Take it off your wishlist">${I.x} Remove</button>` : ''}</div>
+          ${others.length ? others.map(h => holderLine(h, { wish: true })).join('') : '<p class="small muted" style="margin:4px 0 0">Nobody else in the league has one yet.</p>'}
+          ${mineToo ? `<p class="small muted" style="margin:4px 0 0">${I.check} You have ${mineToo.copies.length + mineToo.precon.length > 1 ? 'copies' : 'one'} already.</p>` : ''}
+        </div></div>`;
+    }).join('') || `<div class="empty"><p>Your wishlist is empty. Add cards above, or from <a href="#pools?view=find">Who has it?</a> and other players' pools.</p></div>`}</div>`;
+  $('#wishForm', view)?.addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = $('button', e.target);
+    btn.disabled = true;
+    if (await addToWish({ name: e.target.name.value })) renderWishlist(view); else btn.disabled = false;
+  });
+  $$('[data-unwish]', view).forEach(b => b.onclick = async () => {
+    try { S.wish = (await api('/wishlist' + lq() + `${lq() ? '&' : '?'}name=${encodeURIComponent(b.dataset.unwish)}`, { method: 'DELETE' })).cards; renderWishlist(view); } catch (err) { fail(err); }
+  });
 }
 
 // ---------- deck editor (Pools tab) ----------
@@ -2298,6 +2511,16 @@ function paintDeckEditor(box, pool, r) {
   if (dupes.length) { problems.push(`More than one copy: ${dupes.map(l => esc(l[0].name)).join(', ')}`); dupes.flat().forEach(c => bad.add(deckKey(c))); }
   const gone = deck.cards.filter(c => c.poolId && !poolIds.has(c.poolId));
   if (gone.length) { problems.push(`No longer in your pool: ${names(gone)}`); gone.forEach(c => bad.add(deckKey(c))); }
+  // House rules: where the deck stands (adding a card that breaks one is refused).
+  const h = r.house;
+  const houseBits = [];
+  if (h) {
+    const since = h.since ? `since ${esc(h.since)}` : 'from your precon';
+    if (h.bannedCards.length) { problems.push(`Banned in this league: ${h.bannedCards.map(esc).join(', ')}`); deck.cards.filter(c => h.bannedCards.includes(c.name)).forEach(c => bad.add(deckKey(c))); }
+    if (h.swapCap != null) { houseBits.push(`<span class="chip ${h.swaps > h.swapCap ? 'bad' : ''}" title="Cards in your deck that weren't in it ${h.since ? `at ${esc(h.since)}` : 'in your precon'}">${I.trade} Swaps ${since}: ${h.swaps}/${h.swapCap}</span>`); if (h.swaps > h.swapCap) problems.push(`${h.swaps} cards swapped in ${since}: the house rule allows ${h.swapCap}`); }
+    if (h.maxMythics != null) { houseBits.push(`<span class="chip ${h.mythics > h.maxMythics ? 'bad' : ''}" title="Mythics pulled from packs (your precon's own don't count)">★ Mythics from packs: ${h.mythics}/${h.maxMythics}</span>`); if (h.mythics > h.maxMythics) problems.push(`${h.mythics} mythics from packs: the house rule allows ${h.maxMythics}`); }
+    if (h.maxRares != null) { houseBits.push(`<span class="chip ${h.rares > h.maxRares ? 'bad' : ''}" title="Rares pulled from packs (your precon's own don't count)">◆ Rares from packs: ${h.rares}/${h.maxRares}</span>`); if (h.rares > h.maxRares) problems.push(`${h.rares} rares from packs: the house rule allows ${h.maxRares}`); }
+  }
 
   // Cards with the same name show once with a count; + and − move one copy.
   const keyIn = (c, w) => (w === 'deck' ? deckKey(c) : w === 'maybe' ? c.mkey : w === 'pool' ? `pool:${c.id}` : `base:${c.name}`);
@@ -2360,7 +2583,8 @@ function paintDeckEditor(box, pool, r) {
     <div class="panel de-head">
       <div class="de-title"><h2>${esc(deck.name)}</h2><div class="deck-colors">${colorPips(deck.colors)}</div><span class="de-count ${deck.count === 100 ? 'ok' : 'bad'}">${deck.count}/100</span></div>
       <div class="small muted">${pulledIn ? `${plural(pulledIn, 'pulled card')} in · ` : ''}<a href="#player?id=${S.me.id}${S.viewLeague ? `&league=${S.viewLeague}` : ''}">See it on your page</a></div>
-      <div class="de-problems">${problems.length ? problems.map(p => `<span class="chip bad">${p}</span>`).join('') : `<span class="chip ok">${I.check} 100 cards, one of each, all in your colors</span>`}</div>
+      <div class="de-problems">${problems.length ? problems.map(p => `<span class="chip bad">${p}</span>`).join('') : `<span class="chip ok">${I.check} 100 cards, one of each, all in your colors${h && (h.swapCap != null || h.maxMythics != null || h.maxRares != null || S.league?.house?.bannedCards?.length) ? ', within the house rules' : ''}</span>`}</div>
+      ${houseBits.length ? `<div class="row de-house"><span class="small muted">House rules:</span>${houseBits.join('')}</div>` : ''}
       <div class="row">
         <select class="input" id="deGroup" title="How to group your deck"><option value="type">Group by type</option><option value="cmc" ${byCmc ? 'selected' : ''}>Group by mana value</option></select>
         <button class="btn sm ${deckEd.multiMode ? 'gold' : ''}" id="deMulti" aria-pressed="${deckEd.multiMode}">${deckEd.multiMode ? `${I.check} Done selecting` : 'Select several'}</button>
@@ -2393,7 +2617,7 @@ function paintDeckEditor(box, pool, r) {
     if (deckEd.busy) return;
     deckEd.busy = true;
     box.classList.add('busy');
-    try { r.deck = (await post('/deck/cards' + lq(), body)).deck; if (undo) remember({ cards: undo }, label); redraw(); } catch (err) { fail(err); }
+    try { const got = await post('/deck/cards' + lq(), body); r.deck = got.deck; r.house = got.house; if (undo) remember({ cards: undo }, label); redraw(); } catch (err) { fail(err); }
     finally { deckEd.busy = false; box.classList.remove('busy'); }
   };
   // One copy in or out: a deck card's last copy comes out, a pool card's first goes in.
@@ -2629,9 +2853,11 @@ async function renderTradeBuilder(view) {
   }
   const counter = S.params.counter ? d.trades.find(t => t.id === S.params.counter && t.status === 'open' && t.turn === 'me') : null;
   if (S.params.counter && !counter) { toast('That offer has already been answered.', 'err'); go('#trades'); return; }
-  const key = counter ? `c:${counter.id}` : 'new';
+  // ?with=<player>&card=<id> (from Who has it?, the wishlist or a wishlist ping): that card is already asked for.
+  const ask = !counter && S.params.card ? Number(S.params.card) : null;
+  const key = counter ? `c:${counter.id}` : ask ? `ask:${S.params.with}:${ask}` : 'new';
   if (!S.tb || S.tb.key !== key) {
-    const s = counter ? tradeSides(counter) : { give: [], get: [] };
+    const s = counter ? tradeSides(counter) : { give: [], get: ask ? [{ id: ask }] : [] };
     S.tb = { key, with: counter?.other.id || S.params.with || '', give: new Set(s.give.map(c => c.id)), get: new Set(s.get.map(c => c.id)), note: '', q: '', rarity: '' };
   }
   const tb = S.tb;
@@ -3527,6 +3753,13 @@ function connect() {
       const info = JSON.parse(e.data || '{}');
       await loadState();
       S.pools = null; S.leagueDetail = null;
+      // Someone pulled a card on my wishlist (each browser checks its own list).
+      if (info.pulled && info.pulled.from !== S.me.id && info.leagueId && info.leagueId === S.wishFor && S.wish?.length) {
+        const want = new Set(S.wish.map(w => ckey(w.name)));
+        const hits = info.pulled.cards.filter(c => want.has(ckey(c.name)));
+        const who = esc(S.members.find(m => m.id === info.pulled.from)?.username || 'Someone');
+        for (const c of hits.slice(0, 3)) toast(`☆ ${who} pulled <b>${esc(c.name)}</b>, which is on your wishlist · <a href="${offerLink(info.pulled.from, c.id)}">make an offer</a>`, 'good');
+      }
       if (info.trade) {
         S.trades = null;
         const tw = info.trade;

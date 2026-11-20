@@ -11,6 +11,18 @@ export const LEAGUE_MAX = 16;
 // showDecks: league members can see each other's decks (Pools and player pages).
 export const DEFAULT_RULES = { winnerPacks: 3, loserPacks: 2, absentPacks: 1, voteBonus: 1, showDecks: true };
 export const RULE_LIMITS = { winnerPacks: [0, 10], loserPacks: [0, 10], absentPacks: [0, 5], voteBonus: [0, 5] };
+// House rules, kept apart from the pack rules (pods copy those when they start):
+//   bannedPrecons  official precon names nobody may lock in for the league
+//   bannedCards    card names that can't go into a deck
+//   swapCap        how many cards may come into your deck between pods (null = no limit)
+//   maxMythics / maxRares  mythics / rares pulled from packs allowed in a deck (null = no limit)
+export const HOUSE_DEFAULTS = { bannedPrecons: [], bannedCards: [], swapCap: null, maxMythics: null, maxRares: null };
+export const HOUSE_LIMITS = { bannedPrecons: 1000, bannedCards: 300, number: [0, 100] };
+if (!db.prepare("SELECT 1 FROM pragma_table_info('leagues') WHERE name = 'house'").get()) db.exec("ALTER TABLE leagues ADD COLUMN house TEXT NOT NULL DEFAULT '{}'");
+// The front face, lower case: how card names are compared for bans and wishlists.
+export const cardKey = s => String(s || '').split(' // ')[0].trim().toLowerCase();
+export const isBannedPrecon = (league, precon) => !!precon && (league?.house?.bannedPrecons || []).some(n => n.toLowerCase() === String(precon).trim().toLowerCase());
+export const BANNED_PRECON = 'This Pre-Con Deck is Banned.';
 
 const now = () => new Date().toISOString();
 // No 0/O or 1/I, so codes survive being read out loud.
@@ -27,6 +39,7 @@ function leagueOf(r) {
   return {
     id: r.id, name: r.name, code: r.code, status: r.status, createdAt: r.created_at, createdBy: r.created_by, endedAt: r.ended_at || null,
     rules: { ...DEFAULT_RULES, ...JSON.parse(r.rules || '{}') }, wheel: JSON.parse(r.wheel || '{}'),
+    house: { ...HOUSE_DEFAULTS, ...JSON.parse(r.house || '{}') },
   };
 }
 export const getLeague = id => leagueOf(db.prepare('SELECT * FROM leagues WHERE id = ?').get(id));
@@ -92,8 +105,9 @@ export function createLeague({ name, createdBy, wheel, rules = DEFAULT_RULES }) 
     .run(id, name, newCode(), now(), createdBy || null, JSON.stringify(rules), JSON.stringify(wheel || {}));
   return getLeague(id);
 }
-export function updateLeague(id, { name, rules, wheel }) {
+export function updateLeague(id, { name, rules, wheel, house }) {
   if (name != null) db.prepare('UPDATE leagues SET name = ? WHERE id = ?').run(name, id);
+  if (house) db.prepare('UPDATE leagues SET house = ? WHERE id = ?').run(JSON.stringify(house), id);
   if (rules) db.prepare('UPDATE leagues SET rules = ? WHERE id = ?').run(JSON.stringify(rules), id);
   if (wheel) db.prepare('UPDATE leagues SET wheel = ? WHERE id = ?').run(JSON.stringify(wheel), id);
   return getLeague(id);

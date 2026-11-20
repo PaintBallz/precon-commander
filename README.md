@@ -29,6 +29,13 @@ and packs live.
   Never a Collector Booster.
 - **Pools** of every card each player has pulled in a league: grouped, searchable and filterable
   by pod, with one-tap export to Moxfield or Archidekt.
+- **Who has it?** searches every pool in the league at once, with a one-tap "Ask for it" trade offer.
+- **Wishlists**, private and per league. When anyone pulls a card on yours, you get a toast on the site
+  (and a Discord ping, if you linked your ID) with a link that opens a trade offer for it.
+- **House rules** the league admin sets: banned precons (ticked from the full list; locking one in
+  says "This Pre-Con Deck is Banned."), banned cards, how many cards can come into a deck between
+  pods, and how many pulled mythics and rares a deck may hold. The deck editor shows where you stand
+  and won't add a card that breaks one.
 - **Trades** between two league members, any number of cards for any number. Offers wait for an
   answer (accept, decline or counter), so nobody has to be online at the same time. Each trade
   shows the card images from every round.
