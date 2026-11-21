@@ -19,6 +19,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import http from 'node:http';
+import crypto from 'node:crypto';
 import { listText } from '../public/decklist.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -26,6 +27,12 @@ const PORT = Number(process.env.E2E_PORT || 3999);
 const BASE = `http://127.0.0.1:${PORT}`;
 const LIVE_SCRYFALL = !process.env.SCRYFALL_BASE;
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'pcc-e2e-'));
+// A stand-in Discord application for the game night buttons: its key signs the clicks.
+const discordKeys = crypto.generateKeyPairSync('ed25519');
+const DISCORD_PUBLIC_KEY = discordKeys.publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('hex');
+const BOT_TOKEN = 'test-bot-token.' + 'x'.repeat(50);
+const CHANNEL = '123456789012345678';
+const NIGHT_ROLE = '817954319013511188';
 let server, serverLog = '';
 // A stand-in for Discord: catches the site's webhook posts.
 const HOOK_PORT = PORT - 1;
@@ -61,8 +68,8 @@ const hookServer = http.createServer((req, res) => {
   let b = ''; req.on('data', d => { b += d; });
   // A stand-in Discord webhook: ?wait=true posts get a message id back; edits and deletes are recorded too.
   req.on('end', () => {
-    const msg = { method: req.method, path: req.url, body: JSON.parse(b || '{}') };
-    if (req.method === 'POST' && req.url.endsWith('?wait=true')) msg.id = String(++discordIds);
+    const msg = { method: req.method, path: req.url, body: JSON.parse(b || '{}'), auth: req.headers.authorization || null };
+    if (req.method === 'POST' && (req.url.endsWith('?wait=true') || /^\/api\/v10\/channels\/\d+\/messages$/.test(req.url))) msg.id = String(++discordIds);
     discordPosts.push(msg);
     if (req.method === 'DELETE') { res.writeHead(204); return res.end(); }
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -121,6 +128,7 @@ before(async () => {
       // The whole suite runs from one IP; the last test checks the heavy limit.
       RATE_ALL_PER_MIN: '100000', RATE_API_PER_MIN: '100000', RATE_HEAVY_PER_MIN: '200', SIGNUPS_PER_HOUR: '40', EMAIL_KEY: Buffer.alloc(32, 7).toString('base64'), ADMIN_INITIAL_PASSWORD: 'changeme',
       DISCORD_WEBHOOK_URL: `http://127.0.0.1:${HOOK_PORT}/api/webhooks/123/test-token`, DISCORD_INVITE: 'https://discord.gg/pcctest',
+      DISCORD_PUBLIC_KEY, DISCORD_BOT_TOKEN: BOT_TOKEN, DISCORD_CHANNEL_ID: CHANNEL, DISCORD_API_BASE: `http://127.0.0.1:${HOOK_PORT}/api/v10`, DISCORD_NIGHT_ROLE_ID: NIGHT_ROLE, NIGHT_CHECK_MS: '100',
       MTGJSON_BASE: `http://127.0.0.1:${HOOK_PORT}/mtgjson`, MTGJSON_DELAY_MS: '0', DISCORD_SETTLE_MS: '20', DISCORD_TEST_PING_MS: '300' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -1032,6 +1040,82 @@ test('Discord: one live post per pod, edited as it goes; opt-in pings, deleted o
   { const raw = new DatabaseSync(path.join(DATA_DIR, 'app.db'), { readOnly: true }); try { assert.equal(raw.prepare('SELECT discord_id FROM users WHERE id = ?').get(S.u.Joe.id).discord_id, null, 'removed for good'); } finally { raw.close(); } }
 });
 
+test('game nights: anyone proposes (3 open at most), answers on the site or with the Discord buttons, pods suggested, a reminder', async () => {
+  const soon = h => new Date(Date.now() + h * 3600e3).toISOString();
+  assert.equal((await mike.post('/api/nights', { startsAt: soon(-1) })).status, 400, 'in the future');
+  const { night } = await ok(mike.post('/api/nights', { startsAt: soon(48), note: "At Mike's" }));
+  assert.equal(night.mine, 'yes', 'whoever proposes it is coming');
+  const { night: joes } = await ok(joe.post('/api/nights', { startsAt: soon(72) }));
+  const { night: dans } = await ok(dan.post('/api/nights', { startsAt: soon(96) }));
+  const fourth = await eve.post('/api/nights', { startsAt: soon(120) });
+  assert.equal(fourth.status, 409, 'up to 3 open at once');
+  assert.match(fourth.json.error, /3 game nights/);
+  for (const [c, a] of [[nick, 'yes'], [joe, 'yes'], [dan, 'maybe'], [eve, 'no'], [fay, 'yes']]) await ok(c.put(`/api/nights/${night.id}/rsvp`, { answer: a }));
+  assert.equal((await nick.put(`/api/nights/${night.id}/rsvp`, { answer: 'sure' })).status, 400);
+  let n = (await ok(nick.get('/api/nights'))).nights.find(x => x.id === night.id);
+  assert.deepEqual(n.rsvps.yes.map(p => p.name), ['Mike', 'Nick', 'Joe', 'Fay'], 'in the order they said yes');
+  assert.deepEqual(n.pods.yes.pods.map(p => p.length), [4], 'four coming: one pod');
+  assert.deepEqual(n.pods.withMaybe.out.map(p => p.name), ['Dan'], 'five with the maybe: whoever answered last sits out');
+  assert.equal((await ok(eve.get('/api/state'))).nights.length, 3, 'the Pods tab gets the open nights');
+
+  // The Discord post: from the bot, pinging the game night role, with Yes / Maybe / No buttons, updated as answers come in.
+  const posted = await waitFor(() => discordPosts.find(p => p.method === 'POST' && p.path === `/api/v10/channels/${CHANNEL}/messages` && p.body.components?.[0]?.components?.some(b => b.custom_id === `night:${night.id}:yes`)), 'the game night post with buttons');
+  assert.equal(posted.auth, `Bot ${BOT_TOKEN}`);
+  assert.ok(posted.body.content.startsWith(`<@&${NIGHT_ROLE}>`), 'pings the game night role');
+  assert.deepEqual(posted.body.allowed_mentions, { parse: [], roles: [NIGHT_ROLE] }, 'that role and nothing else');
+  const edit = await waitFor(() => discordPosts.find(p => p.method === 'PATCH' && p.path.endsWith(`/messages/${posted.id}`) && JSON.stringify(p.body.embeds).includes('Fay')), 'the post updated with the answers');
+  assert.deepEqual(edit.body.allowed_mentions, { parse: [] }, "edits don't ping again");
+
+  // A click in Discord: signed by Discord, matched to the player by their linked ID.
+  const signed = (body, key = discordKeys.privateKey) => {
+    const raw = JSON.stringify(body), ts = String(Math.floor(Date.now() / 1000));
+    return fetch(BASE + '/api/discord/interactions', { method: 'POST', body: raw,
+      headers: { 'content-type': 'application/json', 'x-signature-timestamp': ts, 'x-signature-ed25519': crypto.sign(null, Buffer.from(ts + raw), key).toString('hex') } })
+      .then(async r => ({ status: r.status, json: await r.json().catch(() => ({})) }));
+  };
+  assert.equal((await signed({ type: 1 })).json.type, 1, 'Discord checking the endpoint');
+  assert.equal((await signed({ type: 1 }, crypto.generateKeyPairSync('ed25519').privateKey)).status, 401, 'not signed by Discord: turned away');
+  assert.equal((await fetch(BASE + '/api/discord/interactions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"type":1}' })).status, 401, 'unsigned: turned away');
+  const click = (who, answer, id = night.id) => signed({ type: 3, data: { custom_id: `night:${id}:${answer}` }, member: { user: { id: who } } });
+  let r = await click('999999999999999999', 'yes');
+  assert.equal(r.json.type, 4);
+  assert.equal(r.json.data.flags, 64, 'only the clicker sees the answer');
+  assert.match(r.json.data.content, /Account page/, 'not linked: told how');
+  const EVE = '323456789012345678';
+  await ok(eve.put('/api/auth/profile', { discordId: EVE }));
+  r = await click(EVE, 'yes');
+  assert.match(r.json.data.content, /You're in/);
+  n = (await ok(nick.get('/api/nights'))).nights.find(x => x.id === night.id);
+  assert.ok(n.rsvps.yes.some(p => p.name === 'Eve'), 'Eve changed her No to a Yes from Discord');
+  assert.match((await click(EVE, 'yes', 'nonexistent1')).json.data.content, /isn't there any more/);
+  { const raw = new DatabaseSync(path.join(DATA_DIR, 'app.db'), { readOnly: true }); try { const row = raw.prepare('SELECT discord_id, discord_hash FROM users WHERE id = ?').get(S.u.Eve.id); assert.match(row.discord_hash, /^[\w-]{43}$/); assert.ok(!row.discord_id.includes(EVE), 'the ID itself stays encrypted'); } finally { raw.close(); } }
+
+  // Cancelling: whoever proposed it, the league admin or the site admin.
+  assert.equal((await fay.del(`/api/nights/${joes.id}`)).status, 403);
+  await ok(joe.del(`/api/nights/${joes.id}`));
+  await ok(admin.del(`/api/nights/${dans.id}`));
+  assert.equal((await ok(nick.get('/api/nights'))).nights.length, 1);
+  await waitFor(() => discordPosts.some(p => p.method === 'PATCH' && p.body.embeds?.[0]?.title === '🎲 Game night: cancelled' && !p.body.components.length), 'the cancelled post, without buttons');
+  assert.equal((await click(EVE, 'no', joes.id)).json.data.content, 'That game night was cancelled.');
+
+  // The reminder, a few hours before: the role, plus the linked players who haven't answered.
+  await ok(eve.put('/api/auth/profile', { discordId: '' }));
+  const FAY = '423456789012345678';
+  const { night: soonNight } = await ok(nick.post('/api/nights', { startsAt: soon(30) }));
+  await ok(fay.put('/api/auth/profile', { discordId: FAY }));
+  { const raw = new DatabaseSync(path.join(DATA_DIR, 'app.db')); try { raw.prepare('UPDATE game_nights SET starts_at = ?, created_at = ? WHERE id = ?').run(soon(1), soon(-30), soonNight.id); } finally { raw.close(); } }
+  const isReminder = p => p.method === 'POST' && p.body.content?.includes('🎲 Game night <t:');
+  const reminder = await waitFor(() => discordPosts.find(isReminder), 'the reminder', 5000);
+  assert.deepEqual(reminder.body.allowed_mentions, { parse: [], roles: [NIGHT_ROLE], users: [FAY] }, "the role, and Fay: linked and hasn't answered");
+  assert.ok(reminder.body.content.startsWith(`<@&${NIGHT_ROLE}>`) && reminder.body.content.includes(`<@${FAY}>`));
+  assert.ok(reminder.body.components[0].components.some(b => b.custom_id === `night:${soonNight.id}:yes`), 'with the buttons');
+  await new Promise(res => setTimeout(res, 300));
+  assert.equal(discordPosts.filter(isReminder).length, 1, 'once');
+  await ok(fay.put('/api/auth/profile', { discordId: '' }));
+  await ok(nick.del(`/api/nights/${soonNight.id}`));
+  await ok(mike.del(`/api/nights/${night.id}`));
+});
+
 test('admin log: a deleted card is kept for undo and comes back exactly', async () => {
   assert.equal((await nick.get('/api/admin/log')).status, 403, 'players can\'t read the admin log');
   const pool = (await ok(nick.get('/api/pools'))).pools.find(p => p.username === 'Nick');
@@ -1935,10 +2019,11 @@ test('Discord: invite button, and finished pods, announcements and season recaps
   assert.equal((await nick.post('/api/admin/discord/test')).status, 403);
   assert.equal((await ok(admin.post('/api/admin/discord/test'))).ok, true);
   await new Promise(r => setTimeout(r, 300));
-  assert.ok(discordPosts.every(p => p.path.startsWith('/api/webhooks/123/test-token')));
+  assert.ok(discordPosts.every(p => p.path.startsWith('/api/webhooks/123/test-token') || (p.path.startsWith(`/api/v10/channels/${CHANNEL}/messages`) && p.auth === `Bot ${BOT_TOKEN}`)), 'the webhook, or the bot in its one channel');
   const sent = discordPosts.filter(p => p.method !== 'DELETE');
-  assert.ok(sent.every(p => Array.isArray(p.body.allowed_mentions?.parse) && !p.body.allowed_mentions.parse.length), 'no @everyone, @here or role pings, ever');
-  assert.ok(sent.every(p => !p.body.allowed_mentions.users || (p.body.allowed_mentions.users.length === 1 && p.body.content.startsWith(`<@${p.body.allowed_mentions.users[0]}>`))), 'a ping only ever mentions the one person it is for');
+  assert.ok(sent.every(p => Array.isArray(p.body.allowed_mentions?.parse) && !p.body.allowed_mentions.parse.length), 'no @everyone or @here, ever');
+  assert.ok(sent.every(p => !p.body.allowed_mentions.roles || (p.body.allowed_mentions.roles.length === 1 && p.body.allowed_mentions.roles[0] === NIGHT_ROLE && p.body.content.startsWith(`<@&${NIGHT_ROLE}>`))), 'the only role ping is the game night role, on game night posts');
+  assert.ok(sent.every(p => !p.body.allowed_mentions.users || p.body.content?.includes('Game night') || (p.body.allowed_mentions.users.length === 1 && p.body.content.startsWith(`<@${p.body.allowed_mentions.users[0]}>`))), 'a ping only ever mentions the one person it is for (a game night reminder: the ones who have not answered)');
   const embeds = sent.filter(p => p.body.embeds?.length);
   const titles = embeds.map(p => p.body.embeds[0].title);
   assert.ok(titles.some(t => / won /.test(t)), 'a finished pod');

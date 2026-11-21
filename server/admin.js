@@ -10,7 +10,7 @@ import { requireAdmin, getUser, listUsers, publicUser, checkUsername, setViewAs,
 import { logAdmin, adminLog, undoAction, purgeOldUndo, podRows, renameEverywhere } from './adminlog.js';
 import { listBackups, makeBackup, backupFile, scheduleBackups } from './backup.js';
 import { mailEnabled, lastMail } from './mail.js';
-import { discordEnabled, discordInvite, lastDiscord, announcementPost, testPost } from './discord.js';
+import { discordEnabled, discordInvite, lastDiscord, announcementPost, testPost, buttonsEnabled } from './discord.js';
 import { rateStats } from './ratelimit.js';
 import { newFeedbackCount } from './feedback.js';
 
@@ -63,7 +63,7 @@ export function adminRoutes(app, { wrap, HttpError, broadcast, viewLeague, requi
         .map(p => ({ id: p.id, name: p.name, league: leagueName(p.leagueId), status: p.status, since: p.updatedAt || p.createdAt })),
       piles: piles.sort((a, b) => b.count - a.count).slice(0, 8),
       email: { enabled: mailEnabled(), last: { ...lastMail } },
-      discord: { enabled: discordEnabled(), invite: Boolean(discordInvite()), last: { ...lastDiscord } },
+      discord: { enabled: discordEnabled(), buttons: buttonsEnabled(), invite: Boolean(discordInvite()), last: { ...lastDiscord } },
       limits: rateStats(),
       backups: { count: backups.length, latest: backups[0] || null },
       announcement: kvGet('announcement'),

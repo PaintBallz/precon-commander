@@ -64,3 +64,7 @@ export function decryptDiscordId(value) {
   } catch { return ''; }
 }
 export const maskDiscordId = id => (id ? `•••• ${id.slice(-4)}` : '');
+// A keyed hash of a Discord user ID, so a button click in Discord (which only
+// says who clicked) can be matched to a player without decrypting every ID.
+const discordMac = derive('pcc-discord-id-hash-v1');
+export const hashDiscordId = id => crypto.createHmac('sha256', discordMac).update(String(id)).digest('base64url');

@@ -18,7 +18,7 @@
 // (The old single-game `games` table and the pre-table `pods_legacy_json` are
 // left in place, unused.)
 import { DatabaseSync } from 'node:sqlite';
-import { encryptEmail, hashEmail, encryptDiscordId } from './emailcrypt.js';
+import { encryptEmail, hashEmail, encryptDiscordId, decryptDiscordId, hashDiscordId } from './emailcrypt.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -247,6 +247,7 @@ for (const [table, col, def] of [
   // The pod's live post in the Discord channel, and a player's Discord user ID (for pings).
   ['pods', 'discord_msg', 'TEXT'],
   ['users', 'discord_id', 'TEXT'],
+  ['users', 'discord_hash', 'TEXT'],
 ]) {
   if (!db.prepare(`SELECT 1 FROM pragma_table_info('${table}') WHERE name = ?`).get(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
 }
@@ -272,6 +273,12 @@ if (!db.prepare("SELECT 1 FROM pragma_table_info('league_members') WHERE name = 
     db.exec('PRAGMA wal_checkpoint(TRUNCATE); VACUUM; PRAGMA wal_checkpoint(TRUNCATE);');
   }
 }
+// The keyed hash of each linked Discord ID (for matching button clicks), filled once.
+for (const u of db.prepare('SELECT id, discord_id FROM users WHERE discord_id IS NOT NULL AND discord_hash IS NULL').all()) {
+  const plainId = decryptDiscordId(u.discord_id);
+  db.prepare('UPDATE users SET discord_hash = ? WHERE id = ?').run(plainId ? hashDiscordId(plainId) : null, u.id);
+}
+db.exec('CREATE INDEX IF NOT EXISTS users_discord_hash ON users(discord_hash)');
 // Emails are stored encrypted, with a keyed hash for lookups (see emailcrypt.js).
 // Any still in plain text are converted once, then the file is rebuilt so the
 // old text doesn't linger in free pages or the WAL.

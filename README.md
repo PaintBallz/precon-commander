@@ -58,12 +58,40 @@ and packs live.
   the exact list each player used and what changed since their previous pod.
 - **Deck lists** can also come from a Moxfield or Archidekt link or a pasted list, shown with the
   commander, colour identity, mana curve and card types.
+- **Game nights.** Any league member proposes a date (up to 3 open at once) and everyone answers
+  Yes, Maybe or No, on the site or with buttons on the Discord post. Pods of 3–4 are suggested
+  from who's coming, with a Start pod button. A few hours before, the channel gets a reminder.
 - **Discord.** Finished pods, season recaps and announcements can be posted to a Discord channel.
 - **Suggest a feature.** Players send ideas and bug reports and can see the replies.
 - **League tools.** Whoever starts a league can set its rules (pack counts, the vote, and whether
   players can see each other's decks) and manage its players. Site admins
   can hand out packs, fix finished pods, post announcements and undo their own changes.
 - **No prices anywhere.** Cards are for playing, not for trading on value.
+
+## Discord buttons (game night Yes / Maybe / No)
+
+Posts go through a channel webhook (`DISCORD_WEBHOOK_URL`). A webhook can't carry working
+buttons, so without the setup below the game night post has Yes / Maybe / No links to the site
+instead. For buttons that work right in Discord, make a Discord application:
+
+1. At discord.com/developers/applications, choose **New Application**. On **General
+   Information**, copy the **Public Key** into `PCC_DISCORD_PUBLIC_KEY`.
+2. Under **Bot**, choose **Reset Token** and paste the token into `PCC_DISCORD_BOT_TOKEN` yourself
+   (it's a secret). No privileged intents are needed.
+3. Under **Installation** (or OAuth2 → URL Generator), pick the `bot` scope with these permissions:
+   **View Channels**, **Send Messages**, **Embed Links**, **Read Message History** and, to ping
+   the game night role, **Mention @everyone, @here, and All Roles** (or make that role
+   mentionable in the server). Open the link and add the bot to the server (needs **Manage
+   Server** there).
+4. In Discord, turn on Developer Mode, right-click the channel and **Copy Channel ID** into
+   `PCC_DISCORD_CHANNEL_ID`. The role to ping goes in `PCC_DISCORD_NIGHT_ROLE_ID`.
+5. Restart the site (`docker compose up -d pre-con-commander`), then back on **General
+   Information** set **Interactions Endpoint URL** to
+   `https://precon-commander.paintballz.us/api/discord/interactions` and save. Discord checks it
+   right away, so the site must be running with the key first.
+
+A click is matched to the player by the Discord ID they linked on their Account page (stored
+encrypted, with a keyed hash for this lookup). Players who haven't linked one are told how.
 
 ## Privacy
 

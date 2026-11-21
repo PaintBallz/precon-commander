@@ -984,3 +984,18 @@ form .fb-filter label.chip { display: inline-flex; gap: 6px; cursor: pointer; co
 .ban-more summary .dim { text-decoration: underline dotted; }
 .ban-more[open] summary { display: none; }
 .ban-more p { margin: 0; max-height: 9em; overflow-y: auto; }
+
+/* ---------- game nights ---------- */
+.night-banner { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+.rsvp-btns { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.night { display: grid; gap: 12px; margin-bottom: 16px; }
+.night-me { align-items: center; gap: 10px; }
+.night-who { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+.night-who .row { gap: 4px; margin-top: 4px; }
+.night-pods { border-top: 1px solid var(--line); padding-top: 10px; }
+.night-pod-list { display: grid; gap: 6px; margin-top: 8px; }
+.night-pod { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.night-pod .btn { margin-left: auto; }
+.night-new { margin-bottom: 16px; }
+.night-new-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+.night-new-row label { flex: 1; min-width: 200px; }

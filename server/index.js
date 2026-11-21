@@ -29,13 +29,14 @@ import {
   HOUSE_LIMITS, isBannedPrecon, BANNED_PRECON, cardKey,
 } from './leagues.js';
 import { wishlistRoutes, wishPulled } from './wishlist.js';
+import { nightRoutes, setRsvp, nightSummaries } from './nights.js';
 import { getBoosterSets, BOOSTER_SET_TYPES, findCard, setNames } from './scryfall.js';
 import { keepPreconsFresh, preconNames, preconSets, preconCount, officialName, givePreconCards, fillMissingPreconCards } from './precons.js';
 import { openPack, hasRealPack, realPackKind, localPackSets, sheetOdds } from './packs.js';
 import { requireAuth, requireAdmin, authRoutes, seedAdmin, listUsers, getUser, selfUser, deleteAccount } from './auth.js';
 import { importDeck, editDeck, getDeck, deleteDeck, DeckError, startFromPool, changeDeck, linkDeckToPool, savePodDeck, podDeck, podDeckKeys, podDeckList, houseStatus } from './decks.js';
 import { playerStats, seasonRecap } from './stats.js';
-import { discordInvite, discordEnabled, leagueEndedPost, podChanged, podDeleted, keepPingsTidy, testPing } from './discord.js';
+import { discordInvite, discordEnabled, leagueEndedPost, podChanged, podDeleted, keepPingsTidy, testPing, interactionsRoute, buttonsEnabled } from './discord.js';
 import { cached, cachedSync, clearCache } from './cache.js';
 import { rateLimit, streamSlot } from './ratelimit.js';
 import { adminRoutes, currentAnnouncement } from './admin.js';
@@ -67,7 +68,8 @@ app.use((req, res, next) => {
 });
 // Per-IP limits on every request (see ratelimit.js).
 app.use(rateLimit);
-app.use(express.json({ limit: '200kb' }));
+// Discord signs its button clicks over the exact bytes it sent, so that route keeps them.
+app.use(express.json({ limit: '200kb', verify: (req, res, buf) => { if (req.url === '/api/discord/interactions') req.rawBody = Buffer.from(buf); } }));
 
 // Cloudflare gives .js/.css a 4-hour browser cache no matter what we send, so
 // the page links its script and stylesheet with a content hash: a new deploy
@@ -122,6 +124,12 @@ const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 const names = list => list.length < 2 ? list.join('') : `${list.slice(0, -1).join(', ')} and ${list.at(-1)}`;
 
 app.get('/healthz', (req, res) => res.json({ ok: true }));
+// Discord's button clicks: signed by Discord rather than logged in, so before the login check.
+interactionsRoute(app, { onRsvp: (id, userId, answer) => {
+  const r = setRsvp(id, userId, answer);
+  if (r.ok) broadcast('state', { leagueId: r.night.league_id, night: id });
+  return r;
+} });
 app.use('/api', requireAuth);
 authRoutes(app, wrap, () => broadcast('state'));
 
@@ -850,6 +858,7 @@ app.get('/api/state', wrap(async (req, res) => {
     members: league ? leagueMembers(league.id).map(m => ({ id: m.id, username: m.username, precon: m.precon, commander: m.commander })) : [],
     pending,
     tradesWaiting: tradesWaiting(req.user.id),
+    nights: league && (isMember(league.id, req.user.id) || req.user.isAdmin) ? nightSummaries(league.id, req.user.id) : [],
     discordPings: discordEnabled(),
     ...(req.user.isAdmin ? { feedbackNew: newFeedbackCount() } : {}),
   });
@@ -1422,6 +1431,11 @@ app.delete('/api/deck', wrap(async (req, res) => { deleteDeck(req.user.id, deckL
 adminRoutes(app, { wrap, HttpError, broadcast, viewLeague, requireLeague, allSets, wheelFor, settingsFor, setInfo });
 tradeRoutes(app, { wrap, HttpError, broadcast, viewLeague });
 wishlistRoutes(app, { wrap, HttpError, viewLeague });
+nightRoutes(app, { wrap, HttpError, broadcast, viewLeague,
+  canManage: (req, l) => req.user.isAdmin || isLeagueAdmin(req, l),
+  // Seats in suggested pods are dealt by standings.
+  rankIn: leagueId => { const order = standings(leagueId).map(s => s.id); return id => { const i = order.indexOf(id); return i < 0 ? 99 : i; }; },
+});
 
 seedAdmin();
 // Discord: every pod save updates that pod's live post and pings.

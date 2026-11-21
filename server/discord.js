@@ -19,8 +19,9 @@
 // down never slows or breaks the site, and the last result shows on the admin
 // dashboard.
 // (A loopback http URL is accepted too, so the tests can catch the posts.)
+import crypto from 'node:crypto';
 import { db, loadPod } from './db.js';
-import { decryptDiscordId } from './emailcrypt.js';
+import { decryptDiscordId, hashDiscordId } from './emailcrypt.js';
 import { bestFirst } from './stats.js';
 
 const WEBHOOK_RE = /^(?:https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com|http:\/\/127\.0\.0\.1:\d+)\/api\/webhooks\/\d+\/[\w-]+$/;
@@ -382,6 +383,178 @@ export async function testPing(discordId) {
   return ok;
 }
 const TEST_PING_MS = Number(process.env.DISCORD_TEST_PING_MS ?? 60e3);
+
+// ---------- game nights ----------
+// With a Discord application set up (see README → Discord buttons), night
+// posts are sent by its bot and carry Yes / Maybe / No buttons that work right
+// in Discord. Without one, they go through the webhook with links to the site.
+//   DISCORD_PUBLIC_KEY  the application's public key (checks that clicks come from Discord)
+//   DISCORD_BOT_TOKEN   the bot's token (a secret)
+//   DISCORD_CHANNEL_ID  the channel the bot posts game nights in
+const PUBLIC_KEY = String(process.env.DISCORD_PUBLIC_KEY || '').trim();
+const BOT_TOKEN = String(process.env.DISCORD_BOT_TOKEN || '').trim();
+const CHANNEL_ID = String(process.env.DISCORD_CHANNEL_ID || '').trim();
+const API_RAW = String(process.env.DISCORD_API_BASE || 'https://discord.com/api/v10').replace(/\/$/, '');
+const API = /^(https:\/\/discord\.com\/api\/v10|http:\/\/127\.0\.0\.1:\d+\/api\/v10)$/.test(API_RAW) ? API_RAW : 'https://discord.com/api/v10';
+export const buttonsEnabled = () => /^[0-9a-f]{64}$/i.test(PUBLIC_KEY) && /^[\w.-]{50,100}$/.test(BOT_TOKEN) && DISCORD_ID_RE.test(CHANNEL_ID);
+// DISCORD_NIGHT_ROLE_ID: a role pinged when a game night is proposed and in its
+// reminder (never on edits). The only role the site ever pings.
+const NIGHT_ROLE = DISCORD_ID_RE.test(String(process.env.DISCORD_NIGHT_ROLE_ID || '').trim()) ? String(process.env.DISCORD_NIGHT_ROLE_ID).trim() : '';
+const roleTag = () => (NIGHT_ROLE ? `<@&${NIGHT_ROLE}> ` : '');
+const roleMention = () => (NIGHT_ROLE ? { roles: [NIGHT_ROLE] } : {});
+const nightsEnabled = () => buttonsEnabled() || discordEnabled();
+async function botRequest(method, path, body, retry = true) {
+  try {
+    const res = await fetch(API + path, {
+      method, signal: AbortSignal.timeout(10e3),
+      headers: { Authorization: `Bot ${BOT_TOKEN}`, ...(body ? { 'content-type': 'application/json' } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    if (res.status === 429 && retry) {
+      const wait = Math.min(10, Number((await res.json().catch(() => ({}))).retry_after) || 2);
+      await new Promise(r => setTimeout(r, wait * 1000));
+      return botRequest(method, path, body, false);
+    }
+    if (res.status === 404 && method !== 'POST') return { ok: false, status: 404 };
+    if (!res.ok) throw new Error(`Discord answered ${res.status}`);
+    Object.assign(lastDiscord, { at: new Date().toISOString(), ok: true, error: null });
+    return { ok: true, status: res.status, data: res.status === 204 ? null : await res.json().catch(() => null) };
+  } catch (e) {
+    Object.assign(lastDiscord, { at: new Date().toISOString(), ok: false, error: `Bot: ${String(e.message || e).slice(0, 190)}` });
+    return { ok: false, status: 0 };
+  }
+}
+// Post or edit one message, through the bot ("bot:<id>") or the webhook (a plain id).
+async function sendNightMsg(body, msg = null) {
+  if (msg) {
+    const r = msg.startsWith('bot:') ? await botRequest('PATCH', `/channels/${CHANNEL_ID}/messages/${msg.slice(4)}`, body) : await request('PATCH', `/messages/${msg}`, body);
+    if (r.ok) return msg;
+  }
+  if (buttonsEnabled()) { const r = await botRequest('POST', `/channels/${CHANNEL_ID}/messages`, body); return r.data?.id ? `bot:${r.data.id}` : null; }
+  const r = await request('POST', '?wait=true', { username: NAME, ...body });
+  return r.data?.id || null;
+}
+
+let nightSource = () => null;
+export const setNightSource = fn => { nightSource = fn; };
+const unix = iso => Math.floor(Date.parse(iso) / 1000);
+const nameList = (l, empty = '—') => cut(l.length ? l.map(p => md(p.name)).join(', ') : empty, 1000);
+function nightBody(n) {
+  const when = `**<t:${unix(n.startsAt)}:F>** (<t:${unix(n.startsAt)}:R>)`;
+  const link = a => `${SITE}/#nights?id=${n.id}&rsvp=${a}`;
+  if (n.status === 'cancelled') {
+    return { embeds: [{ color: 0x6b7280, title: '🎲 Game night: cancelled', description: `~~${when}~~${n.note ? `\n${md(n.note)}` : ''}`, footer: { text: n.leagueName } }], components: [], allowed_mentions: NO_PINGS };
+  }
+  const r = n.rsvps;
+  const fields = [
+    { name: `✅ Yes (${r.yes.length})`, value: nameList(r.yes), inline: true },
+    { name: `🤔 Maybe (${r.maybe.length})`, value: nameList(r.maybe), inline: true },
+    { name: `❌ No (${r.no.length})`, value: nameList(r.no), inline: true },
+  ];
+  if (r.none.length) fields.push({ name: `⏳ Not answered (${r.none.length})`, value: nameList(r.none), inline: false });
+  const sug = n.pods.yes;
+  if (sug.pods.length) {
+    const lines = sug.pods.map((p, i) => `**Pod ${String.fromCharCode(65 + i)}:** ${p.map(x => md(x.name)).join(', ')}`);
+    if (sug.out.length) lines.push(`${sug.out.map(x => md(x.name)).join(', ')} would sit out`);
+    fields.push({ name: 'Suggested pods', value: cut(lines.join('\n'), 1000), inline: false });
+  }
+  const buttons = buttonsEnabled();
+  const ask = buttons || n.over ? '' : `\nAre you in? [✅ Yes](${link('yes')}) · [🤔 Maybe](${link('maybe')}) · [❌ No](${link('no')})`;
+  return {
+    embeds: [{
+      color: n.over ? 0x6b7280 : GOLD, title: n.over ? '🎲 Game night (over)' : '🎲 Game night', url: `${SITE}/#nights`,
+      description: [when, n.note ? md(n.note) : '', n.createdBy ? `Proposed by ${md(n.createdBy.name)}` : '', ask].filter(Boolean).join('\n'),
+      fields, footer: { text: n.leagueName }, timestamp: n.startsAt,
+    }],
+    components: buttons && !n.over ? [{ type: 1, components: [
+      { type: 2, style: 3, label: 'Yes', emoji: { name: '✅' }, custom_id: `night:${n.id}:yes` },
+      { type: 2, style: 2, label: 'Maybe', emoji: { name: '🤔' }, custom_id: `night:${n.id}:maybe` },
+      { type: 2, style: 4, label: 'No', emoji: { name: '❌' }, custom_id: `night:${n.id}:no` },
+      { type: 2, style: 5, label: 'Open the site', url: `${SITE}/#nights` },
+    ] }] : [],
+    allowed_mentions: NO_PINGS,
+  };
+}
+async function syncNight(id, create) {
+  const n = nightSource(id);
+  if (!n) return;
+  const row = db.prepare('SELECT discord_msg, reminder_msg FROM game_nights WHERE id = ?').get(id);
+  const body = nightBody(n);
+  if (row.discord_msg || create) {
+    // The first post pings the game night role; edits never ping.
+    const first = !row.discord_msg && n.status === 'open' && NIGHT_ROLE
+      ? { content: `${roleTag()}🎲 New game night: <t:${unix(n.startsAt)}:F>. Are you in?`, allowed_mentions: { parse: [], ...roleMention() } } : {};
+    const msg = await sendNightMsg({ ...body, ...first }, row.discord_msg);
+    if (msg !== row.discord_msg) db.prepare('UPDATE game_nights SET discord_msg = ? WHERE id = ?').run(msg, id);
+  }
+  // The reminder carries the same lists and buttons, so it's kept up to date too (its pings aren't sent again).
+  if (row.reminder_msg) {
+    const patch = { embeds: body.embeds, components: body.components, allowed_mentions: NO_PINGS };
+    if (row.reminder_msg.startsWith('bot:')) await botRequest('PATCH', `/channels/${CHANNEL_ID}/messages/${row.reminder_msg.slice(4)}`, patch);
+    else await request('PATCH', `/messages/${row.reminder_msg}`, patch);
+  }
+}
+// A night was proposed, answered or cancelled: update its post once things settle.
+export function nightChanged(id, { create = false } = {}) {
+  if (!nightsEnabled()) return;
+  const key = `night:${id}`;
+  const t = settling.get(key);
+  if (t) clearTimeout(t.timer);
+  const job = { create: create || !!t?.create };
+  job.timer = setTimeout(() => { settling.delete(key); enqueue(() => syncNight(id, job.create)); }, SETTLE_MS);
+  job.timer.unref?.();
+  settling.set(key, job);
+}
+// A few hours before: a reminder that pings the linked players who haven't answered.
+export function nightReminder(id) {
+  if (!nightsEnabled()) return;
+  enqueue(async () => {
+    const n = nightSource(id);
+    if (!n || n.status !== 'open') return;
+    const ids = [];
+    for (const p of n.rsvps.none) {
+      const u = db.prepare('SELECT discord_id, is_test FROM users WHERE id = ?').get(p.id);
+      const d = u && !u.is_test ? decryptDiscordId(u.discord_id) : '';
+      if (DISCORD_ID_RE.test(d)) ids.push(d);
+    }
+    const yes = n.rsvps.yes.length;
+    const content = `${roleTag()}🎲 Game night <t:${unix(n.startsAt)}:R>! ${yes ? `${yes} coming so far.` : 'Nobody has said yes yet.'}${ids.length ? ` Still waiting on ${ids.map(d => `<@${d}>`).join(' ')}: are you in?` : ''}`;
+    const msg = await sendNightMsg({ ...nightBody(n), content: cut(content, 1900), allowed_mentions: { parse: [], ...roleMention(), ...(ids.length ? { users: ids.slice(0, 100) } : {}) } });
+    if (msg) db.prepare('UPDATE game_nights SET reminder_msg = ? WHERE id = ?').run(msg, id);
+  });
+}
+
+// ---------- Discord buttons (the interactions endpoint) ----------
+// Discord sends each button click here, signed with the application's key.
+// Anything not signed by Discord is turned away.
+const ED25519_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+function signedByDiscord(req) {
+  const sig = String(req.get('X-Signature-Ed25519') || ''), ts = String(req.get('X-Signature-Timestamp') || '');
+  if (!/^[0-9a-f]{128}$/i.test(sig) || !/^\d{1,12}$/.test(ts) || !req.rawBody) return false;
+  try {
+    const key = crypto.createPublicKey({ key: Buffer.concat([ED25519_PREFIX, Buffer.from(PUBLIC_KEY, 'hex')]), format: 'der', type: 'spki' });
+    return crypto.verify(null, Buffer.concat([Buffer.from(ts), req.rawBody]), key, Buffer.from(sig, 'hex'));
+  } catch { return false; }
+}
+const ephemeral = content => ({ type: 4, data: { flags: 64, content, allowed_mentions: NO_PINGS } });
+export function interactionsRoute(app, { onRsvp }) {
+  app.post('/api/discord/interactions', (req, res) => {
+    if (!buttonsEnabled()) return res.status(404).json({ error: 'Not set up.' });
+    if (!signedByDiscord(req)) return res.status(401).json({ error: 'Bad signature.' });
+    const b = req.body || {};
+    if (b.type === 1) return res.json({ type: 1 }); // Discord checking the endpoint
+    if (b.type !== 3) return res.json(ephemeral("That doesn't do anything here."));
+    const m = String(b.data?.custom_id || '').match(/^night:([\w-]{6,40}):(yes|maybe|no)$/);
+    if (!m) return res.json(ephemeral("That button doesn't do anything any more."));
+    const clicker = String(b.member?.user?.id || b.user?.id || '');
+    const u = DISCORD_ID_RE.test(clicker) ? db.prepare('SELECT id, username FROM users WHERE discord_hash = ?').get(hashDiscordId(clicker)) : null;
+    if (!u) return res.json(ephemeral(`I don't know who you are on Pre-Con Commander yet. Add your Discord user ID on your Account page (${SITE}/#account), then click again.`));
+    const r = onRsvp(m[1], u.id, m[2]);
+    if (r.error) return res.json(ephemeral(r.error));
+    const said = { yes: "✅ You're in", maybe: "🤔 You're a maybe", no: "❌ You're out" }[m[2]];
+    res.json(ephemeral(`${said} for game night <t:${unix(r.night.starts_at)}:F>, ${md(u.username)}. The post updates in a moment.`));
+  });
+}
 
 // ---------- other posts ----------
 export function leagueEndedPost(league, recap) {

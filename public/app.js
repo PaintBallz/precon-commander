@@ -56,6 +56,7 @@ async function loadState() {
   S.feedbackNew = st.feedbackNew || 0;
   S.announcement = st.announcement || null; S.viewAs = st.viewAs || null;
   S.tradesWaiting = st.tradesWaiting || 0;
+  S.nights = st.nights || [];
   S.discordPings = !!st.discordPings;
   // The wishlist on hand is for the league on screen.
   if (S.wishFor !== (S.league?.id || null)) S.wish = null;
@@ -130,6 +131,8 @@ function paintMe() {
   $('#fbBtn').hidden = !inApp; $('#fbOr').hidden = !inApp;
   $('#adminTab').hidden = !isAdmin();
   $('#tradesTab').innerHTML = `Trades${S.tradesWaiting ? ` <span class="tbadge" title="${plural(S.tradesWaiting, 'offer')} waiting for you">${S.tradesWaiting}</span>` : ''}`;
+  const unanswered = (S.nights || []).filter(n => !n.mine).length;
+  $('#nightsTab').innerHTML = `Game nights${unanswered && S.league?.isMember ? ` <span class="tbadge" title="${plural(unanswered, 'game night')} waiting for your answer">${unanswered}</span>` : ''}`;
   layoutTabs();
 }
 
@@ -287,7 +290,7 @@ async function copyText(text, what = 'List') {
 }
 
 // ---------------- routing ----------------
-const ROUTES = ['league', 'pods', 'wheel', 'packs', 'pools', 'sets', 'history', 'fun', 'account', 'player', 'recap', 'admin', 'trades', 'join', 'how'];
+const ROUTES = ['league', 'pods', 'wheel', 'packs', 'pools', 'sets', 'history', 'fun', 'account', 'player', 'recap', 'admin', 'trades', 'join', 'how', 'nights'];
 function parseRoute() {
   const [r, q] = location.hash.replace(/^#/, '').split('?');
   S.route = ROUTES.includes(r) ? r : 'pods';
@@ -342,7 +345,7 @@ function render() {
   layoutTabs();
   const view = $('#view');
   if (S.route !== 'wheel') stopWheelLoop();
-  ({ league: renderLeague, pods: renderPods, wheel: renderWheel, packs: renderPacks, pools: renderPools, sets: renderSets, history: renderHistory, fun: renderFun, how: renderHow, account: renderAccount, player: renderPlayer, recap: renderRecap, admin: renderAdmin, trades: renderTrades, join: renderJoin })[S.route](view);
+  ({ league: renderLeague, pods: renderPods, wheel: renderWheel, packs: renderPacks, pools: renderPools, sets: renderSets, history: renderHistory, fun: renderFun, how: renderHow, account: renderAccount, player: renderPlayer, recap: renderRecap, admin: renderAdmin, trades: renderTrades, join: renderJoin, nights: renderNights })[S.route](view);
 }
 
 function confirmBox(title, body, okLabel = 'OK', danger = false) {
@@ -915,6 +918,120 @@ async function preconBanModal(league, save) {
   setTimeout(() => $('#pbQ', m)?.focus(), 30);
 }
 
+// =============== GAME NIGHTS ===============
+// Any league member proposes a date (up to 3 open at once); everyone answers
+// Yes, Maybe or No here or with the buttons on the Discord post, and the page
+// suggests pods from who's coming.
+const ANSWER = { yes: '✅ Yes', maybe: '🤔 Maybe', no: '❌ No' };
+const fmtNight = iso => new Date(iso).toLocaleString(undefined, { weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+function untilText(iso) {
+  const ms = Date.parse(iso) - Date.now();
+  if (ms < 0) return 'started';
+  const h = Math.round(ms / 3600e3);
+  return h < 1 ? 'in under an hour' : h < 36 ? `in ${plural(h, 'hour')}` : `in ${plural(Math.round(h / 24), 'day')}`;
+}
+const rsvpButtons = (id, mine) => `<div class="rsvp-btns" role="group" aria-label="Are you coming?">${Object.entries(ANSWER).map(([a, label]) =>
+  `<button type="button" class="btn sm ${mine === a ? 'gold' : 'ghost'}" data-rsvp="${esc(id)}:${a}" aria-pressed="${mine === a}">${label}</button>`).join('')}</div>`;
+async function answerNight(id, answer) {
+  try { await api(`/nights/${encodeURIComponent(id)}/rsvp`, { method: 'PUT', body: { answer } }); toast(`${ANSWER[answer]}: saved.`, 'good'); S.nightsPage = null; await loadState(); render(); } catch (err) { fail(err); }
+}
+// On the Pods tab: the next night, with one-tap answers.
+function nightBanner() {
+  const n = (S.nights || [])[0];
+  if (!n || !S.league?.isMember || S.viewLeague !== S.myLeagueId) return '';
+  const more = S.nights.length - 1;
+  return `<div class="panel night-banner">
+    <div><b>🎲 Next game night: ${esc(fmtNight(n.startsAt))}</b> <span class="small muted">${untilText(n.startsAt)} · ${plural(n.yes, 'player')} coming${n.maybe ? `, ${n.maybe} maybe` : ''}${n.note ? ` · ${esc(n.note)}` : ''}</span></div>
+    <div class="row">${rsvpButtons(n.id, n.mine)}<a class="btn sm ghost" href="#nights">${more ? `All ${S.nights.length} game nights` : 'Details and pods'}</a></div>
+  </div>`;
+}
+function wireRsvp(view) {
+  $$('[data-rsvp]', view).forEach(b => b.onclick = () => { const [id, a] = b.dataset.rsvp.split(':'); b.disabled = true; answerNight(id, a); });
+}
+async function renderNights(view) {
+  if (!S.league) { view.innerHTML = '<div class="empty"><h2>You\'re not in a league yet</h2><p>Game nights belong to a league.</p><a class="btn gold" href="#league">Go to League</a></div>'; return; }
+  // A link from a Discord post: #nights?id=…&rsvp=yes answers straight away.
+  if (S.params.id && S.params.rsvp && ANSWER[S.params.rsvp]) {
+    const { id, rsvp } = S.params;
+    history.replaceState(null, '', '#nights');
+    S.params = {};
+    await answerNight(id, rsvp);
+    return;
+  }
+  if (!S.nightsPage) {
+    view.innerHTML = '<div class="spinner"></div>';
+    try { S.nightsPage = await api('/nights' + lq()); } catch (err) { fail(err); return; }
+    if (S.route !== 'nights') return;
+  }
+  const d = S.nightsPage;
+  const member = S.league.isMember;
+  const canStart = S.league.status === 'active' && (member || isAdmin()) && !S.viewAs;
+  const minVal = (() => { const t = new Date(Date.now() + 60 * 60e3); t.setMinutes(0, 0, 0); return new Date(t - t.getTimezoneOffset() * 60e3).toISOString().slice(0, 16); })();
+  const people = (list, empty) => (list.length ? list.map(p => `<span class="chip">${p.id === S.me.id ? '<b>You</b>' : esc(p.name)}</span>`).join('') : `<span class="small muted">${empty}</span>`);
+  const podsHtml = n => {
+    const s = (S.nightMaybe?.[n.id] ? n.pods.withMaybe : n.pods.yes);
+    const have = n.rsvps.yes.length + (S.nightMaybe?.[n.id] ? n.rsvps.maybe.length : 0);
+    return `<div class="night-pods">
+      <div class="spread"><h3 style="margin:0">Suggested pods</h3>${n.rsvps.maybe.length ? `<label class="check small"><input type="checkbox" data-nmaybe="${esc(n.id)}" ${S.nightMaybe?.[n.id] ? 'checked' : ''}> Count the maybes</label>` : ''}</div>
+      ${s.pods.length ? `<div class="night-pod-list">${s.pods.map((p, i) => `<div class="night-pod"><b>Pod ${String.fromCharCode(65 + i)}</b> <span>${p.map(x => esc(x.name)).join(', ')}</span>
+        ${canStart && !n.over ? `<button type="button" class="btn sm" data-npod="${esc(n.id)}:${i}" title="Start this pod on the Pods tab">Start pod</button>` : ''}</div>`).join('')}</div>
+        ${s.out.length ? `<p class="small muted" style="margin:6px 0 0">${s.out.map(x => esc(x.name)).join(', ')} would sit out (pods are 3–4 players). Whoever said yes first gets a seat.</p>` : '<p class="small muted" style="margin:6px 0 0">Seats are spread by standings, so the top players aren\'t all in one pod.</p>'}`
+        : `<p class="small muted" style="margin:0">${have < 3 ? `A pod needs 3 players; ${have ? `${plural(have, 'player')} so far` : 'nobody yet'}.` : ''}</p>`}
+    </div>`;
+  };
+  const card = n => {
+    const mineCan = member && !n.over && S.league.status === 'active' && !S.viewAs;
+    const canCancel = !n.over && !S.viewAs && (n.createdBy?.id === S.me.id || S.league.canManage);
+    return `<section class="panel night">
+      <div class="spread"><div><h2 style="margin:0">🎲 ${esc(fmtNight(n.startsAt))}</h2>
+        <div class="small muted">${untilText(n.startsAt)}${n.note ? ` · <b>${esc(n.note)}</b>` : ''}${n.createdBy ? ` · proposed by ${esc(n.createdBy.id === S.me.id ? 'you' : n.createdBy.name)}` : ''}</div></div>
+        ${canCancel ? `<button type="button" class="btn sm ghost danger" data-ncancel="${esc(n.id)}">${I.x} Cancel</button>` : ''}</div>
+      ${mineCan ? `<div class="row night-me"><span class="small">Are you coming?</span>${rsvpButtons(n.id, n.mine)}</div>` : ''}
+      <div class="night-who">
+        <div><span class="small muted">✅ Yes (${n.rsvps.yes.length})</span><div class="row">${people(n.rsvps.yes, 'nobody yet')}</div></div>
+        <div><span class="small muted">🤔 Maybe (${n.rsvps.maybe.length})</span><div class="row">${people(n.rsvps.maybe, '—')}</div></div>
+        <div><span class="small muted">❌ No (${n.rsvps.no.length})</span><div class="row">${people(n.rsvps.no, '—')}</div></div>
+        ${n.rsvps.none.length ? `<div><span class="small muted">⏳ Not answered (${n.rsvps.none.length})</span><div class="row">${people(n.rsvps.none, '')}</div></div>` : ''}
+      </div>
+      ${podsHtml(n)}
+    </section>`;
+  };
+  const full = d.nights.length >= d.max;
+  view.innerHTML = `
+    <div class="hero"><div><h1>Game nights</h1><p>Anyone in ${esc(S.league.name)} can propose a date, and everyone answers Yes, Maybe or No, here or with the buttons on the Discord post. Pods are suggested from who's coming. Up to ${d.max} game nights can be open at once.</p></div></div>
+    ${d.canPropose ? (full ? `<div class="panel muted small">${d.max} game nights are already up for RSVP. Another can be proposed once one has passed or been cancelled.</div>`
+      : `<form class="panel night-new" id="nightForm"><h2 style="margin:0 0 8px">Propose a game night</h2>
+        <div class="night-new-row"><label>Date and time<input type="datetime-local" name="when" required min="${minVal}" value="${minVal}"></label>
+        <label style="flex:2">Note <span class="dim small">(optional)</span><input name="note" maxlength="120" placeholder="e.g. At Nick's, bring snacks"></label>
+        <button class="btn gold">Propose</button></div></form>`) : ''}
+    ${d.nights.map(card).join('') || `<div class="empty"><p>No game nights planned yet.${d.canPropose ? ' Propose one above.' : ''}</p></div>`}
+    ${d.past.length ? `<details class="panel"><summary class="muted" style="cursor:pointer">Past game nights (${d.past.length})</summary>
+      <div class="grid" style="margin-top:10px;gap:6px">${d.past.map(n => `<div class="small"><b>${esc(fmtDateTime(n.startsAt))}</b>${n.note ? ` · ${esc(n.note)}` : ''} · ${plural(n.rsvps.yes.length, 'player')}: ${n.rsvps.yes.map(p => esc(p.name)).join(', ') || '—'}</div>`).join('')}</div></details>` : ''}`;
+  wireRsvp(view);
+  $('#nightForm', view)?.addEventListener('submit', async e => {
+    e.preventDefault();
+    const f = e.target;
+    const t = new Date(f.when.value);
+    if (!f.when.value || Number.isNaN(+t)) return toast('Pick a date and time.', 'err');
+    const btn = $('button', f); btn.disabled = true;
+    try { await post('/nights' + lq(), { startsAt: t.toISOString(), note: f.note.value }); toast('🎲 Game night proposed. You\'re down as a Yes.', 'good'); S.nightsPage = null; await loadState(); render(); }
+    catch (err) { fail(err); btn.disabled = false; }
+  });
+  $$('[data-ncancel]', view).forEach(b => b.onclick = async () => {
+    const n = d.nights.find(x => x.id === b.dataset.ncancel);
+    if (!await confirmBox('Cancel this game night?', `${esc(fmtNight(n.startsAt))}. Everyone's answers go, and the Discord post says it's cancelled.`, 'Cancel game night', true)) return;
+    try { await del(`/nights/${encodeURIComponent(n.id)}`); toast('Game night cancelled.', 'good'); S.nightsPage = null; await loadState(); render(); } catch (err) { fail(err); }
+  });
+  $$('[data-nmaybe]', view).forEach(b => b.onchange = () => { S.nightMaybe = { ...(S.nightMaybe || {}), [b.dataset.nmaybe]: b.checked }; renderNights(view); });
+  $$('[data-npod]', view).forEach(b => b.onclick = async () => {
+    const [id, i] = b.dataset.npod.split(':');
+    const n = d.nights.find(x => x.id === id);
+    const pod = (S.nightMaybe?.[id] ? n.pods.withMaybe : n.pods.yes).pods[Number(i)];
+    if (!await confirmBox(`Start Pod ${String.fromCharCode(65 + Number(i))}?`, `${pod.map(p => esc(p.name)).join(', ')} start a pod now.`, 'Start pod')) return;
+    try { await post('/pods' + lq(), { players: pod.map(p => ({ userId: p.id })) }); toast('Pod started.', 'good'); await loadState(); go('#pods'); } catch (err) { fail(err); }
+  });
+}
+
 // =============== PODS TAB ===============
 // Packs waiting for me anywhere in my league (including pods I missed).
 function pendingBanner() {
@@ -937,9 +1054,11 @@ function renderPods(view) {
       <p>A pod is one game of ${LIMITS.podMin}–${LIMITS.podMax} league players, each on their precon. When it ends, the winner gets <b>${plural(r.winnerPacks, 'pack')}</b> and everyone else gets <b>${r.loserPacks}</b>${r.voteBonus ? `, and the pod votes someone a <b>+${r.voteBonus}</b> bonus` : ''}. The winner spins the wheel <b>once</b>: every pack is that set (or <b>Sacrifice a Pack</b> to pick any set)${r.absentPacks ? `, and league members who missed the pod get <b>${plural(r.absentPacks, 'pack')}</b> of it too` : ''}.</p>
     </div></div>
     ${pendingBanner()}
+    ${nightBanner()}
     ${S.pods.length ? `<div class="grid" style="gap:18px;margin-bottom:24px">${S.pods.map(podPanel).join('')}</div>` : ''}
     ${l.status !== 'active' ? `<div class="panel muted">${esc(l.name)} has ended, so no new pods. Its history and pools are still here.</div>` : canStart && !mine ? newPodForm() : ''}`;
   wirePods(view);
+  wireRsvp(view);
 }
 
 function newPodForm() {
@@ -3531,6 +3650,7 @@ async function renderAdmin(view) {
       ${tile(o.email.enabled ? (o.email.last.ok === false ? 'Failing' : 'On') : 'Off', 'Reset emails', o.email.last.at ? `last ${ago(o.email.last.at)}` : '')}
       ${tile(lastBackup ? ago(lastBackup.at) : 'none', 'Last backup', `${o.backups.count} kept`)}
       ${tile(o.discord.enabled ? (o.discord.last.ok === false ? 'Failing' : 'On') : 'Off', 'Discord posts', o.discord.last.at ? `last ${ago(o.discord.last.at)}` : (o.discord.invite ? 'invite link on' : ''))}
+      ${tile(o.discord.buttons ? 'On' : 'Off', 'Discord buttons', o.discord.buttons ? 'game night Yes / Maybe / No' : 'see README to set up')}
     </div>
     ${o.discord.enabled ? '<p class="small muted" style="margin:-6px 0 14px">Finished pods, season recaps and announcements post to your Discord channel. <button type="button" class="btn sm ghost" id="discordTest">Send a test post</button></p>' : ''}
     <section class="panel admin-attn"><h2>Needs attention</h2>${attention.length ? `<ul class="rules-list">${attention.map(a => `<li>${a}</li>`).join('')}</ul>` : '<p class="muted" style="margin:0">Nothing. All quiet.</p>'}
@@ -3776,7 +3896,7 @@ function connect() {
     try {
       const info = JSON.parse(e.data || '{}');
       await loadState();
-      S.pools = null; S.leagueDetail = null;
+      S.pools = null; S.leagueDetail = null; S.nightsPage = null;
       // Someone pulled a card on my wishlist (each browser checks its own list).
       if (info.pulled && info.pulled.from !== S.me.id && info.leagueId && info.leagueId === S.wishFor && S.wish?.length) {
         const want = new Set(S.wish.map(w => ckey(w.name)));

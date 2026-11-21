@@ -1,7 +1,7 @@
 // League accounts: username + password login, email for recovery, one admin.
 // Passwords are scrypt-hashed; sessions are random tokens in an HttpOnly cookie.
 import crypto from 'node:crypto';
-import { encryptEmail, decryptEmail, hashEmail, maskEmail, encryptDiscordId, decryptDiscordId, maskDiscordId } from './emailcrypt.js';
+import { encryptEmail, decryptEmail, hashEmail, maskEmail, encryptDiscordId, decryptDiscordId, maskDiscordId, hashDiscordId } from './emailcrypt.js';
 import { db, transaction } from './db.js';
 import { sendMail, mailEnabled } from './mail.js';
 import { clientIp } from './ratelimit.js';
@@ -264,7 +264,7 @@ export function authRoutes(app, wrap, onChange = () => {}) {
       const discordId = String(b.discordId).trim();
       if (discordId && !DISCORD_ID_RE.test(discordId)) throw new AuthError(400, 'A Discord user ID is 17 to 20 digits. In Discord, turn on Developer Mode, then right-click your name and choose Copy User ID.');
       if (decryptDiscordId(getUser(req.user.id).discord_id) !== discordId) {
-        db.prepare('UPDATE users SET discord_id = ? WHERE id = ?').run(discordId ? encryptDiscordId(discordId) : null, req.user.id);
+        db.prepare('UPDATE users SET discord_id = ?, discord_hash = ? WHERE id = ?').run(discordId ? encryptDiscordId(discordId) : null, discordId ? hashDiscordId(discordId) : null, req.user.id);
         pingsChanged(req.user.id);
       }
     }
