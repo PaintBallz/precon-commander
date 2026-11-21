@@ -62,12 +62,18 @@ const SETS_TTL_MS = 24 * 3600 * 1000;
 
 // All booster sets, newest first. Cached in the DB and refreshed daily; if
 // Scryfall is unreachable the last good copy (or the local pack list) is used.
+// code -> { name, icon, released } for every paper set (filled by getBoosterSets).
+export const setNames = () => kvGet('scryfall_set_names')?.names || {};
 export async function getBoosterSets(localPackSets) {
   const cached = kvGet('scryfall_sets');
-  if (cached && Date.now() - cached.fetchedAt < SETS_TTL_MS) return cached.sets;
+  if (cached && Date.now() - cached.fetchedAt < SETS_TTL_MS && kvGet('scryfall_set_names')) return cached.sets;
   try {
     const json = await sfFetch('/sets');
     const today = new Date().toISOString().slice(0, 10);
+    // Every set's name and icon (Commander sets too), for grouping precons by set.
+    const names = {};
+    for (const s of json.data) if (!s.digital) names[s.code] = { name: s.name, icon: s.icon_svg_uri || '', released: s.released_at || '' };
+    kvSet('scryfall_set_names', { fetchedAt: Date.now(), names });
     const sets = json.data
       .filter(s => BOOSTER_SET_TYPES.includes(s.set_type) && !s.digital && s.released_at && s.released_at <= today && s.card_count >= 40)
       .map(s => ({

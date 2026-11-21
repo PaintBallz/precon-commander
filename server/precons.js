@@ -75,6 +75,20 @@ export function keepPreconsFresh(onDone) {
 
 export const preconCount = () => db.prepare('SELECT COUNT(*) AS n FROM precon_decks').get().n;
 export const preconNames = () => [...new Set(db.prepare('SELECT name FROM precon_decks').all().map(r => r.name))].sort((a, b) => a.localeCompare(b));
+// Precons grouped by the set they came out in, newest set first. A precon
+// reprinted in a later set is listed under each. `names` maps set codes to
+// { name, icon, released } (from Scryfall's set list).
+export function preconSets(names = {}) {
+  const groups = new Map();
+  for (const r of db.prepare('SELECT name, code, release_date FROM precon_decks ORDER BY release_date DESC, name').all()) {
+    const code = lc(r.code) || '?';
+    const g = groups.get(code) || groups.set(code, { code, name: names[code]?.name || (code === '?' ? 'Other' : code.toUpperCase()), icon: names[code]?.icon || '', released: names[code]?.released || r.release_date || '', precons: [] }).get(code);
+    if (!g.precons.includes(r.name)) g.precons.push(r.name);
+    if (r.release_date && r.release_date < g.released) g.released = r.release_date;
+  }
+  return [...groups.values()].map(g => ({ ...g, precons: g.precons.sort((a, b) => a.localeCompare(b)) }))
+    .sort((a, b) => b.released.localeCompare(a.released) || a.name.localeCompare(b.name));
+}
 // The official spelling of a precon name (any case), or null.
 export const officialName = name => db.prepare('SELECT name FROM precon_decks WHERE name_lc = ? LIMIT 1').get(lc(name))?.name || null;
 // A precon and its cards (the newest printing if it was reprinted), or null.

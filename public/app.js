@@ -816,12 +816,15 @@ const isBannedPreconName = (league, name) => !!name && houseOf(league).bannedPre
 const limitText = (v, word) => (v == null ? 'no limit' : `<b>${plural(v, word)}</b>`);
 function housePanel(league, active) {
   const h = houseOf(league);
-  const chips = (list, empty) => (list.length ? `<div class="row ban-chips">${list.map(n => `<span class="chip bad">${esc(n)}</span>`).join('')}</div>` : `<p class="small muted" style="margin:0">${empty}</p>`);
+  // One short line: the first few names, the rest behind "and N more".
+  const banSummary = (list, empty) => (!list.length ? `<span class="small muted">${empty}</span>`
+    : list.length <= 3 ? `<span class="small ban-names">${list.map(esc).join(', ')}</span>`
+    : `<details class="ban-more small"><summary><span class="ban-names">${list.slice(0, 3).map(esc).join(', ')}</span> <span class="dim">and ${list.length - 3} more</span></summary><p class="ban-names">${list.map(esc).join(', ')}</p></details>`);
   if (league.canManage && active) return `<section class="panel">
     <h2>House rules</h2>
     <form id="houseForm" class="grid" style="gap:12px">
-      <div><div class="spread"><b>Banned precons <span class="dim small">${h.bannedPrecons.length}</span></b><button type="button" class="btn sm" id="banPrecons">Choose banned precons</button></div>
-        <div style="margin-top:6px">${chips(h.bannedPrecons, 'None. Players can lock in any official precon.')}</div></div>
+      <div class="ban-line"><b>Banned precons <span class="dim small">${h.bannedPrecons.length}</span></b><button type="button" class="btn sm" id="banPrecons">Choose banned precons</button>
+        <div class="ban-line-list">${banSummary(h.bannedPrecons, 'None. Players can lock in any official precon.')}</div></div>
       <label>Banned cards <span class="dim small">(one card name per line; they can't go into a deck)</span><textarea name="bannedCards" rows="4" maxlength="20000" placeholder="e.g. Sol Ring">${esc(h.bannedCards.join('\n'))}</textarea></label>
       <div class="rules-grid">
         <label title="How many cards can come into your deck between one pod and the next">Swaps between pods<input type="number" name="swapCap" min="0" max="100" placeholder="No limit" value="${h.swapCap ?? ''}"></label>
@@ -835,8 +838,8 @@ function housePanel(league, active) {
   return `<section class="panel">
     <h2>House rules</h2>
     <ul class="rules-list">
-      <li>${I.x} Banned precons: ${h.bannedPrecons.length ? chips(h.bannedPrecons) : 'none'}</li>
-      <li>${I.x} Banned cards: ${h.bannedCards.length ? chips(h.bannedCards) : 'none'}</li>
+      <li>${I.x} <span>Banned precons: ${banSummary(h.bannedPrecons, 'none')}</span></li>
+      <li>${I.x} <span>Banned cards: ${banSummary(h.bannedCards, 'none')}</span></li>
       <li>${I.trade} Swaps between pods: ${limitText(h.swapCap, 'card')}</li>
       <li>★ Mythics from packs in a deck: ${limitText(h.maxMythics, 'mythic')}</li>
       <li>◆ Rares from packs in a deck: ${limitText(h.maxRares, 'rare')}</li>
@@ -857,29 +860,50 @@ function wireHouse(view, league) {
   };
   $('#banPrecons', view).onclick = () => preconBanModal(league, save);
 }
-// Every official precon with a tick box: ticked = banned in this league.
+// Every official precon with a tick box, grouped by the set it came out in
+// (newest first), with a box to ban or unban a whole set at once.
 async function preconBanModal(league, save) {
-  if (!S.preconNames?.length) { try { S.preconNames = (await api('/precons')).names; } catch (err) { fail(err); return; } }
+  if (!S.preconSets?.length) { try { const r = await api('/precons'); S.preconNames = r.names; S.preconSets = r.sets; } catch (err) { fail(err); return; } }
   const banned = new Set(houseOf(league).bannedPrecons);
   const taken = new Map(league.members.filter(m => m.precon).map(m => [m.precon.toLowerCase(), m.username]));
   let q = '', onlyBanned = false;
   const m = $('#modal');
   m.innerHTML = `<div class="dlg-wide"><div class="dialog">
     <div class="spread"><h2 style="margin:0">Banned precons</h2><button class="btn sm ghost" id="pbClose">Cancel</button></div>
-    <p class="small muted" style="margin:4px 0 10px">Tick every precon that can't be played in ${esc(league.name)}. A player who tries to lock one in is told it's banned. Players who already locked one in keep it until you allow them a change.</p>
-    <div class="set-tools"><input type="search" id="pbQ" placeholder="Search ${S.preconNames.length} precons…"><label class="check small"><input type="checkbox" id="pbOnly"> Banned only</label><span class="small muted" id="pbN"></span></div>
+    <p class="small muted" style="margin:4px 0 10px">Tick every precon that can't be played in ${esc(league.name)}, or tick a set to ban all of its precons. A player who tries to lock one in is told it's banned. Players who already locked one in keep it until you allow them a change.</p>
+    <div class="set-tools"><input type="search" id="pbQ" placeholder="Search ${S.preconSets.length} sets and ${S.preconNames.length} precons…"><label class="check small"><input type="checkbox" id="pbOnly"> Banned only</label><span class="small muted" id="pbN"></span></div>
     <div class="ban-list" id="pbList"></div>
     <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn ghost sm" id="pbNone">Unban all</button><button class="btn gold" id="pbSave">Save banned precons</button></div>
   </div></div>`;
   m.hidden = false;
   const close = () => { m.hidden = true; m.innerHTML = ''; };
+  const count = () => { $('#pbN', m).textContent = `${banned.size} banned`; };
   const paint = () => {
     const s = q.trim().toLowerCase();
-    const list = S.preconNames.filter(n => (!s || n.toLowerCase().includes(s)) && (!onlyBanned || banned.has(n)));
-    $('#pbN', m).textContent = `${banned.size} banned`;
-    $('#pbList', m).innerHTML = list.slice(0, 400).map(n => `<label class="ban-row ${banned.has(n) ? 'on' : ''}"><input type="checkbox" data-pb="${esc(n)}" ${banned.has(n) ? 'checked' : ''}> <span>${esc(n)}</span>${taken.has(n.toLowerCase()) ? ` <span class="dim small">· ${esc(taken.get(n.toLowerCase()))} has it</span>` : ''}</label>`).join('')
-      + (list.length > 400 ? `<p class="small muted">${list.length - 400} more: search to narrow it down.</p>` : '') || '<p class="small muted">No precons match.</p>';
-    $$('[data-pb]', m).forEach(b => b.onchange = () => { if (b.checked) banned.add(b.dataset.pb); else banned.delete(b.dataset.pb); b.closest('.ban-row').classList.toggle('on', b.checked); $('#pbN', m).textContent = `${banned.size} banned`; });
+    // A search matching a set's name shows the whole set; otherwise only the matching precons.
+    const shown = S.preconSets.map(g => {
+      const setHit = s && g.name.toLowerCase().includes(s);
+      const list = g.precons.filter(n => (!s || setHit || n.toLowerCase().includes(s)) && (!onlyBanned || banned.has(n)));
+      return { g, list };
+    }).filter(x => x.list.length);
+    count();
+    $('#pbList', m).innerHTML = shown.map(({ g, list }) => {
+      const n = g.precons.filter(p => banned.has(p)).length;
+      return `<div class="ban-set" data-set="${esc(g.code)}">
+        <label class="ban-set-head ${n === g.precons.length ? 'on' : ''}"><input type="checkbox" data-pbset="${esc(g.code)}" ${n === g.precons.length ? 'checked' : ''}>
+          ${g.icon ? `<img class="set-icon" src="${esc(g.icon)}" alt="" loading="lazy">` : ''}<b>${esc(g.name)}</b>
+          <span class="dim small">${g.released ? g.released.slice(0, 4) : ''} · ${n ? `${n} of ${plural(g.precons.length, 'precon')} banned` : plural(g.precons.length, 'precon')}</span></label>
+        <div class="ban-set-list">${list.map(p => `<label class="ban-row ${banned.has(p) ? 'on' : ''}"><input type="checkbox" data-pb="${esc(p)}" ${banned.has(p) ? 'checked' : ''}> <span>${esc(p)}</span>${taken.has(p.toLowerCase()) ? ` <span class="dim small">· ${esc(taken.get(p.toLowerCase()))} has it</span>` : ''}</label>`).join('')}</div>
+      </div>`;
+    }).join('') || '<p class="small muted">No precons match.</p>';
+    // Some but not all of a set banned: the set box shows a dash.
+    $$('[data-pbset]', m).forEach(b => {
+      const g = S.preconSets.find(x => x.code === b.dataset.pbset);
+      const n = g.precons.filter(p => banned.has(p)).length;
+      b.indeterminate = n > 0 && n < g.precons.length;
+      b.onchange = () => { for (const p of g.precons) { if (b.checked) banned.add(p); else banned.delete(p); } paint(); };
+    });
+    $$('[data-pb]', m).forEach(b => b.onchange = () => { if (b.checked) banned.add(b.dataset.pb); else banned.delete(b.dataset.pb); paint(); });
   };
   paint();
   $('#pbQ', m).oninput = e => { q = e.target.value; paint(); };

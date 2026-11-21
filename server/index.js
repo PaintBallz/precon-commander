@@ -29,8 +29,8 @@ import {
   HOUSE_LIMITS, isBannedPrecon, BANNED_PRECON, cardKey,
 } from './leagues.js';
 import { wishlistRoutes, wishPulled } from './wishlist.js';
-import { getBoosterSets, BOOSTER_SET_TYPES, findCard } from './scryfall.js';
-import { keepPreconsFresh, preconNames, preconCount, officialName, givePreconCards, fillMissingPreconCards } from './precons.js';
+import { getBoosterSets, BOOSTER_SET_TYPES, findCard, setNames } from './scryfall.js';
+import { keepPreconsFresh, preconNames, preconSets, preconCount, officialName, givePreconCards, fillMissingPreconCards } from './precons.js';
 import { openPack, hasRealPack, realPackKind, localPackSets, sheetOdds } from './packs.js';
 import { requireAuth, requireAdmin, authRoutes, seedAdmin, listUsers, getUser, selfUser, deleteAccount } from './auth.js';
 import { importDeck, editDeck, getDeck, deleteDeck, DeckError, startFromPool, changeDeck, linkDeckToPool, savePodDeck, podDeck, podDeckKeys, podDeckList, houseStatus } from './decks.js';
@@ -474,7 +474,7 @@ function myLeagueRow(req) {
 }
 const leagueReply = (req, res, league) => { broadcast('state', { leagueId: league.id }); res.json({ league: leagueView(req, getLeague(league.id)) }); };
 
-app.get('/api/precons', (req, res) => res.json({ names: preconNames() }));
+app.get('/api/precons', (req, res) => res.json({ names: preconNames(), sets: preconSets(setNames()) }));
 
 // Saving locks it for this league; only the league admin or a site admin can reopen it.
 app.put('/api/leagues/:id/precon', wrap(async (req, res) => {

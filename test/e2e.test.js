@@ -1754,6 +1754,10 @@ test('house rules: banned precons and cards, swaps between pods, a rarity budget
   assert.equal((await hal.put(L, { house: { bannedPrecons: ['Not A Precon'] } })).status, 400, 'official names only');
   const h1 = (await ok(hal.put(L, { house: { bannedPrecons: ['gamma deck', 'Delta Deck', 'Gamma Deck'] } }))).league.house;
   assert.deepEqual(h1.bannedPrecons, ['Delta Deck', 'Gamma Deck'], 'official spelling, once each');
+  const { sets } = await ok(hal.get('/api/precons'));
+  const tst = sets.find(g => g.code === 'tst');
+  assert.ok(tst && ['Alpha Deck', 'Gamma Deck', 'Wren Deck'].every(n => tst.precons.includes(n)), 'the banlist picker gets the precons grouped by set');
+  assert.equal(new Set(tst.precons).size, tst.precons.length, 'once each per set');
   const no = await ike.put(`${L}/precon`, { precon: 'Gamma Deck' });
   assert.equal(no.status, 409);
   assert.equal(no.json.error, 'This Pre-Con Deck is Banned.');

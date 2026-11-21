@@ -967,3 +967,20 @@ form .fb-filter label.chip { display: inline-flex; gap: 6px; cursor: pointer; co
   .who-img, .who-img img { width: 72px; }
   .holder .btn { margin-left: 0; }
 }
+/* banned precons: grouped by set in the picker, one compact line in House rules */
+.ban-set { border-bottom: 1px solid var(--line); padding: 6px 0 8px; }
+.ban-set:last-child { border-bottom: 0; }
+.ban-set-head { display: flex; align-items: center; gap: 8px; padding: 6px 8px; cursor: pointer; flex-wrap: wrap; }
+.ban-set-head:hover { background: var(--panel2); }
+.ban-set-head.on b { color: var(--danger); }
+.ban-set-head .set-icon { width: 18px; height: 18px; filter: invert(1) opacity(.8); }
+.ban-set-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 0 8px; padding-left: 26px; }
+.ban-set-list .ban-row { padding: 3px 8px; font-size: .92rem; }
+.ban-line { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 10px; }
+.ban-line-list { grid-column: 1 / -1; }
+.ban-names { color: var(--danger); }
+.ban-more summary { cursor: pointer; list-style: none; }
+.ban-more summary::-webkit-details-marker { display: none; }
+.ban-more summary .dim { text-decoration: underline dotted; }
+.ban-more[open] summary { display: none; }
+.ban-more p { margin: 0; max-height: 9em; overflow-y: auto; }
