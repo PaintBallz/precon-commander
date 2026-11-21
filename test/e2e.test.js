@@ -121,7 +121,7 @@ before(async () => {
       // The whole suite runs from one IP; the last test checks the heavy limit.
       RATE_ALL_PER_MIN: '100000', RATE_API_PER_MIN: '100000', RATE_HEAVY_PER_MIN: '200', SIGNUPS_PER_HOUR: '40', EMAIL_KEY: Buffer.alloc(32, 7).toString('base64'), ADMIN_INITIAL_PASSWORD: 'changeme',
       DISCORD_WEBHOOK_URL: `http://127.0.0.1:${HOOK_PORT}/api/webhooks/123/test-token`, DISCORD_INVITE: 'https://discord.gg/pcctest',
-      MTGJSON_BASE: `http://127.0.0.1:${HOOK_PORT}/mtgjson`, MTGJSON_DELAY_MS: '0', DISCORD_SETTLE_MS: '20' },
+      MTGJSON_BASE: `http://127.0.0.1:${HOOK_PORT}/mtgjson`, MTGJSON_DELAY_MS: '0', DISCORD_SETTLE_MS: '20', DISCORD_TEST_PING_MS: '300' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   server.stdout.on('data', d => { serverLog += d; });
@@ -953,7 +953,9 @@ test('Discord: one live post per pod, edited as it goes; opt-in pings, deleted o
   const after = () => discordPosts.slice(t0);
   assert.equal((await ok(joe.post('/api/discord/test-ping'))).ok, true);
   assert.equal((await joe.post('/api/discord/test-ping')).status, 429, 'one test ping a minute');
-  assert.ok(after().some(p => p.body.content?.startsWith(`<@${JOE}> this is a test ping`)));
+  const tp = after().find(p => p.body.content?.startsWith(`<@${JOE}> this is a test ping`));
+  assert.ok(tp);
+  await waitFor(() => discordPosts.some(p => p.method === 'DELETE' && p.path.endsWith(`/messages/${tp.id}`)), 'the test ping to delete itself');
 
   const { pod } = await ok(eve.post('/api/pods', { players: ['Eve', 'Joe', 'Dan'].map(n => ({ userId: S.u[n].id })) }));
   const live = await waitFor(() => after().find(p => p.method === 'POST' && p.body.embeds?.[0]?.title === `${pod.name} is being played`), 'the live post');

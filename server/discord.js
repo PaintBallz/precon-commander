@@ -353,6 +353,14 @@ export function keepPingsTidy() {
   const tidy = () => enqueue(async () => {
     for (const { scope } of db.prepare('SELECT DISTINCT scope FROM discord_pings').all()) {
       const [kind, id] = [scope.slice(0, scope.indexOf(':')), scope.slice(scope.indexOf(':') + 1)];
+      if (kind === 'test') {
+        // A test ping older than a minute (its timer was lost to a restart) goes now.
+        const row = db.prepare('SELECT at FROM discord_pings WHERE scope = ?').get(scope);
+        const due = !row || Date.now() - Date.parse(row.at) >= TEST_PING_MS;
+        if (due) await syncPings(scope, new Map());
+        else setTimeout(() => enqueue(() => syncPings(scope, new Map())), TEST_PING_MS - (Date.now() - Date.parse(row.at))).unref();
+        continue;
+      }
       await syncPings(scope, kind === 'trade' ? tradeWanted(id) : kind === 'wish' ? wishWanted(Number(id)) : waitingOn(loadPod(id)));
     }
   });
@@ -366,10 +374,14 @@ export async function testPing(discordId) {
   await enqueue(async () => {
     const r = await request('POST', '?wait=true', { username: NAME, content: `<@${discordId}> this is a test ping from Pre-Con Commander. You'll get one like it when it's your turn. (This one deletes itself in a minute.)`, allowed_mentions: { parse: [], users: [discordId] } });
     ok = r.ok;
-    if (r.data?.id) setTimeout(() => enqueue(() => request('DELETE', `/messages/${r.data.id}`)), 60e3).unref();
+    if (!r.data?.id) return;
+    // Remembered in the database too, so a restart within the minute still deletes it (see keepPingsTidy).
+    db.prepare("INSERT OR REPLACE INTO discord_pings (scope, user_id, kind, msg_id, at) VALUES (?, 'test', 'test', ?, ?)").run(`test:${r.data.id}`, r.data.id, new Date().toISOString());
+    setTimeout(() => enqueue(() => syncPings(`test:${r.data.id}`, new Map())), TEST_PING_MS).unref();
   });
   return ok;
 }
+const TEST_PING_MS = Number(process.env.DISCORD_TEST_PING_MS ?? 60e3);
 
 // ---------- other posts ----------
 export function leagueEndedPost(league, recap) {
