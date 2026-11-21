@@ -290,7 +290,7 @@ async function copyText(text, what = 'List') {
 }
 
 // ---------------- routing ----------------
-const ROUTES = ['league', 'pods', 'wheel', 'packs', 'pools', 'sets', 'history', 'fun', 'account', 'player', 'recap', 'admin', 'trades', 'join', 'how', 'nights'];
+const ROUTES = ['league', 'pods', 'wheel', 'packs', 'pools', 'sets', 'history', 'fun', 'account', 'player', 'recap', 'admin', 'trades', 'join', 'how', 'nights', 'goldfish'];
 function parseRoute() {
   const [r, q] = location.hash.replace(/^#/, '').split('?');
   S.route = ROUTES.includes(r) ? r : 'pods';
@@ -345,7 +345,7 @@ function render() {
   layoutTabs();
   const view = $('#view');
   if (S.route !== 'wheel') stopWheelLoop();
-  ({ league: renderLeague, pods: renderPods, wheel: renderWheel, packs: renderPacks, pools: renderPools, sets: renderSets, history: renderHistory, fun: renderFun, how: renderHow, account: renderAccount, player: renderPlayer, recap: renderRecap, admin: renderAdmin, trades: renderTrades, join: renderJoin, nights: renderNights })[S.route](view);
+  ({ league: renderLeague, pods: renderPods, wheel: renderWheel, packs: renderPacks, pools: renderPools, sets: renderSets, history: renderHistory, fun: renderFun, how: renderHow, account: renderAccount, player: renderPlayer, recap: renderRecap, admin: renderAdmin, trades: renderTrades, join: renderJoin, nights: renderNights, goldfish: renderGoldfish })[S.route](view);
 }
 
 function confirmBox(title, body, okLabel = 'OK', danger = false) {
@@ -1031,6 +1031,277 @@ async function renderNights(view) {
     try { await post('/pods' + lq(), { players: pod.map(p => ({ userId: p.id })) }); toast('Pod started.', 'good'); await loadState(); go('#pods'); } catch (err) { fail(err); }
   });
 }
+
+// =============== GOLDFISH ===============
+// Play a deck alone to see how it runs: draw, play, tap, move cards between
+// zones by dragging (or with the bar), counters, tokens, life and turns.
+// Everything stays in this browser tab; nothing is saved.
+const GF = { deck: null, who: '', key: '', state: null, sel: null, undo: [], last: { uid: 0, t: 0 } };
+const GF_ZONES = { hand: 'Hand', battlefield: 'Battlefield', graveyard: 'Graveyard', exile: 'Exile', library: 'Library', command: 'Command zone' };
+const gfShuffle = list => { for (let i = list.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [list[i], list[j]] = [list[j], list[i]]; } return list; };
+function gfNewGame() {
+  const deck = GF.deck;
+  let uid = 0;
+  const mk = c => ({ uid: ++uid, name: c.name, image: c.image || null, back: c.back || null, uri: c.uri || null, type: c.type || '', tapped: false, flipped: false, counters: 0, x: 0, y: 0 });
+  const library = gfShuffle(deck.cards.filter(c => c.board !== 'commander').flatMap(c => Array.from({ length: c.qty || 1 }, () => mk(c))));
+  const command = deck.cards.filter(c => c.board === 'commander').map(c => ({ ...mk(c), commander: true, casts: 0 }));
+  GF.state = { library, hand: library.splice(0, 7), battlefield: [], graveyard: [], exile: [], command, life: 40, turn: 1, mulls: 0, nextUid: uid + 1 };
+  GF.sel = null; GF.undo = [];
+}
+const gfSave = () => { GF.undo.push(JSON.stringify(GF.state)); if (GF.undo.length > 50) GF.undo.shift(); };
+function gfFind(uid) {
+  for (const z of Object.keys(GF_ZONES)) { const i = GF.state[z].findIndex(c => c.uid === uid); if (i >= 0) return { zone: z, i, card: GF.state[z][i] }; }
+  return null;
+}
+// New spot on the battlefield: lands along the bottom, everything else along the top.
+function gfSpot(card) {
+  const land = /\bLand\b/.test(card.type);
+  const row = GF.state.battlefield.filter(c => (c.y >= 55) === land).length;
+  return { x: 1 + (row % 11) * 8.8, y: land ? 64 + Math.floor(row / 11) * 6 : 3 + Math.floor(row / 11) * 30 };
+}
+function gfMove(uid, to, { top = true, x = null, y = null } = {}) {
+  const f = gfFind(uid);
+  if (!f) return;
+  gfSave();
+  const s = GF.state, c = f.card;
+  if (f.zone === to && to === 'battlefield') { c.x = x ?? c.x; c.y = y ?? c.y; return gfPaint(); }
+  s[f.zone].splice(f.i, 1);
+  if (f.zone === 'battlefield') { c.tapped = false; c.counters = 0; c.flipped = false; }
+  if (c.token && to !== 'battlefield') { toast(`The ${esc(c.name)} token is gone.`); if (GF.sel === uid) GF.sel = null; return gfPaint(); }
+  if (to === 'battlefield') {
+    const spot = x == null ? gfSpot(c) : { x, y };
+    c.x = spot.x; c.y = spot.y;
+    if (c.commander && f.zone === 'command') c.casts = (c.casts || 0) + 1;
+    s.battlefield.push(c);
+  } else if (to === 'library') { if (top) s.library.unshift(c); else s.library.push(c); }
+  else s[to].push(c);
+  if (to !== 'battlefield' && to !== 'hand' && to !== 'command') GF.sel = null;
+  gfPaint();
+}
+function gfDraw(n = 1) {
+  const s = GF.state;
+  if (!s.library.length) return toast('Your library is empty.');
+  gfSave();
+  s.hand.push(...s.library.splice(0, n));
+  gfPaint();
+}
+function gfAct(act) {
+  const s = GF.state;
+  const f = GF.sel ? gfFind(GF.sel) : null;
+  const c = f?.card;
+  const one = fn => { if (!c) return; gfSave(); fn(); gfPaint(); };
+  switch (act) {
+    case 'draw': return gfDraw();
+    case 'next': gfSave(); s.turn++; s.battlefield.forEach(x => { x.tapped = false; }); if (s.library.length) s.hand.push(s.library.shift()); return gfPaint();
+    case 'untap': gfSave(); s.battlefield.forEach(x => { x.tapped = false; }); return gfPaint();
+    case 'shuffle': gfSave(); gfShuffle(s.library); toast('Library shuffled.'); return gfPaint();
+    case 'life-': case 'life+': case 'life5-': case 'life5+': gfSave(); s.life += { 'life-': -1, 'life+': 1, 'life5-': -5, 'life5+': 5 }[act]; return gfPaint();
+    case 'mull': {
+      gfSave();
+      s.library.push(...s.hand.splice(0), ...s.battlefield.splice(0).filter(x => !x.token), ...s.graveyard.splice(0), ...s.exile.splice(0));
+      s.library.forEach(x => { x.tapped = false; x.counters = 0; x.flipped = false; });
+      gfShuffle(s.library); s.hand = s.library.splice(0, 7); s.mulls++; s.turn = 1; GF.sel = null;
+      toast(s.mulls === 1 ? 'Mulligan: your first one is free in Commander.' : `Mulligan ${s.mulls}: put ${plural(s.mulls - 1, 'card')} from your hand on the bottom (pick one, then Bottom of library).`);
+      return gfPaint();
+    }
+    case 'undo': if (!GF.undo.length) return; GF.state = JSON.parse(GF.undo.pop()); GF.sel = null; return gfPaint();
+    case 'new': gfNewGame(); toast('New game: shuffled, 7 cards drawn.'); return gfPaint();
+    case 'tap': return one(() => { c.tapped = !c.tapped; });
+    case 'flip': return one(() => { c.flipped = !c.flipped; });
+    case 'plus': return one(() => { c.counters++; });
+    case 'minus': return one(() => { c.counters--; });
+    case 'zoom': return c && cardModal({ name: c.name, image: c.flipped && c.back ? c.back : c.image, back: c.flipped ? c.image : c.back, uri: c.uri });
+    case 'clear': GF.sel = null; return gfPaint();
+    default: {
+      const [, to, where] = act.match(/^to-(\w+)(?:-(bottom))?$/) || [];
+      if (c && to) gfMove(c.uid, to, { top: where !== 'bottom' });
+    }
+  }
+}
+async function gfToken() {
+  const f = await formBox('Create a token', 'It goes onto the battlefield. A token that leaves the battlefield is gone.', [{ name: 'name', label: 'Token', placeholder: 'e.g. 1/1 Soldier', max: 60, required: true }, { name: 'n', label: 'How many', value: '1', max: 2 }], 'Create');
+  if (!f?.name?.trim()) return;
+  gfSave();
+  const n = Math.max(1, Math.min(20, Number(f.n) || 1));
+  for (let i = 0; i < n; i++) { const t = { uid: GF.state.nextUid++, name: f.name.trim(), image: null, back: null, type: 'Token', token: true, tapped: false, flipped: false, counters: 0 }; Object.assign(t, gfSpot(t)); GF.state.battlefield.push(t); }
+  gfPaint();
+}
+// The cards in a pile (graveyard, exile, the library or its top few), with buttons to move each.
+function gfZoneModal(zone, topN = 0) {
+  const m = $('#modal');
+  const searching = zone === 'library' && !topN;
+  const close = () => { m.hidden = true; m.innerHTML = ''; if (searching) { gfShuffle(GF.state.library); toast('Library shuffled.'); } gfPaint(); };
+  const paint = () => {
+    const list = topN ? GF.state.library.slice(0, topN) : GF.state[zone];
+    const dests = ['hand', 'battlefield', 'graveyard', 'exile', 'library'].filter(z => z !== zone || topN);
+    m.innerHTML = `<div class="dlg-wide"><div class="dialog">
+      <div class="spread"><h2 style="margin:0">${topN ? `Top ${plural(Math.min(topN, GF.state.library.length), 'card')} of your library` : `${GF_ZONES[zone]} (${list.length})`}</h2><button class="btn sm ghost" id="gzClose">${searching ? 'Done (shuffles)' : 'Done'}</button></div>
+      <p class="small muted" style="margin:4px 0 10px">${topN ? 'Top first. Leave a card where it is, or move it.' : searching ? 'Your library in order. It shuffles when you close this.' : 'Most recent last.'}</p>
+      <div class="gz-grid">${list.map(c => `<div class="gz-card">${gfImg(c)}<div class="gz-acts">${dests.map(z => z === 'library'
+        ? `<button class="btn sm ghost" data-gz="${c.uid}:library">Top</button><button class="btn sm ghost" data-gz="${c.uid}:library-bottom">Bottom</button>`
+        : `<button class="btn sm ghost" data-gz="${c.uid}:${z}">${GF_ZONES[z]}</button>`).join('')}</div></div>`).join('') || '<p class="muted">Empty.</p>'}</div>
+    </div></div>`;
+    $('#gzClose', m).onclick = close;
+    $$('[data-gz]', m).forEach(b => b.onclick = () => { const [uid, to] = b.dataset.gz.split(':'); gfMove(Number(uid), to.replace('-bottom', ''), { top: !to.endsWith('-bottom') }); paint(); });
+  };
+  paint();
+  m.hidden = false;
+  m.onclick = e => { if (e.target === m) close(); };
+}
+const gfImg = (c, cls = '') => (c.image ? `<img ${cardSrc(c.flipped && c.back ? c.back : c.image, '(max-width: 600px) 22vw, 120px')} alt="${esc(c.name)}" class="${cls}" draggable="false" loading="lazy">`
+  : `<div class="gf-token ${cls}"><b>${esc(c.name)}</b><span>${c.token ? 'Token' : ''}</span></div>`);
+function gfCard(c, zone) {
+  return `<div class="gf-card ${c.tapped ? 'tapped' : ''} ${GF.sel === c.uid ? 'sel' : ''}" data-uid="${c.uid}" data-zone="${zone}" title="${esc(c.name)}"
+    ${zone === 'battlefield' ? `style="left:${c.x}%;top:${c.y}%"` : ''} tabindex="0">${gfImg(c)}${c.counters ? `<span class="gf-counter">${c.counters > 0 ? '+' : ''}${c.counters}</span>` : ''}${c.commander && c.casts ? `<span class="gf-tax" title="Commander tax">+${c.casts * 2}</span>` : ''}</div>`;
+}
+function gfBar() {
+  const f = GF.sel ? gfFind(GF.sel) : null;
+  if (!f) return '<span class="small muted">Drag cards between zones, or click one for its options. Double-click: tap or untap on the battlefield, play from your hand.<span class="gf-keys"> Keys: <b>D</b> draw, <b>N</b> next turn, <b>U</b> untap all, <b>T</b> tap, <b>Ctrl+Z</b> undo.</span></span>';
+  const c = f.card;
+  const b = (act, label, cls = '') => `<button class="btn sm ${cls}" data-gfa="${act}">${label}</button>`;
+  const moves = ['hand', 'battlefield', 'graveyard', 'exile'].filter(z => z !== f.zone).map(z => b(`to-${z}`, z === 'battlefield' ? (f.zone === 'hand' || f.zone === 'command' ? 'Play' : 'Battlefield') : GF_ZONES[z], z === 'battlefield' && f.zone !== 'battlefield' ? 'gold' : ''));
+  return `<b class="gf-bar-name">${esc(c.name)}<span class="small muted">${GF_ZONES[f.zone]}</span></b>
+    ${f.zone === 'battlefield' ? `${b('tap', c.tapped ? 'Untap' : 'Tap', 'gold')}${b('plus', '+1 counter')}${b('minus', '−1 counter')}` : ''}${c.back ? b('flip', '↻ Flip') : ''}
+    ${moves.join('')}${c.token ? '' : `${b('to-library', 'Top of library')}${b('to-library-bottom', 'Bottom of library')}`}${c.commander && f.zone !== 'command' ? b('to-command', 'Command zone') : ''}
+    ${b('zoom', 'View', 'ghost')}${b('clear', I.x, 'ghost')}`;
+}
+function gfPaint() {
+  const root = $('#gf');
+  if (!root || S.route !== 'goldfish') return;
+  const s = GF.state;
+  const pile = (zone, label) => {
+    const list = s[zone], topCard = list.at(-1);
+    return `<button type="button" class="gf-pile" data-drop="${zone}" data-open="${zone}" title="${label}: click to see them">${topCard ? gfImg(topCard) : '<div class="gf-empty"></div>'}<span>${label} <b>${list.length}</b></span></button>`;
+  };
+  const lands = s.battlefield.filter(c => /\bLand\b/.test(c.type)).length;
+  root.innerHTML = `
+    <div class="panel gf-top">
+      <div class="gf-title"><b>${esc(GF.deck.name)}</b><span class="small muted">${GF.who ? `${esc(GF.who)}'s deck · ` : ''}Turn ${s.turn}${s.mulls ? ` · ${plural(s.mulls, 'mulligan')}` : ''}</span></div>
+      <div class="gf-life" aria-label="Life"><button class="btn sm ghost" data-gfa="life5-">−5</button><button class="btn sm ghost" data-gfa="life-">−</button><b>${s.life}</b><button class="btn sm ghost" data-gfa="life+">+</button><button class="btn sm ghost" data-gfa="life5+">+5</button></div>
+      <div class="row gf-actions">
+        <button class="btn sm gold" data-gfa="next" title="Untap everything and draw (N)">Next turn</button>
+        <button class="btn sm" data-gfa="draw" title="D">Draw</button>
+        <button class="btn sm" data-gfa="untap" title="U">Untap all</button>
+        <button class="btn sm" id="gfTop">Look at top…</button>
+        <button class="btn sm" id="gfSearch">Search library</button>
+        <button class="btn sm" data-gfa="shuffle">Shuffle</button>
+        <button class="btn sm" id="gfTok">Token</button>
+        <button class="btn sm" data-gfa="mull">Mulligan</button>
+        <button class="btn sm ghost" data-gfa="undo" ${GF.undo.length ? '' : 'disabled'} title="Ctrl+Z">↶ Undo</button>
+        <button class="btn sm ghost danger" data-gfa="new">New game</button>
+      </div>
+    </div>
+    <div class="gf-field" data-drop="battlefield">
+      <span class="gf-field-label small muted">Battlefield · ${plural(s.battlefield.length, 'card')} · ${plural(lands, 'land')}</span>
+      ${s.battlefield.map(c => gfCard(c, 'battlefield')).join('')}
+    </div>
+    <div class="gf-bottom">
+      <div class="panel gf-hand" data-drop="hand"><span class="small muted gf-hand-label">Hand <b>${s.hand.length}</b></span>${s.hand.map(c => gfCard(c, 'hand')).join('') || '<span class="small muted">Empty.</span>'}</div>
+      <div class="gf-side">
+        <div class="gf-cmd" data-drop="command"><span>Command</span>${s.command.map(c => gfCard(c, 'command')).join('') || '<div class="gf-empty"></div>'}</div>
+        <button type="button" class="gf-pile gf-lib" data-drop="library" id="gfLib" title="Click to draw a card"><div class="gf-back">${s.library.length}</div><span>Library</span></button>
+        ${pile('graveyard', 'Graveyard')}
+        ${pile('exile', 'Exile')}
+      </div>
+    </div>
+    <div class="gf-bar">${gfBar()}</div>`;
+  $$('[data-gfa]', root).forEach(b => b.onclick = e => { e.stopPropagation(); gfAct(b.dataset.gfa); });
+  $('#gfLib', root).onclick = () => gfDraw();
+  $$('[data-open]', root).forEach(b => b.onclick = () => gfZoneModal(b.dataset.open));
+  $('#gfSearch', root).onclick = () => gfZoneModal('library');
+  $('#gfTok', root).onclick = gfToken;
+  $('#gfTop', root).onclick = async () => {
+    const f = await formBox('Look at the top of your library', 'Scry, surveil or just peek: move any of them, or leave them on top.', [{ name: 'n', label: 'How many cards', value: '3', max: 2 }], 'Look');
+    if (f) gfZoneModal('library', Math.max(1, Math.min(20, Number(f.n) || 1)));
+  };
+  gfWire(root);
+}
+// Dragging: a copy of the card follows the pointer; where it's let go decides the zone.
+// A click (no drag) picks the card; a second click soon after taps it or plays it.
+function gfWire(root) {
+  $$('[data-uid]', root).forEach(el => {
+    el.onpointerdown = e => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      const pv = $('#gfPreview'); if (pv) pv.hidden = true;
+      const uid = Number(el.dataset.uid);
+      const r = el.getBoundingClientRect();
+      const start = { x: e.clientX, y: e.clientY, dx: e.clientX - r.left, dy: e.clientY - r.top };
+      let ghost = null;
+      const move = ev => {
+        if (!ghost && Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < 6) return;
+        if (!ghost) { ghost = el.cloneNode(true); ghost.classList.add('gf-ghost'); ghost.style.width = `${r.width}px`; ghost.style.left = ''; ghost.style.top = ''; document.body.appendChild(ghost); el.classList.add('gf-dragging'); }
+        ghost.style.transform = `translate(${ev.clientX - start.dx}px, ${ev.clientY - start.dy}px)`;
+      };
+      const up = ev => {
+        document.removeEventListener('pointermove', move);
+        document.removeEventListener('pointerup', up);
+        if (!ghost) return gfClick(uid, el.dataset.zone);
+        ghost.remove(); el.classList.remove('gf-dragging');
+        const target = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('[data-drop]');
+        if (!target) return;
+        const zone = target.dataset.drop;
+        if (zone === 'battlefield') {
+          const fr = target.getBoundingClientRect();
+          const cw = (el.dataset.zone === 'battlefield' ? r.width : fr.width * 0.08) / fr.width * 100;
+          const x = Math.max(0, Math.min(100 - cw, (ev.clientX - start.dx - fr.left) / fr.width * 100));
+          const y = Math.max(0, Math.min(80, (ev.clientY - start.dy - fr.top) / fr.height * 100));
+          gfMove(uid, 'battlefield', { x, y });
+        } else if (zone !== el.dataset.zone) gfMove(uid, zone, { top: true });
+      };
+      document.addEventListener('pointermove', move);
+      document.addEventListener('pointerup', up);
+    };
+    el.onmouseenter = () => { const c = gfFind(Number(el.dataset.uid))?.card; const p = $('#gfPreview'); if (p && c?.image) { p.innerHTML = `<img src="${esc(c.flipped && c.back ? c.back : c.image)}" alt="">`; p.hidden = false; } };
+    el.onmouseleave = () => { const p = $('#gfPreview'); if (p) p.hidden = true; };
+  });
+}
+function gfClick(uid, zone) {
+  const now = Date.now();
+  const again = GF.last.uid === uid && now - GF.last.t < 350;
+  GF.last = { uid, t: now };
+  if (again) {
+    GF.last = { uid: 0, t: 0 };
+    if (zone === 'battlefield') { GF.sel = uid; return gfAct('tap'); }
+    if (zone === 'hand' || zone === 'command') { GF.sel = uid; return gfMove(uid, 'battlefield'); }
+  }
+  GF.sel = GF.sel === uid ? null : uid;
+  gfPaint();
+}
+// Goldfish a particular deck (from a deck view): remembered until you leave for another.
+function goldfishDeck(deck, who = '') {
+  GF.deck = deck; GF.who = who; GF.key = `deck:${deck.name}:${deck.updatedAt || ''}:${who}`; GF.state = null;
+  const m = $('#modal'); m.hidden = true; m.innerHTML = '';
+  go('#goldfish?from=deck');
+}
+async function renderGoldfish(view) {
+  if (S.params.from !== 'deck' || !GF.deck) {
+    const key = `mine:${S.viewLeague || ''}`;
+    if (GF.key !== key || !GF.deck) {
+      view.innerHTML = '<div class="spinner"></div>';
+      let deck = null;
+      try { deck = (await api('/deck' + lq())).deck; } catch (err) { fail(err); return; }
+      if (S.route !== 'goldfish') return;
+      if (!deck?.cards?.length) {
+        view.innerHTML = `<div class="empty"><h2>No deck to goldfish yet</h2><p>Build your deck for this league in <a href="#pools?view=deck">Pools → Deck editor</a> (or import a list on the League tab), then come back. You can also goldfish another player's deck from their deck view.</p></div>`;
+        return;
+      }
+      GF.deck = deck; GF.who = ''; GF.key = key; GF.state = null;
+    }
+  }
+  if (!GF.state) gfNewGame();
+  view.innerHTML = `<div class="hero"><div><h1>Goldfish</h1><p>Play your deck alone to see how it runs: draw, play lands and spells, attack an empty board. Drag cards between zones. Nothing is saved, and nobody else sees it.</p></div></div>
+    <div id="gf" class="gf"></div><div class="gf-preview" id="gfPreview" hidden></div>`;
+  gfPaint();
+}
+document.addEventListener('keydown', e => {
+  if (S.route !== 'goldfish' || !GF.state || e.target.closest?.('input, textarea, select') || !$('#modal').hidden) return;
+  const k = e.key.toLowerCase();
+  if ((e.ctrlKey || e.metaKey) && k === 'z') { e.preventDefault(); return gfAct('undo'); }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const act = { d: 'draw', n: 'next', u: 'untap', t: 'tap', escape: 'clear' }[k];
+  if (act) { e.preventDefault(); gfAct(act); }
+});
 
 // =============== PODS TAB ===============
 // Packs waiting for me anywhere in my league (including pods I missed).
@@ -2733,6 +3004,7 @@ function paintDeckEditor(box, pool, r) {
         <button class="btn sm ${deckEd.multiMode ? 'gold' : ''}" id="deMulti" aria-pressed="${deckEd.multiMode}">${deckEd.multiMode ? `${I.check} Done selecting` : 'Select several'}</button>
         <button class="btn sm" id="deCopy">${I.copy} Copy list</button>
         <button class="btn sm" id="deDraw" title="Shuffle and draw an opening hand">Test draw</button>
+        <button class="btn sm" id="deFish" title="Play this deck alone: draw, play, tap, move cards">Goldfish</button>
         ${r.officialPrecon ? `<button class="btn sm ghost" id="deReset">Start over</button>` : ''}
       </div>
     </div>
@@ -2834,6 +3106,7 @@ function paintDeckEditor(box, pool, r) {
   $('#deGroup', box).onchange = e => { deckEd.group = e.target.value; store.set('deckGroup', deckEd.group); redraw(); };
   $('#deCopy', box).onclick = () => copyText(deckText(deck), deck.name);
   $('#deDraw', box).onclick = () => testDraw(deck);
+  $('#deFish', box).onclick = () => goldfishDeck(deck);
   $('#deMulti', box).onclick = () => { deckEd.multiMode = !deckEd.multiMode; if (!deckEd.multiMode) deckEd.multi.clear(); else if (deckEd.sel) { deckEd.multi.add(deckEd.sel); deckEd.sel = null; } redraw(); };
   $('#dePickAll', box)?.addEventListener('click', () => {
     const q = deckEd.q.trim().toLowerCase();
@@ -3309,7 +3582,7 @@ function deckHtml(deck, { mine = false } = {}) {
         <div class="small muted">${deck.count} cards${packCount ? ` · <span class="tag-pack">${packCount} from packs</span>` : ''} · avg. mana value ${avg.toFixed(2)} · ${deck.podId ? `played in ${esc(deck.podName)}` : `from ${src} · updated ${fmtDate(deck.updatedAt)}`}</div>
         ${cmd.length ? '' : `<div class="small muted">${mine ? 'No commander marked: pick one in your Account page.' : 'No commander marked.'}</div>`}
         ${deck.missing?.length ? `<div class="small" style="color:var(--accent)">Not found on Scryfall: ${deck.missing.map(esc).join(', ')}</div>` : ''}
-        <div class="row" style="margin-top:8px"><button class="btn sm" id="deckCopy">${I.copy} Copy list</button><button class="btn sm" id="deckDraw" title="Shuffle and draw an opening hand">Test draw</button></div>
+        <div class="row" style="margin-top:8px"><button class="btn sm" id="deckCopy">${I.copy} Copy list</button><button class="btn sm" id="deckDraw" title="Shuffle and draw an opening hand">Test draw</button><button class="btn sm" id="deckFish" title="Play this deck alone: draw, play, tap, move cards">Goldfish</button></div>
       </div>
       <div class="deck-curve" aria-label="Mana curve">
         ${curve.map((n, i) => `<div class="dc-col" title="${n} card${n === 1 ? '' : 's'} at ${i === 7 ? '7+' : i}"><span>${n || ''}</span><i style="height:${Math.round(n / peak * 92)}px"></i><b>${i === 7 ? '7+' : i}</b></div>`).join('')}
@@ -3327,6 +3600,7 @@ function wireDeck(view, deck) {
   });
   $('#deckCopy', view)?.addEventListener('click', () => copyText(deckText(deck), deck.name));
   $('#deckDraw', view)?.addEventListener('click', () => testDraw(deck));
+  $('#deckFish', view)?.addEventListener('click', () => goldfishDeck(deck, deck.owner || ''));
 }
 
 // Test draw: shuffle everything but the commander, deal 7, then draw or

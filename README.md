@@ -54,6 +54,9 @@ and packs live.
   precon's official list, with your pool in a tray to swap cards in and out. It flags decks that
   aren't 100 cards, have duplicates or go outside the commander's colours. A private maybe board
   holds cards you're considering, and Test draw deals a random opening hand.
+- **Goldfish**: play a deck alone on a virtual table: library, hand, battlefield, graveyard, exile
+  and command zone, with drag and drop, tapping, counters, tokens, life, turns, mulligans, looking
+  at the top of the library and undo. Nothing is saved.
 - **The deck played in each pod** is saved when the pod starts, so History and player pages show
   the exact list each player used and what changed since their previous pod.
 - **Deck lists** can also come from a Moxfield or Archidekt link or a pasted list, shown with the

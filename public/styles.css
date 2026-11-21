@@ -999,3 +999,57 @@ form .fb-filter label.chip { display: inline-flex; gap: 6px; cursor: pointer; co
 .night-new { margin-bottom: 16px; }
 .night-new-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
 .night-new-row label { flex: 1; min-width: 200px; }
+
+/* ---------- goldfish ---------- */
+.gf { display: grid; gap: 10px; }
+.gf-top { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
+.gf-title { display: grid; }
+.gf-life { display: flex; align-items: center; gap: 4px; }
+.gf-life b { font: 700 1.6rem var(--cond); min-width: 2.2ch; text-align: center; }
+.gf-actions { gap: 6px; margin-left: auto; }
+.gf-field { position: relative; height: max(320px, calc(100vh - 440px)); background: radial-gradient(ellipse at center, #1d2a22 0%, #121814 100%); border: 1px solid var(--line); overflow: hidden; }
+.gf-field-label { position: absolute; right: 8px; bottom: 6px; pointer-events: none; }
+.gf-bottom { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: stretch; }
+.gf-side { display: flex; gap: 8px; }
+.gf-pile, .gf-cmd { width: 82px; display: grid; align-content: start; gap: 4px; padding: 5px; background: var(--panel); border: 1px solid var(--line); color: var(--text); text-align: center; font-size: .75rem; }
+.gf-pile { cursor: pointer; }
+.gf-pile:hover { border-color: var(--accent); }
+.gf-pile img, .gf-pile .gf-token { width: 100%; border-radius: 5px; display: block; }
+.gf-back, .gf-empty { aspect-ratio: 5 / 7; border-radius: 5px; display: grid; place-items: center; }
+.gf-back { background: repeating-linear-gradient(45deg, #3a2418 0 8px, #4a2e1e 8px 16px); border: 2px solid #6b4a2e; font: 700 1.3rem var(--cond); color: #f1d7b0; }
+.gf-empty { border: 2px dashed var(--line); }
+.gf-cmd .gf-card { width: 100%; }
+.gf-card { position: relative; width: 84px; cursor: grab; touch-action: none; user-select: none; transition: transform .15s; }
+.gf-card img { width: 100%; border-radius: 4.5%; display: block; pointer-events: none; }
+.gf-field .gf-card { position: absolute; width: 7.6%; min-width: 62px; }
+.gf-card.tapped { transform: rotate(90deg); }
+.gf-card.sel img, .gf-card.sel .gf-token { outline: 3px solid var(--accent); outline-offset: 1px; }
+.gf-card:focus-visible { outline: 2px solid var(--accent2); }
+.gf-dragging { opacity: .3; }
+.gf-ghost { position: fixed; left: 0; top: 0; z-index: 1000; pointer-events: none; opacity: .9; transition: none; }
+.gf-token { aspect-ratio: 5 / 7; border: 2px solid var(--accent); border-radius: 6px; background: var(--panel2); display: grid; place-content: center; text-align: center; padding: 4px; font-size: .75rem; }
+.gf-token span { color: var(--muted); font-size: .7rem; }
+.gf-counter, .gf-tax { position: absolute; top: 4px; right: 4px; background: var(--accent); color: #111; font: 700 .8rem var(--cond); padding: 1px 6px; border-radius: 10px; }
+.gf-tax { right: auto; left: 4px; background: var(--panel2); color: var(--text); border: 1px solid var(--line); }
+.gf-hand { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-start; min-height: 140px; margin: 0; }
+.gf-hand-label { width: 100%; }
+.gf-bar { position: sticky; bottom: 0; z-index: 5; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); }
+.gf-bar-name { display: grid; margin-right: 6px; }
+.gf-preview { position: fixed; right: 16px; top: 50%; transform: translateY(-50%); width: 220px; z-index: 50; pointer-events: none; }
+.gf-preview img { width: 100%; border-radius: 12px; box-shadow: 0 10px 30px rgba(0, 0, 0, .6); }
+.gz-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; max-height: 65vh; overflow-y: auto; }
+.gz-card img, .gz-card .gf-token { width: 100%; border-radius: 6px; display: block; }
+.gz-acts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.gz-acts .btn { padding: 3px 7px; font-size: .72rem; }
+@media (hover: none), (max-width: 900px) { .gf-preview { display: none; } }
+@media (max-width: 700px) {
+  .gf-keys { display: none; }
+  .gf-bar { padding: 8px; }
+  .gf-bottom { grid-template-columns: 1fr; }
+  .gf-side { flex-wrap: wrap; }
+  .gf-pile, .gf-cmd { width: 68px; font-size: .68rem; }
+  .gf-field { height: 380px; }
+  .gf-field .gf-card { width: 13%; min-width: 40px; }
+  .gf-card { width: 60px; }
+  .gf-actions { margin-left: 0; }
+}
