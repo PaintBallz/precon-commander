@@ -21,6 +21,7 @@ import { DatabaseSync } from 'node:sqlite';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { listText } from '../public/decklist.js';
+import { MACHINES, move, canMove, podPhase, machinesMarkdown, LifecycleError } from '../server/lifecycle.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT || 3999);
@@ -966,9 +967,11 @@ test('Discord: one live post per pod, edited as it goes; opt-in pings, deleted o
   await waitFor(() => discordPosts.some(p => p.method === 'DELETE' && p.path.endsWith(`/messages/${tp.id}`)), 'the test ping to delete itself');
 
   const { pod } = await ok(eve.post('/api/pods', { players: ['Eve', 'Joe', 'Dan'].map(n => ({ userId: S.u[n].id })) }));
+  assert.deepEqual([pod.phase.phase, pod.phase.actions], ['playing', ['winner', 'discard']], 'every pod from the API carries its phase (lifecycle.js)');
   const live = await waitFor(() => after().find(p => p.method === 'POST' && p.body.embeds?.[0]?.title === `${pod.name} is being played`), 'the live post');
   assert.match(live.body.embeds[0].description, /Joe/);
-  await ok(eve.post(`/api/pods/${pod.id}/winner`, { playerId: S.u.Eve.id }));
+  const crowned = (await ok(eve.post(`/api/pods/${pod.id}/winner`, { playerId: S.u.Eve.id }))).pod;
+  assert.deepEqual([crowned.phase.phase, crowned.phase.waitingOn.map(w => w.kind)], ['voting', ['vote', 'vote', 'vote']]);
   const edit = await waitFor(() => after().find(p => p.method === 'PATCH' && p.path.endsWith(`/messages/${live.id}`) && p.body.embeds[0].title === `Eve won ${pod.name}`), 'the edit');
   assert.match(edit.body.embeds[0].fields.find(f => f.name === 'Bonus-pack vote').value, /waiting on Eve, Joe, Dan/);
   const ping = await waitFor(() => after().find(p => p.body.content?.startsWith(`<@${JOE}> vote for who gets the bonus pack`)), 'the vote ping');
@@ -1063,8 +1066,10 @@ test('game nights: anyone proposes (3 open at most), answers on the site or with
   assert.equal(posted.auth, `Bot ${BOT_TOKEN}`);
   assert.ok(posted.body.content.startsWith(`<@&${NIGHT_ROLE}>`), 'pings the game night role');
   assert.deepEqual(posted.body.allowed_mentions, { parse: [], roles: [NIGHT_ROLE] }, 'that role and nothing else');
-  const edit = await waitFor(() => discordPosts.find(p => p.method === 'PATCH' && p.path.endsWith(`/messages/${posted.id}`) && JSON.stringify(p.body.embeds).includes('Fay')), 'the post updated with the answers');
-  assert.deepEqual(edit.body.allowed_mentions, { parse: [] }, "edits don't ping again");
+  // The answers show on the post (in the first post, or an edit if they came after it settled).
+  const ofPost = p => p === posted || (p.method === 'PATCH' && p.path.endsWith(`/messages/${posted.id}`));
+  await waitFor(() => discordPosts.some(p => ofPost(p) && JSON.stringify(p.body.embeds).includes('Fay')), 'the post showing the answers');
+  assert.ok(discordPosts.filter(p => ofPost(p) && p !== posted).every(p => JSON.stringify(p.body.allowed_mentions) === '{"parse":[]}'), "edits don't ping again");
 
   // A click in Discord: signed by Discord, matched to the player by their linked ID.
   const signed = (body, key = discordKeys.privateKey) => {
@@ -2007,6 +2012,41 @@ test('static files carry long cache headers; the page itself is never cached', a
   assert.match((await anon.get('/favicon.svg')).headers.get('cache-control'), /max-age=604800/);
   assert.match((await anon.get('/privacy')).headers.get('cache-control'), /max-age=600/);
   assert.match(app.text, /srcset=/, 'card images offer Scryfall\'s small size');
+});
+
+test('state machines: one table for every status, matching the database, the docs and every pod the API returns', async () => {
+  // The docs are generated from lifecycle.js and must be current (npm run states).
+  assert.equal(fs.readFileSync(path.join(ROOT, 'docs', 'state-machines.md'), 'utf8'), machinesMarkdown(), 'docs/state-machines.md is out of date: run npm run states');
+  // Each machine's states are exactly what the database allows.
+  const raw = new DatabaseSync(path.join(DATA_DIR, 'app.db'), { readOnly: true });
+  try {
+    for (const [machine, table] of [['pod', 'pods'], ['pack', 'pod_packs'], ['league', 'leagues'], ['trade', 'trades'], ['night', 'game_nights']]) {
+      const sql = raw.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table).sql;
+      const allowed = sql.match(/status IN \(([^)]*)\)/)[1].match(/'(\w+)'/g).map(x => x.slice(1, -1)).sort();
+      assert.deepEqual(allowed, Object.keys(MACHINES[machine].states).sort(), `${table}.status matches the ${machine} machine`);
+    }
+  } finally { raw.close(); }
+  for (const [name, m] of Object.entries(MACHINES)) {
+    assert.ok(m.states[m.initial], `${name} starts in a state it has`);
+    for (const [from, tos] of Object.entries(m.moves)) {
+      assert.ok(m.states[from], `${name}: ${from} is a state`);
+      for (const to of tos) assert.ok(m.states[to], `${name}: ${from} → ${to} goes to a state`);
+    }
+  }
+  // Moves outside the table are refused, with a code an agent can act on.
+  assert.equal(canMove('pod', 'done', 'playing'), false);
+  assert.throws(() => move('pod', { status: 'discarded' }, 'awarded'), e => e instanceof LifecycleError && e.status === 409 && e.code === 'illegal_transition');
+  assert.equal(move('pack', { status: 'ready' }, 'opened').status, 'opened');
+  // A pod's phase, worked out in one place.
+  const p = (extra = {}) => ({ status: 'awarded', winnerId: 'w', players: [{ id: 'w', packs: [] }, { id: 'x', packs: [] }, { id: 'y', packs: [] }], absentees: [], ...extra });
+  assert.equal(podPhase({ ...p(), status: 'playing' }).phase, 'playing');
+  const voting = podPhase(p({ vote: { status: 'open', round: 2, ballots: [{ round: 2, voterId: 'x' }] } }));
+  assert.deepEqual([voting.phase, voting.waitingOn.map(w => `${w.kind}${w.round}:${w.id}`)], ['voting', ['vote2:w', 'vote2:y']]);
+  assert.deepEqual(podPhase(p({ vote: { status: 'done', ballots: [] } })).waitingOn, [{ id: 'w', kind: 'spin' }]);
+  const packs = podPhase(p({ vote: { status: 'skipped', ballots: [] }, spin: { set: {} }, players: [{ id: 'w', packs: [{ status: 'opened' }] }, { id: 'x', packs: [{ status: 'ready' }] }], absentees: [{ id: 'z', packs: [{ status: 'choosing' }] }] }));
+  assert.deepEqual([packs.phase, packs.waitingOn.map(w => w.id)], ['packs', ['x', 'z']]);
+  assert.ok(packs.actions.includes('finish'));
+  assert.equal(podPhase({ ...p(), status: 'discarded' }).phase, 'discarded');
 });
 
 // Last: these use up this test run's per-minute allowance.

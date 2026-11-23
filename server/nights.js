@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import { db } from './db.js';
 import { getLeague, isMember, leagueMembers, logEvent } from './leagues.js';
 import { nightChanged, nightReminder, setNightSource } from './discord.js';
+import { assertMove } from './lifecycle.js';
 
 export const NIGHTS_OPEN_MAX = 3;
 const ANSWERS = ['yes', 'maybe', 'no'];
@@ -157,6 +158,7 @@ export function nightRoutes(app, { wrap, HttpError, broadcast, viewLeague, canMa
     const { n, league } = mine(req, req.params.id);
     if (n.created_by !== req.user.id && !canManage(req, league)) throw new HttpError(403, 'Only whoever proposed it, the league admin or the site admin can cancel it.');
     if (n.status !== 'open') throw new HttpError(409, 'It was already cancelled.');
+    assertMove('night', n.status, 'cancelled');
     db.prepare("UPDATE game_nights SET status = 'cancelled' WHERE id = ?").run(n.id);
     logEvent(n.league_id, 'night', req.user.id, `${req.user.username} cancelled the game night planned for ${new Date(n.starts_at).toUTCString().slice(0, 11)}.`);
     nightChanged(n.id);

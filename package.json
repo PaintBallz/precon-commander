@@ -21,7 +21,8 @@
   "main": "server/index.js",
   "scripts": {
     "start": "node --no-warnings server/index.js",
-    "e2e": "node --no-warnings --test --test-reporter=spec --test-concurrency=1 test/e2e.test.js"
+    "e2e": "node --no-warnings --test --test-reporter=spec --test-concurrency=1 test/e2e.test.js",
+    "states": "node scripts/states.mjs"
   },
   "engines": {
     "node": ">=22.13"

@@ -5,6 +5,7 @@
 import crypto from 'node:crypto';
 import { db, transaction } from './db.js';
 import { officialName } from './precons.js';
+import { assertMove } from './lifecycle.js';
 
 export const LEAGUE_MIN = 3;
 export const LEAGUE_MAX = 16;
@@ -117,6 +118,7 @@ export function newLeagueCode(id) {
   return getLeague(id);
 }
 export function endLeague(id) {
+  assertMove('league', getLeague(id)?.status, 'ended');
   db.prepare(`UPDATE leagues SET status = 'ended', ended_at = ? WHERE id = ?`).run(now(), id);
 }
 // Deletes the league with every pod in it (and their packs, pulls, votes).

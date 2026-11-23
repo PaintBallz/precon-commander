@@ -1603,19 +1603,22 @@ async function deletePodFlow(pod) {
 function podPanel(pod) {
   const member = pod.players.some(p => p.id === S.me.id) || isAdmin();
   const winner = pod.players.find(p => p.id === pod.winnerId);
-  let head;
-  if (pod.status === 'playing') head = `Playing since ${new Date(pod.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}. When the game ends, crown the winner.`;
-  else if (voteOpen(pod)) head = `${I.crown} ${esc(winner.name)} won. Now vote for who gets the bonus pack, then ${esc(winner.name)} spins.`;
-  else if (!pod.spin) head = `${I.crown} ${esc(winner.name)} won and spins the wheel for the whole pod.`;
-  else head = `${icon(pod.spin.set)} Spun <b>${esc(pod.spin.set.name)}</b>. Everyone opens that set, or sacrifices a pack to pick any set.`;
+  // The server says where the pod is (pod.phase, from lifecycle.js): one source for every screen.
+  const { phase, actions = [] } = pod.phase || {};
+  const head = {
+    playing: () => `Playing since ${new Date(pod.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}. When the game ends, crown the winner.`,
+    voting: () => `${I.crown} ${esc(winner.name)} won. Now vote for who gets the bonus pack, then ${esc(winner.name)} spins.`,
+    spin: () => `${I.crown} ${esc(winner.name)} won and spins the wheel for the whole pod.`,
+    packs: () => `${icon(pod.spin.set)} Spun <b>${esc(pod.spin.set.name)}</b>. Everyone opens that set, or sacrifices a pack to pick any set.`,
+  }[phase]?.() || '';
   return `<div class="panel pod">
     <div class="spread pod-head">
       <div><h2 style="margin:0">${esc(pod.name)}</h2><div class="small muted">${head}</div></div>
       <div class="row">
-        ${pod.status === 'awarded' && !pod.spin && !voteOpen(pod) ? `<a class="btn gold" href="#wheel?pod=${pod.id}">${S.me.id === pod.winnerId ? 'Spin the wheel →' : 'Watch the spin →'}</a>` : ''}
-        ${pod.spin ? `<a class="btn gold" href="#packs?pod=${pod.id}">Open packs →</a>` : ''}
-        ${member && pod.status === 'awarded' ? `<button class="btn" data-finish="${pod.id}">Finish pod</button>` : ''}
-        ${member ? `<button class="btn danger sm" data-discard="${pod.id}">Discard</button>` : ''}
+        ${phase === 'spin' ? `<a class="btn gold" href="#wheel?pod=${pod.id}">${S.me.id === pod.winnerId ? 'Spin the wheel →' : 'Watch the spin →'}</a>` : ''}
+        ${phase === 'packs' ? `<a class="btn gold" href="#packs?pod=${pod.id}">Open packs →</a>` : ''}
+        ${member && actions.includes('finish') ? `<button class="btn" data-finish="${pod.id}">Finish pod</button>` : ''}
+        ${member && actions.includes('discard') ? `<button class="btn danger sm" data-discard="${pod.id}">Discard</button>` : ''}
         ${isAdmin() ? `<button class="btn danger sm" data-delete="${pod.id}" title="Admin: delete this pod (undo-able for 30 days)">${I.trash} Delete</button>` : ''}
       </div>
     </div>

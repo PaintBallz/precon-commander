@@ -23,6 +23,7 @@ import crypto from 'node:crypto';
 import { db, loadPod } from './db.js';
 import { decryptDiscordId, hashDiscordId } from './emailcrypt.js';
 import { bestFirst } from './stats.js';
+import { podPhase } from './lifecycle.js';
 
 const WEBHOOK_RE = /^(?:https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com|http:\/\/127\.0\.0\.1:\d+)\/api\/webhooks\/\d+\/[\w-]+$/;
 const INVITE_RE = /^https:\/\/(?:discord\.gg|discord\.com\/invite)\/[\w-]+$/;
@@ -239,16 +240,12 @@ function waitingOn(pod) {
   const w = new Map();
   if (!pod || pod.status === 'discarded') return w;
   const name = `**${md(pod.name)}**`;
-  if (pod.kind === 'pod' && pod.status === 'awarded' && !pod.spin) {
-    const v = pod.vote;
-    if (v?.status === 'open') {
-      const voted = new Set(v.ballots.filter(b => b.round === v.round).map(b => b.voterId));
-      for (const p of pod.players) if (!voted.has(p.id)) w.set(p.id, { kind: `vote${v.round}`, text: v.round > 1 ? `the bonus-pack vote in ${name} is tied: vote again` : `vote for who gets the bonus pack in ${name}` });
-    } else if (pod.winnerId) w.set(pod.winnerId, { kind: 'spin', text: `you won ${name}! Spin the wheel once everyone's watching` });
-  }
-  for (const p of [...pod.players, ...(pod.absentees || [])]) {
-    if (w.has(p.id) || !p.packs.some(k => k.status !== 'opened')) continue;
-    w.set(p.id, { kind: 'packs', text: pod.kind === 'grants' ? 'you have packs waiting from the admin' : pod.players.includes(p) ? `you have packs to open from ${name}` : `you missed ${name}, and have packs waiting` });
+  // Who the pod waits on comes from its phase (lifecycle.js); this only words the ping.
+  for (const x of podPhase(pod).waitingOn) {
+    if (!x.id || w.has(x.id)) continue;
+    if (x.kind === 'vote' && pod.kind === 'pod') w.set(x.id, { kind: `vote${x.round}`, text: x.round > 1 ? `the bonus-pack vote in ${name} is tied: vote again` : `vote for who gets the bonus pack in ${name}` });
+    else if (x.kind === 'spin' && pod.kind === 'pod') w.set(x.id, { kind: 'spin', text: `you won ${name}! Spin the wheel once everyone's watching` });
+    else if (x.kind === 'packs') w.set(x.id, { kind: 'packs', text: pod.kind === 'grants' ? 'you have packs waiting from the admin' : pod.players.some(p => p.id === x.id) ? `you have packs to open from ${name}` : `you missed ${name}, and have packs waiting` });
   }
   return w;
 }

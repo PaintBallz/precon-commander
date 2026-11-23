@@ -30,6 +30,7 @@ import {
 } from './leagues.js';
 import { wishlistRoutes, wishPulled } from './wishlist.js';
 import { nightRoutes, setRsvp, nightSummaries } from './nights.js';
+import { move, podPhase } from './lifecycle.js';
 import { getBoosterSets, BOOSTER_SET_TYPES, findCard, setNames } from './scryfall.js';
 import { keepPreconsFresh, preconNames, preconSets, preconCount, officialName, givePreconCards, fillMissingPreconCards } from './precons.js';
 import { openPack, hasRealPack, realPackKind, localPackSets, sheetOdds } from './packs.js';
@@ -118,7 +119,7 @@ class HttpError extends Error { constructor(status, msg) { super(msg); this.stat
 // player; anything unexpected is logged and answered with a generic message.
 const wrap = fn => (req, res) => Promise.resolve(fn(req, res)).catch(err => {
   if (!err.status) console.error(err);
-  res.status(err.status || 500).json({ error: err.status ? err.message : 'Something went wrong. Try again in a moment.' });
+  res.status(err.status || 500).json({ error: err.status ? err.message : 'Something went wrong. Try again in a moment.', ...(err.status && err.code ? { code: err.code } : {}) });
 });
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 const names = list => list.length < 2 ? list.join('') : `${list.slice(0, -1).join(', ')} and ${list.at(-1)}`;
@@ -791,7 +792,7 @@ function closeRoundIfComplete(pod) {
   if (v.ballots.filter(b => b.round === v.round).length < pod.players.length) return;
   const { top } = tallyOf(pod, v.round, candidatesFor(pod, v.round));
   if (top.length > 1) { v.round += 1; return; }
-  v.status = 'done';
+  move('vote', v, 'done');
   v.winnerId = top[0];
   v.decidedAt = now();
   findPlayer(pod, top[0]).awarded += rulesOf(pod).voteBonus;
@@ -823,7 +824,8 @@ const logVoteDecided = pod => logEvent(pod.leagueId, 'vote', null, `${findPlayer
 // who has voted, plus your own choice); closed rounds show their counts.
 function view(req, pod) {
   if (!pod) return pod;
-  const out = { ...pod, rules: rulesOf(pod), ...(pod.spin ? {} : watchState(pod)) };
+  // phase: where the pod is in its life and who it waits on (see lifecycle.js).
+  const out = { ...pod, rules: rulesOf(pod), phase: podPhase(pod), ...(pod.spin ? {} : watchState(pod)) };
   if (!pod.vote) return out;
   const v = pod.vote;
   const closed = v.status === 'open' ? v.round - 1 : v.round;
@@ -913,7 +915,7 @@ app.post('/api/pods/:id/winner', wrap(async (req, res) => {
   const winner = findPlayer(pod, req.body?.playerId);
   const rules = rulesOf(pod);
   pod.winnerId = winner.id;
-  pod.status = 'awarded';
+  move('pod', pod, 'awarded');
   pod.wonAt = now();
   for (const p of pod.players) p.awarded = p.id === winner.id ? rules.winnerPacks : rules.loserPacks;
   openVote(pod);
@@ -973,7 +975,7 @@ app.post('/api/pods/:id/vote/skip', wrap(async (req, res) => {
   requireAdmin(req);
   const pod = requirePod(req.params.id);
   if (pod.vote?.status !== 'open') throw new HttpError(409, 'There is no vote in progress.');
-  pod.vote.status = 'skipped';
+  move('vote', pod.vote, 'skipped');
   pod.vote.decidedAt = now();
   logAdmin(req, { action: 'skip-vote', summary: `Skipped ${pod.name}'s bonus-pack vote.`, leagueId: pod.leagueId });
   res.json({ pod: view(req, commit(pod, 'state', { vote: 'ready' })) });
@@ -1074,7 +1076,7 @@ app.post('/api/pods/:id/packs/:packId/sacrifice', wrap(async (req, res) => {
   if (!fodder) throw new HttpError(409, `${player.name} needs another unopened ${pack.set.name} pack to sacrifice.`);
   player.packs.splice(player.packs.indexOf(fodder), 1);
   player.sacrificed = (player.sacrificed || 0) + 1;
-  pack.status = 'choosing';
+  move('pack', pack, 'choosing');
   pack.source = 'sacrifice';
   pack.sacrificedAt = now();
   res.json({ pod: view(req, commit(pod)), packId: pack.id });
@@ -1089,7 +1091,7 @@ app.post('/api/pods/:id/packs/:packId/choose', wrap(async (req, res) => {
   requireOwner(player, req.user);
   if (pack.status !== 'choosing') throw new HttpError(409, 'This pack is not waiting for a set choice.');
   pack.set = set;
-  pack.status = 'ready';
+  move('pack', pack, 'ready');
   pack.chosenAt = now();
   res.json({ pod: view(req, commit(pod)), packId: pack.id });
 }));
@@ -1115,7 +1117,7 @@ app.post('/api/pods/:id/packs/:packId/open', wrap(async (req, res) => {
     pack.cards = result.cards;
     pack.boosterType = result.boosterType;
     pack.generated = result.generated;
-    pack.status = 'opened';
+    move('pack', pack, 'opened');
     pack.openedAt = now();
     for (const c of result.cards.filter(c => c.rarity === 'mythic')) {
       logEvent(pod.leagueId, 'pull', player.id, `${player.name} pulled ${c.name}${c.foil ? ' (foil)' : ''}, a mythic from ${set.name}.`);
@@ -1137,7 +1139,7 @@ app.post('/api/pods/:id/finish', wrap(async (req, res) => {
   const pod = requirePod(req.params.id);
   requireMember(pod, req.user);
   if (!pod.winnerId) throw new HttpError(409, 'Pick a winner before finishing the pod.');
-  pod.status = 'done';
+  move('pod', pod, 'done');
   pod.finishedAt = now();
   logEvent(pod.leagueId, 'finish', req.user.id, `${pod.name} finished and was saved to History.`);
   const saved = commit(pod);
@@ -1148,7 +1150,7 @@ app.post('/api/pods/:id/finish', wrap(async (req, res) => {
 app.post('/api/pods/:id/discard', wrap(async (req, res) => {
   const pod = requirePod(req.params.id);
   requireMember(pod, req.user);
-  pod.status = 'discarded';
+  move('pod', pod, 'discarded');
   pod.finishedAt = now();
   logEvent(pod.leagueId, 'discard', req.user.id, `${pod.name} was discarded.`);
   commit(pod);

@@ -1,6 +1,7 @@
 // Feature ideas and bug reports sent from the footer's "Suggest a feature"
 // button. Players see their own and any reply; the site admin gets an inbox on
 // the Account page and marks each one planned, done or declined.
+import { assertMove } from './lifecycle.js';
 import { db } from './db.js';
 
 export const KINDS = ['idea', 'bug', 'other'];
@@ -53,6 +54,7 @@ export function feedbackRoutes(app, wrap, onChange = () => {}) {
     if (!item) throw new FeedbackError(404, 'Not found.');
     const status = req.body?.status ?? item.status;
     if (!STATUSES.includes(status)) throw new FeedbackError(400, 'Unknown status.');
+    if (status !== item.status) assertMove('feedback', item.status, status);
     const reply = String(req.body?.reply ?? item.reply).trim();
     if (reply.length > REPLY_MAX) throw new FeedbackError(400, `Keep the reply under ${REPLY_MAX} characters.`);
     db.prepare('UPDATE feedback SET status = ?, reply = ?, updated_at = ? WHERE id = ?').run(status, reply, new Date().toISOString(), item.id);

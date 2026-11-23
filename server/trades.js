@@ -22,6 +22,7 @@ import { db, grantsPod, savePod, setInfoFor } from './db.js';
 import { getLeague, isMember, logEvent, activeLeagueOf } from './leagues.js';
 import { getUser } from './auth.js';
 import { tradePost, tradeChanged } from './discord.js';
+import { assertMove } from './lifecycle.js';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS trades (
@@ -86,6 +87,7 @@ const getTrade = id => db.prepare('SELECT * FROM trades WHERE id = ?').get(id);
 const openTradesOf = userId => db.prepare("SELECT * FROM trades WHERE status = 'open' AND (a_id = ? OR b_id = ?)").all(userId, userId);
 
 function close(t, status, by, note = '') {
+  assertMove('trade', t.status, status);
   db.prepare('UPDATE trades SET status = ?, turn_id = NULL, updated_at = ?, closed_at = ?, closed_by = ?, close_note = ? WHERE id = ?')
     .run(status, now(), now(), by || null, note, t.id);
 }
